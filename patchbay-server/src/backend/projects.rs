@@ -646,7 +646,7 @@ pub fn spawn_path_status_checker_until(
             tokio::select! {
                 _ = interval.tick() => {
                     if let Err(err) = refresh_project_path_statuses(&store).await {
-                        eprintln!("project path status check failed: {err:#}");
+                        tracing::warn!(error = %format_args!("{err:#}"), "project path status check failed");
                     }
                 }
                 changed = shutdown.changed() => {

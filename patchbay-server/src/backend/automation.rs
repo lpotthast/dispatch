@@ -302,20 +302,28 @@ pub async fn start_one_automation_run_in_background(
     tokio::spawn(async move {
         match complete_started_automation_run(&store, started, sessions, None).await {
             Ok(run) if run.status == AgentRunStatus::Failed => {
-                eprintln!(
-                    "automation run #{} failed for project {}: {}",
-                    run.id, project_for_task, run.result_summary
+                tracing::error!(
+                    run_id = run.id,
+                    project = %project_for_task,
+                    summary = %run.result_summary,
+                    "automation run failed"
                 );
             }
             Ok(run) if run.status == AgentRunStatus::Cancelled => {
-                eprintln!(
-                    "automation run #{} cancelled for project {}: {}",
-                    run.id, project_for_task, run.result_summary
+                tracing::warn!(
+                    run_id = run.id,
+                    project = %project_for_task,
+                    summary = %run.result_summary,
+                    "automation run cancelled"
                 );
             }
             Ok(_) => {}
             Err(err) => {
-                eprintln!("automation run failed for project {project_for_task}: {err:#}");
+                tracing::error!(
+                    project = %project_for_task,
+                    error = %format_args!("{err:#}"),
+                    "automation run failed"
+                );
             }
         }
     });
@@ -1240,7 +1248,10 @@ async fn publish_run_model_event(store: &Store, run: &AgentRunModel) {
             events::publish_agent_run_changed(&project_name, run.id, run.work_item_id);
         }
         Err(err) => {
-            eprintln!("failed to resolve project for agent run UI event: {err:#}");
+            tracing::warn!(
+                error = %format_args!("{err:#}"),
+                "failed to resolve project for agent run UI event"
+            );
         }
     }
 }

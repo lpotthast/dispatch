@@ -555,13 +555,19 @@ pub fn spawn_scheduler_until(
                         )
                         .await
                         {
-                            eprintln!("automation trigger scheduler failed: {err:#}");
+                            tracing::error!(
+                                error = %format_args!("{err:#}"),
+                                "automation trigger scheduler failed"
+                            );
                         }
                     }
                 }
                 _ = maintenance_interval.tick() => {
                     if let Err(err) = automation::recover_configured_stale_claims(&store).await {
-                        eprintln!("stale claim recovery failed: {err:#}");
+                        tracing::error!(
+                            error = %format_args!("{err:#}"),
+                            "stale claim recovery failed"
+                        );
                     }
                 }
                 changed = shutdown.changed() => {
@@ -823,7 +829,11 @@ async fn publish_project_id_event(store: &Store, project_id: i64) {
     match projects::project_name_by_id(store, project_id).await {
         Ok(project_name) => events::publish_automation_changed(&project_name),
         Err(err) => {
-            eprintln!("failed to resolve project for automation trigger UI event: {err:#}");
+            tracing::warn!(
+                project_id,
+                error = %format_args!("{err:#}"),
+                "failed to resolve project for automation trigger UI event"
+            );
         }
     }
 }

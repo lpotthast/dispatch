@@ -1,3 +1,1 @@
 - per project .patchbay/codex/config.toml differences (maybe even user-editable in patchbay UI)?
-- Always use "tracing" instead of simple println! statements
-- Always use "rootcause" for proper error handling

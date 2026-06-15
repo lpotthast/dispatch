@@ -120,7 +120,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
     let automation_controller = AutomationController::new();
     let codex_status = codex_app_server::app_server_status(&store).await;
     if !codex_status.usable {
-        eprintln!(
+        tracing::warn!(
             "{}",
             codex_app_server::operator_guidance(&codex_status).join("\n")
         );
@@ -335,7 +335,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
         .with_state(leptos_options);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    println!("Serving Patchbay at http://{bind}");
+    tracing::info!(url = %format_args!("http://{bind}"), "Serving Patchbay");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(
             store,
@@ -372,7 +372,7 @@ async fn shutdown_signal(
 async fn wait_for_shutdown_signal() {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
-            eprintln!("failed to install Ctrl+C handler: {err}");
+            tracing::error!(%err, "failed to install Ctrl+C handler");
         }
     };
 
@@ -386,7 +386,7 @@ async fn wait_for_shutdown_signal() {
                     signal.recv().await;
                 }
                 Err(err) => {
-                    eprintln!("failed to install SIGTERM handler: {err}");
+                    tracing::error!(%err, "failed to install SIGTERM handler");
                     std::future::pending::<()>().await;
                 }
             }
@@ -424,12 +424,16 @@ async fn cancel_active_sessions(store: &Store, sessions: &ProcessSessionRegistry
     })
     .await
     {
-        eprintln!("timed out waiting for active automation sessions to stop");
+        tracing::warn!("timed out waiting for active automation sessions to stop");
     }
 
     for project in projects {
         if let Err(err) = automation::stop_automation(store, &project).await {
-            eprintln!("failed to mark running automation cancelled for project {project}: {err:#}");
+            tracing::error!(
+                project = %project,
+                error = %format_args!("{err:#}"),
+                "failed to mark running automation cancelled"
+            );
         }
     }
 }

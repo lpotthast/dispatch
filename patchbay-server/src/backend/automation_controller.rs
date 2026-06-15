@@ -76,7 +76,11 @@ impl AutomationController {
         sessions.cancel_all().await;
         for (project_name, automation) in projects {
             if let Err(err) = automation.handle.await {
-                eprintln!("project automation task failed for {project_name}: {err:#}");
+                tracing::error!(
+                    project = %project_name,
+                    error = %format_args!("{err:#}"),
+                    "project automation task failed"
+                );
             }
         }
         for project_name in project_names {

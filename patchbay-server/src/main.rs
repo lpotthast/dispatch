@@ -3,6 +3,7 @@
 mod backend;
 mod frontend;
 mod shared;
+mod tracing_init;
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
@@ -633,9 +634,11 @@ async fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
+    tracing_init::init();
+
     let args = ServerArgs::parse();
     let database = args.database.unwrap_or_else(default_database_path);
-    println!("Database path: {database:?}");
+    tracing::info!(path = %database.display(), "Database path");
     let store = Store::open(database).await?;
 
     let command = args.command.unwrap_or_else(|| {
@@ -651,7 +654,7 @@ async fn run() -> Result<()> {
         Command::Automation { command } => run_automation(&store, command).await,
         Command::AgentTools { command } => run_agent_tools(&store, command).await,
         Command::Serve(args) => {
-            println!("Starting Patchbay at http://{}", args.bind);
+            tracing::info!(url = %format_args!("http://{}", args.bind), "Starting Patchbay");
             ui::serve(store, args.bind).await
         }
     }

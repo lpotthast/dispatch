@@ -72,7 +72,7 @@ ssr = [
     "dep:serde_json",
     "dep:time",
     "dep:tokio",
-    "dep:tracing",
+    "dep:tracing-subscriber",
     "dep:typetag",
     "dep:utoipa",
     "dep:urlencoding",
@@ -115,7 +115,8 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 time = { version = "=0.3.47", features = ["formatting", "macros", "serde", "serde-well-known"], optional = true }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"], optional = true }
-tracing = { version = "0.1", optional = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"], optional = true }
 typetag = { version = "0.2", optional = true }
 utoipa = { version = "5", optional = true }
 urlencoding = { version = "2", optional = true }

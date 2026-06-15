@@ -531,7 +531,12 @@ async fn publish_work_item_crud_event(store: &Store, project_id: i64, item_id: i
     match projects::project_name_by_id(store, project_id).await {
         Ok(project_name) => events::publish_work_item_changed(&project_name, item_id),
         Err(err) => {
-            eprintln!("failed to resolve project for work item UI event: {err:#}");
+            tracing::warn!(
+                project_id,
+                item_id,
+                error = %format_args!("{err:#}"),
+                "failed to resolve project for work item UI event"
+            );
         }
     }
 }
@@ -996,7 +1001,11 @@ async fn publish_automation_project_event(store: &Store, project_id: i64) {
     match projects::project_name_by_id(store, project_id).await {
         Ok(project_name) => events::publish_automation_changed(&project_name),
         Err(err) => {
-            eprintln!("failed to resolve project for UI event: {err:#}");
+            tracing::warn!(
+                project_id,
+                error = %format_args!("{err:#}"),
+                "failed to resolve project for automation UI event"
+            );
         }
     }
 }
@@ -1005,7 +1014,11 @@ async fn publish_swim_lane_project_event(store: &Store, project_id: i64) {
     match projects::project_name_by_id(store, project_id).await {
         Ok(project_name) => events::publish_swim_lane_changed(&project_name),
         Err(err) => {
-            eprintln!("failed to resolve project for UI event: {err:#}");
+            tracing::warn!(
+                project_id,
+                error = %format_args!("{err:#}"),
+                "failed to resolve project for swim lane UI event"
+            );
         }
     }
 }
