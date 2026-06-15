@@ -40,6 +40,7 @@ use crate::{
         process_sessions::ProcessSessionRegistry,
         projects::{self, UpdateProjectSettings},
         storage::Store,
+        swim_lanes,
         workspace::{self, WorkspaceOpenTarget},
     },
     frontend::{
@@ -48,7 +49,7 @@ use crate::{
     },
     shared::view_models::{
         AgentReasoningEffort, AgentToolName, AuthorType, AutomationMode, CodexAppServerStatusView,
-        ProcessSessionView, TriggerKind, WorkState, WorkspaceMode, WorktreeCleanupPolicy,
+        DEFAULT_STATE_LABEL, ProcessSessionView, TriggerKind, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -75,6 +76,10 @@ impl_add_crud_routes!(
 impl_add_crud_routes!(
     crate::backend::crudkit_resources::CrudAutomationTriggerResource,
     automation_trigger
+);
+impl_add_crud_routes!(
+    crate::backend::crudkit_resources::CrudSwimLaneResource,
+    swim_lane
 );
 
 #[derive(Clone)]
@@ -141,6 +146,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
     crud_router = axum_agent_tool_crud_routes::add_crud_routes("/api", crud_router);
     crud_router = axum_agent_run_crud_routes::add_crud_routes("/api", crud_router);
     crud_router = axum_automation_trigger_crud_routes::add_crud_routes("/api", crud_router);
+    crud_router = axum_swim_lane_crud_routes::add_crud_routes("/api", crud_router);
 
     let leptos_shell = {
         let leptos_options = leptos_options.clone();
@@ -215,6 +221,18 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
             "/projects/{project}/items/{item_id}/comments",
             post(add_comment),
         )
+        .route(
+            "/projects/{project}/items/{item_id}/labels",
+            post(add_item_label),
+        )
+        .route(
+            "/projects/{project}/items/{item_id}/labels/{label_id}/update",
+            post(update_item_label),
+        )
+        .route(
+            "/projects/{project}/items/{item_id}/labels/{label_id}/delete",
+            post(delete_item_label),
+        )
         .route("/agent-tools/discover", post(discover_agent_tools))
         .route("/codex/logout", post(logout_codex))
         .route("/api/projects/{project}", get(api::get_project))
@@ -242,10 +260,22 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
             "/api/projects/{project}/items",
             get(api::list_items).post(api::create_item),
         )
+        .route(
+            "/api/projects/{project}/labels",
+            get(api::list_project_labels),
+        )
         .route("/api/projects/{project}/items/claim", post(api::claim_item))
         .route(
             "/api/projects/{project}/items/{item_id}",
             get(api::get_item).patch(api::update_item),
+        )
+        .route(
+            "/api/projects/{project}/items/{item_id}/labels",
+            get(api::list_item_labels).post(api::add_item_label),
+        )
+        .route(
+            "/api/projects/{project}/items/{item_id}/labels/{label_id}",
+            axum::routing::patch(api::update_item_label).delete(api::delete_item_label),
         )
         .route(
             "/api/projects/{project}/items/{item_id}/progress",
@@ -290,6 +320,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
         .layer(Extension(contexts.agent_tool))
         .layer(Extension(contexts.agent_run))
         .layer(Extension(contexts.automation_trigger))
+        .layer(Extension(contexts.swim_lane))
         .with_state(leptos_options);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -1095,10 +1126,7 @@ async fn create_item(
     Path(project): Path<String>,
     Form(form): Form<CreateItemForm>,
 ) -> Response {
-    let item_state = match parse_optional_work_state(form.state, WorkState::Open) {
-        Ok(state) => state,
-        Err(err) => return error_response(err).await,
-    };
+    let item_state = parse_optional_state_label(form.state);
     match items::create_item(
         &state.store,
         &project,
@@ -1123,13 +1151,6 @@ async fn create_item(
             Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
         }
         Err(err) => error_response(err).await,
-    }
-}
-
-fn parse_optional_work_state(value: Option<String>, default: WorkState) -> Result<WorkState> {
-    match value.filter(|value| !value.trim().is_empty()) {
-        Some(value) => Ok(value.parse::<WorkState>()?),
-        None => Ok(default),
     }
 }
 
@@ -1197,10 +1218,7 @@ async fn move_item(
     Path((project, item_id)): Path<(String, i64)>,
     Form(form): Form<MoveItemForm>,
 ) -> Response {
-    let parsed_state = match form.state.parse::<WorkState>() {
-        Ok(state) => state,
-        Err(err) => return error_response(err).await,
-    };
+    let parsed_state = parse_state_label(form.state);
 
     match items::move_item(
         &state.store,
@@ -1218,6 +1236,24 @@ async fn move_item(
     }
 }
 
+fn parse_optional_state_label(value: Option<String>) -> String {
+    value
+        .and_then(|value| {
+            let value = value.trim().to_owned();
+            (!value.is_empty()).then_some(value)
+        })
+        .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
+}
+
+fn parse_state_label(value: String) -> String {
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        DEFAULT_STATE_LABEL.to_owned()
+    } else {
+        value
+    }
+}
+
 async fn delete_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
@@ -1228,6 +1264,94 @@ async fn delete_item(
         }
         Err(err) => error_response(err).await,
     }
+}
+
+#[derive(serde::Deserialize)]
+struct AddItemLabelForm {
+    key: String,
+    value: Option<String>,
+    version: i64,
+}
+
+async fn add_item_label(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id)): Path<(String, i64)>,
+    Form(form): Form<AddItemLabelForm>,
+) -> Response {
+    match items::add_label(
+        &state.store,
+        &project,
+        item_id,
+        form.key,
+        form.value,
+        Some(form.version),
+    )
+    .await
+    {
+        Ok(_) => item_redirect(&project, item_id),
+        Err(err) => error_response(err).await,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateItemLabelForm {
+    key: String,
+    value: Option<String>,
+    version: i64,
+}
+
+async fn update_item_label(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    Form(form): Form<UpdateItemLabelForm>,
+) -> Response {
+    match items::update_label(
+        &state.store,
+        &project,
+        item_id,
+        label_id,
+        Some(form.key),
+        Some(form.value),
+        Some(form.version),
+    )
+    .await
+    {
+        Ok(_) => item_redirect(&project, item_id),
+        Err(err) => error_response(err).await,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DeleteItemLabelForm {
+    version: i64,
+}
+
+async fn delete_item_label(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    Form(form): Form<DeleteItemLabelForm>,
+) -> Response {
+    match items::delete_label(
+        &state.store,
+        &project,
+        item_id,
+        label_id,
+        Some(form.version),
+    )
+    .await
+    {
+        Ok(_) => item_redirect(&project, item_id),
+        Err(err) => error_response(err).await,
+    }
+}
+
+fn item_redirect(project: &str, item_id: i64) -> Response {
+    Redirect::to(&format!(
+        "/projects/{}/items/{}",
+        urlencoding::encode(project),
+        item_id
+    ))
+    .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -1327,7 +1451,7 @@ pub(crate) async fn board_page_data(
     automation_controller: &AutomationController,
     codex_status: CodexAppServerStatusView,
     selected_project: Option<&str>,
-    _api_base_url: String,
+    api_base_url: String,
 ) -> Result<BoardPage> {
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
@@ -1346,6 +1470,7 @@ pub(crate) async fn board_page_data(
     let mut automation_running = false;
     let mut run_sessions = Vec::new();
     let mut project_items = Vec::new();
+    let mut project_swim_lanes = Vec::new();
     if let Some(project) = selected_project_view
         .as_ref()
         .map(|project| project.name.as_str())
@@ -1359,6 +1484,7 @@ pub(crate) async fn board_page_data(
             board_run_sessions(store, project, status.recent_runs.clone(), active_sessions).await?;
         automation_status = Some(status);
         project_items = items::list_items(store, project, None).await?;
+        project_swim_lanes = swim_lanes::list_swim_lanes(store, project).await?;
     }
 
     Ok(BoardPage {
@@ -1372,6 +1498,8 @@ pub(crate) async fn board_page_data(
         automation_running,
         run_sessions,
         items: project_items,
+        swim_lanes: project_swim_lanes,
+        api_base_url,
         codex_status,
         runtime: runtime_config_view(store),
     })
@@ -1480,6 +1608,7 @@ pub(crate) async fn item_page_data(
     let active_project_names = active_project_names(store, automation_controller).await?;
     let item = items::get_item(store, project, item_id).await?;
     let comments = comments::list_comments(store, project, item_id).await?;
+    let label_suggestions = items::list_project_labels(store, project).await?;
     let automation_runs = automation::list_runs_for_item(store, project, item_id, Some(10)).await?;
     Ok(ItemPage {
         projects,
@@ -1487,6 +1616,7 @@ pub(crate) async fn item_page_data(
         project: project.to_owned(),
         item,
         comments,
+        label_suggestions,
         automation_runs,
         codex_status,
     })

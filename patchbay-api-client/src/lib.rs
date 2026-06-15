@@ -1,10 +1,11 @@
 use anyhow::{Context, Result, bail};
 use patchbay_types::{
     AddCommentRequest, AgentRunView, ApiError, ClaimWorkItemRequest, ClaimWorkItemResponse,
-    CommentView, CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest,
-    ProjectMemoryCompactionView, ProjectMemoryEventView, ProjectMemoryUpdateView,
-    ProjectMemoryView, ProjectSettingsView, ProjectView, ReleaseWorkItemRequest, RunLogView,
-    UpdateProjectMemoryRequest, UpdateWorkItemRequest, WorkItemView, WorkState,
+    CommentView, CreateWorkItemLabelRequest, CreateWorkItemRequest, DeleteWorkItemLabelResponse,
+    FinishWorkItemRequest, ProgressWorkItemRequest, ProjectLabelView, ProjectMemoryCompactionView,
+    ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView,
+    ProjectView, ReleaseWorkItemRequest, RunLogView, UpdateProjectMemoryRequest,
+    UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemLabelView, WorkItemView,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -73,14 +74,18 @@ impl PatchbayClient {
     pub async fn list_items(
         &self,
         project: &str,
-        state: Option<WorkState>,
+        state: Option<&str>,
     ) -> Result<Vec<WorkItemView>> {
         let mut path = project_path(project, "/items");
         if let Some(state) = state {
             path.push_str("?state=");
-            path.push_str(state.as_storage());
+            path.push_str(&urlencoding::encode(state));
         }
         self.get(&path).await
+    }
+
+    pub async fn list_project_labels(&self, project: &str) -> Result<Vec<ProjectLabelView>> {
+        self.get(&project_path(project, "/labels")).await
     }
 
     pub async fn create_item(
@@ -107,6 +112,59 @@ impl PatchbayClient {
             request,
         )
         .await
+    }
+
+    pub async fn list_item_labels(
+        &self,
+        project: &str,
+        item_id: i64,
+    ) -> Result<Vec<WorkItemLabelView>> {
+        self.get(&project_path(project, &format!("/items/{item_id}/labels")))
+            .await
+    }
+
+    pub async fn add_item_label(
+        &self,
+        project: &str,
+        item_id: i64,
+        request: &CreateWorkItemLabelRequest,
+        expect_version: Option<i64>,
+    ) -> Result<WorkItemView> {
+        let mut path = project_path(project, &format!("/items/{item_id}/labels"));
+        if let Some(expect_version) = expect_version {
+            path.push_str("?expect_version=");
+            path.push_str(&expect_version.to_string());
+        }
+        self.post(&path, request).await
+    }
+
+    pub async fn update_item_label(
+        &self,
+        project: &str,
+        item_id: i64,
+        label_id: i64,
+        request: &UpdateWorkItemLabelRequest,
+    ) -> Result<WorkItemView> {
+        self.patch(
+            &project_path(project, &format!("/items/{item_id}/labels/{label_id}")),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_item_label(
+        &self,
+        project: &str,
+        item_id: i64,
+        label_id: i64,
+        expect_version: Option<i64>,
+    ) -> Result<DeleteWorkItemLabelResponse> {
+        let mut path = project_path(project, &format!("/items/{item_id}/labels/{label_id}"));
+        if let Some(expect_version) = expect_version {
+            path.push_str("?expect_version=");
+            path.push_str(&expect_version.to_string());
+        }
+        self.delete(&path).await
     }
 
     pub async fn claim_item(
@@ -224,6 +282,13 @@ impl PatchbayClient {
         B: Serialize + ?Sized,
     {
         self.send(self.http.patch(self.url(path)).json(body)).await
+    }
+
+    async fn delete<T>(&self, path: &str) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        self.send(self.http.delete(self.url(path))).await
     }
 
     async fn send<T>(&self, request: reqwest::RequestBuilder) -> Result<T>

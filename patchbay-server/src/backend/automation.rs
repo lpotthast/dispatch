@@ -34,8 +34,8 @@ use crate::{
     shared::view_models::{
         AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece,
         AgentRunStatus, AgentRunView, AgentToolName, AutomationMode, AutomationStatusView,
-        ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView, RunLogView,
-        WorkItemView, WorkState, WorkspaceMode, WorktreeCleanupPolicy,
+        DEFAULT_STATE_LABEL, FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView,
+        RecoveredClaimView, RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -421,7 +421,7 @@ async fn complete_started_automation_run(
                 }
             }
         } else {
-            match items::claim_item(store, &project_name, &agent_id, WorkState::Open).await {
+            match items::claim_item(store, &project_name, &agent_id, DEFAULT_STATE_LABEL).await {
                 Ok(claimed) => claimed,
                 Err(err) => {
                     return fail_run(
@@ -1222,7 +1222,9 @@ async fn release_claim_if_needed(
         return Ok(());
     };
     let current = items::get_item(store, project_name, claimed_item.id).await?;
-    if current.claimed_by.as_deref() != Some(agent_id) || current.state == WorkState::Done {
+    if current.claimed_by.as_deref() != Some(agent_id)
+        || current.state.as_deref() == Some(FINISHED_STATE_LABEL)
+    {
         return Ok(());
     }
 
@@ -1732,11 +1734,22 @@ fn build_prompt(context: PromptContext<'_>) -> String {
     }
     if let Some(item) = context.item {
         prompt.push_str("## Claimed Work Item\n\n");
+        let state = item.state.as_deref().unwrap_or("(none)");
+        let labels = item
+            .labels
+            .iter()
+            .map(|label| match label.value.as_deref() {
+                Some(value) => format!("{}={value}", label.key),
+                None => label.key.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         prompt.push_str(&format!(
-            "Item: #{}\nTitle: {}\nState: {}\nVersion: {}\n\n{}\n\n",
+            "Item: #{}\nTitle: {}\nState label: {}\nLabels: {}\nVersion: {}\n\n{}\n\n",
             item.id,
             item.title,
-            item.state.label(),
+            state,
+            if labels.is_empty() { "(none)" } else { &labels },
             item.version,
             item.description
         ));
@@ -2359,7 +2372,7 @@ mod tests {
             CreateWorkItem {
                 title: "Configured item".to_owned(),
                 description: "Exercise item overrides".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: Some("gpt-5-codex".to_owned()),
                 agent_reasoning_effort_override: Some(AgentReasoningEffort::Medium),
             },
@@ -2384,7 +2397,16 @@ mod tests {
             project_id: 1,
             title: "Implement API relay".to_owned(),
             description: "Switch agent-facing CLI calls through HTTP.".to_owned(),
-            state: WorkState::InProgress,
+            state: Some("in_progress".to_owned()),
+            labels: vec![patchbay_types::WorkItemLabelView {
+                id: 1,
+                project_id: 1,
+                work_item_id: 42,
+                key: "state".to_owned(),
+                value: Some("in_progress".to_owned()),
+                created_at: "2026-06-14T00:00:00Z".to_owned(),
+                updated_at: "2026-06-14T00:00:00Z".to_owned(),
+            }],
             version: 3,
             claimed_by: Some("patchbay-run-1".to_owned()),
             claimed_at: None,
@@ -2409,7 +2431,9 @@ mod tests {
         });
 
         assert!(prompt.contains("## Patchbay Agent Instructions"));
-        assert!(prompt.contains("is the source of truth for work state and project memory"));
+        assert!(
+            prompt.contains("is the source of truth for work state, labels, and project memory")
+        );
         assert!(prompt.contains("PATCHBAY_API_URL=<api-url>"));
         assert!(prompt.contains("PATCHBAY_CLAIMED_ITEM_ID=<item-id>"));
         assert!(prompt.contains("When `PATCHBAY_CLAIMED_ITEM_ID` is set"));
@@ -2420,7 +2444,10 @@ mod tests {
         );
         assert!(prompt.contains("patchbay item show [item-id] [--json]"));
         assert!(prompt.contains("patchbay item update [item-id]"));
-        assert!(prompt.contains("--state idea|open|in_progress|done"));
+        assert!(prompt.contains("--state <state-label>"));
+        assert!(prompt.contains("patchbay label add [item-id]"));
+        assert!(prompt.contains("State label: in_progress"));
+        assert!(prompt.contains("Labels: state=in_progress"));
         assert!(prompt.contains("--clear-agent-reasoning-effort"));
         assert!(prompt.contains("patchbay comment add [item-id]"));
         assert!(prompt.contains("patchbay automation runs [--limit N]"));
@@ -2495,7 +2522,7 @@ mod tests {
             CreateWorkItem {
                 title: "Cancel me".to_owned(),
                 description: "Exercise cancellation release".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -2513,7 +2540,7 @@ mod tests {
         .await
         .unwrap();
         let agent_id = format!("patchbay-run-{}", run.id);
-        claim_item(&store, "demo", &agent_id, WorkState::Open)
+        claim_item(&store, "demo", &agent_id, "open")
             .await
             .unwrap()
             .unwrap();
@@ -2544,7 +2571,7 @@ mod tests {
 
         assert_eq!(cancelled.len(), 1);
         assert_eq!(cancelled[0].status, AgentRunStatus::Cancelled);
-        assert_eq!(item.state, WorkState::Open);
+        assert_eq!(item.state.as_deref(), Some("open"));
         assert_eq!(item.claimed_by, None);
     }
 }

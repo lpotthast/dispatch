@@ -188,6 +188,11 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_does_not_contain(driver, "Recover stale claims").await?;
         assert_source_contains(driver, "Maintenance").await?;
         assert_source_contains(driver, "Cleanup worktrees").await?;
+        assert_source_contains(driver, "data-crudkit-leptos=\"work-items\"").await?;
+        assert_source_contains(driver, "data-crudkit-leptos=\"swim-lanes\"").await?;
+        assert_source_does_not_contain(driver, "Deserialize(").await?;
+        assert_source_does_not_contain(driver, "missing field `identifier`").await?;
+        assert_source_does_not_contain(driver, "unknown variant `Position`").await?;
         find(driver, By::Css(".lane:first-child .lane-add")).await?;
         assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
             .await?;
@@ -249,7 +254,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
 
         find(driver, By::LinkText("Browser item")).await?;
         assert_source_contains(driver, "Created through browser-test").await?;
-        assert_source_contains(driver, "idea").await?;
+        assert_source_contains(driver, "state=open").await?;
 
         click(driver, By::LinkText("Browser item")).await?;
         find(driver, By::Css("section.item-settings")).await?;
@@ -258,6 +263,21 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_does_not_contain(driver, "automation can claim this item").await?;
         assert_source_contains(driver, "Start agent").await?;
         assert_source_contains(driver, "Comments").await?;
+        find(driver, By::Css("section.item-labels")).await?;
+        send_keys(
+            driver,
+            By::Css(".label-add-form input[name='key']"),
+            "severity",
+        )
+        .await?;
+        send_keys(
+            driver,
+            By::Css(".label-add-form input[name='value']"),
+            "high",
+        )
+        .await?;
+        submit_label_add_form(driver).await?;
+        find(driver, By::XPath("//*[contains(text(), 'severity=high')]")).await?;
 
         driver
             .goto(app.url("/projects?project=demo"))
@@ -563,11 +583,37 @@ async fn find(driver: &WebDriver, by: By) -> Result<browser_test::thirtyfour::We
 }
 
 async fn click(driver: &WebDriver, by: By) -> Result<(), Report> {
-    find(driver, by)
-        .await?
-        .click()
+    let target = format!("{by:?}");
+    let element = find(driver, by).await?;
+    if let Err(initial_err) = element.click().await {
+        element
+            .scroll_into_view()
+            .await
+            .context("failed to scroll browser-test element into view")?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Err(retry_err) = element.click().await {
+            bail!(
+                "failed to click browser-test element {target}: {retry_err}; initial error: {initial_err}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn submit_label_add_form(driver: &WebDriver) -> Result<(), Report> {
+    driver
+        .execute(
+            r#"
+            const form = document.querySelector('.label-add-form');
+            if (!form) {
+                throw new Error('missing label add form');
+            }
+            form.submit();
+            "#,
+            Vec::new(),
+        )
         .await
-        .context("failed to click browser-test element")?;
+        .context("failed to submit label add form")?;
     Ok(())
 }
 

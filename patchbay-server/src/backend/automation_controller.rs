@@ -14,7 +14,7 @@ use crate::{
         projects,
         storage::Store,
     },
-    shared::view_models::{AgentRunStatus, AutomationMode, WorkState},
+    shared::view_models::{AgentRunStatus, AutomationMode, DEFAULT_STATE_LABEL},
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -129,7 +129,7 @@ async fn run_project_automation(
             break;
         }
 
-        match items::has_unclaimed_item_in_state(&store, &project_name, WorkState::Open).await {
+        match items::has_unclaimed_item_in_state(&store, &project_name, DEFAULT_STATE_LABEL).await {
             Ok(true) => {}
             Ok(false) => {
                 if wait_or_shutdown(IDLE_POLL_INTERVAL, &mut shutdown).await {

@@ -4,10 +4,10 @@ use sea_orm::{DerivePrimaryKey, EntityTrait, EnumIter, PrimaryKeyTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-pub type WorkItem = Entity;
-pub type WorkItemModel = Model;
-pub type WorkItemActiveModel = ActiveModel;
-pub type WorkItemId = ModelId;
+pub type SwimLane = Entity;
+pub type SwimLaneModel = Model;
+pub type SwimLaneActiveModel = ActiveModel;
+pub type SwimLaneId = ModelId;
 
 #[derive(
     Clone,
@@ -25,8 +25,8 @@ pub type WorkItemId = ModelId;
     Serialize,
     Deserialize,
 )]
-#[sea_orm(table_name = "work_items")]
-#[read_view(table_name = "work_items_read_view")]
+#[sea_orm(table_name = "swim_lanes")]
+#[read_view(table_name = "swim_lanes_read_view")]
 pub struct Model {
     #[sea_orm(primary_key)]
     #[serde(skip_deserializing)]
@@ -37,33 +37,11 @@ pub struct Model {
     #[ck_update_model(exclude)]
     pub project_id: i64,
 
-    pub title: String,
+    pub identifier: String,
 
-    pub description: String,
+    pub name: String,
 
-    #[ck_create_model(exclude)]
-    #[ck_update_model(exclude)]
-    pub claimed_by: Option<String>,
-
-    #[ck_create_model(exclude)]
-    #[ck_update_model(exclude)]
-    pub claimed_at: Option<String>,
-
-    #[ck_create_model(exclude)]
-    #[ck_update_model(exclude)]
-    pub claim_expires_at: Option<String>,
-
-    #[ck_create_model(exclude)]
-    #[ck_update_model(exclude)]
-    pub finished_at: Option<String>,
-
-    pub agent_model_override: Option<String>,
-
-    pub agent_reasoning_effort_override: Option<String>,
-
-    #[ck_create_model(exclude)]
-    #[ck_update_model(exclude)]
-    pub version: i64,
+    pub position: i64,
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]

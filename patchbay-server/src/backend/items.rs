@@ -13,13 +13,15 @@ use crate::{
             comment::{self, CommentActiveModel, CommentModel},
             work_item::{self, WorkItem, WorkItemActiveModel, WorkItemModel},
             work_item_event::{self, WorkItemEventActiveModel},
+            work_item_label::{self, WorkItemLabel, WorkItemLabelActiveModel, WorkItemLabelModel},
         },
         projects,
         storage::{Store, utc_now},
     },
     shared::view_models::{
-        AgentReasoningEffort, AuthorType, CommentView, RecoveredClaimView, WorkItemEventView,
-        WorkItemView, WorkState,
+        AgentReasoningEffort, AuthorType, CLAIMED_STATE_LABEL, CommentView, DEFAULT_STATE_LABEL,
+        DeleteWorkItemLabelResponse, FINISHED_STATE_LABEL, ProjectLabelView, RecoveredClaimView,
+        STATE_LABEL_KEY, WorkItemEventView, WorkItemLabelView, WorkItemView,
     },
 };
 
@@ -27,7 +29,7 @@ use crate::{
 pub struct CreateWorkItem {
     pub title: String,
     pub description: String,
-    pub state: WorkState,
+    pub state: String,
     pub agent_model_override: Option<String>,
     pub agent_reasoning_effort_override: Option<AgentReasoningEffort>,
 }
@@ -51,17 +53,27 @@ pub(crate) struct EventAttribution<'a> {
 pub async fn list_items(
     store: &Store,
     project_name: &str,
-    state: Option<WorkState>,
+    state: Option<String>,
 ) -> Result<Vec<WorkItemView>> {
     let project_id = projects::project_id(store, project_name).await?;
+    let item_ids = match state {
+        Some(state) => {
+            let state = normalize_state_value(state)?;
+            let ids = item_ids_with_state(store.db().as_ref(), project_id, &state).await?;
+            if ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            Some(ids)
+        }
+        None => None,
+    };
     let mut query = WorkItem::find()
         .filter(work_item::Column::ProjectId.eq(project_id))
-        .order_by_asc(work_item::Column::State)
         .order_by_desc(work_item::Column::UpdatedAt)
         .order_by_desc(work_item::Column::Id);
 
-    if let Some(state) = state {
-        query = query.filter(work_item::Column::State.eq(state.as_storage()));
+    if let Some(item_ids) = item_ids {
+        query = query.filter(work_item::Column::Id.is_in(item_ids));
     }
 
     let items = query
@@ -74,12 +86,17 @@ pub async fn list_items(
 pub async fn has_unclaimed_item_in_state(
     store: &Store,
     project_name: &str,
-    state: WorkState,
+    state: &str,
 ) -> Result<bool> {
     let project_id = projects::project_id(store, project_name).await?;
+    let state = normalize_state_value(state)?;
+    let item_ids = item_ids_with_state(store.db().as_ref(), project_id, &state).await?;
+    if item_ids.is_empty() {
+        return Ok(false);
+    }
     let count = WorkItem::find()
         .filter(work_item::Column::ProjectId.eq(project_id))
-        .filter(work_item::Column::State.eq(state.as_storage()))
+        .filter(work_item::Column::Id.is_in(item_ids))
         .filter(work_item::Column::ClaimedBy.is_null())
         .count(store.db().as_ref())
         .await
@@ -99,7 +116,7 @@ pub async fn create_item(
     create: CreateWorkItem,
 ) -> Result<WorkItemView> {
     validate_item_text(&create.title, &create.description)?;
-    validate_create_state(create.state)?;
+    let state_label = normalize_state_value(create.state)?;
     let agent_model_override = projects::normalize_optional(create.agent_model_override);
 
     let project_id = projects::project_id(store, project_name).await?;
@@ -114,7 +131,6 @@ pub async fn create_item(
         project_id: Set(project_id),
         title: Set(create.title),
         description: Set(create.description),
-        state: Set(create.state.as_storage().to_owned()),
         agent_model_override: Set(agent_model_override),
         agent_reasoning_effort_override: Set(create
             .agent_reasoning_effort_override
@@ -128,6 +144,14 @@ pub async fn create_item(
         .insert(&txn)
         .await
         .context("failed to create work item")?;
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item.id,
+        STATE_LABEL_KEY,
+        Some(state_label.as_str()),
+    )
+    .await?;
     record_event_in_tx(
         &txn,
         project_id,
@@ -205,9 +229,10 @@ pub async fn move_item(
     store: &Store,
     project_name: &str,
     item_id: i64,
-    state: WorkState,
+    state: String,
     expect_version: Option<i64>,
 ) -> Result<WorkItemView> {
+    let state = normalize_state_value(state)?;
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
         .db()
@@ -219,7 +244,6 @@ pub async fn move_item(
 
     let version = existing.version;
     let mut active: WorkItemActiveModel = existing.into();
-    active.state = Set(state.as_storage().to_owned());
     active.version = Set(version + 1);
     active.updated_at = Set(utc_now());
 
@@ -227,7 +251,15 @@ pub async fn move_item(
         .update(&txn)
         .await
         .context("failed to move work item")?;
-    let event_body = format!("Moved item to {}", state.label());
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(state.as_str()),
+    )
+    .await?;
+    let event_body = format!("Moved item to {state}");
     record_event_in_tx(&txn, project_id, Some(item_id), "item_moved", &event_body).await?;
     txn.commit().await.context("failed to commit item move")?;
 
@@ -238,9 +270,10 @@ pub async fn claim_item(
     store: &Store,
     project_name: &str,
     agent_id: &str,
-    state_filter: WorkState,
+    state_filter: &str,
 ) -> Result<Option<WorkItemView>> {
     validate_agent_id(agent_id)?;
+    let state_filter = normalize_state_value(state_filter)?;
 
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -255,20 +288,22 @@ pub async fn claim_item(
             sea_orm::DbBackend::Sqlite,
             r#"
             UPDATE work_items
-            SET state = 'in_progress',
-                claimed_by = ?2,
+            SET claimed_by = ?2,
                 claimed_at = ?3,
                 claim_expires_at = NULL,
                 finished_at = NULL,
                 version = version + 1,
                 updated_at = ?3
             WHERE id = (
-                SELECT id
+                SELECT work_items.id
                 FROM work_items
-                WHERE project_id = ?1
-                  AND state = ?4
+                INNER JOIN work_item_labels
+                    ON work_item_labels.work_item_id = work_items.id
+                   AND work_item_labels.label_key = 'state'
+                   AND work_item_labels.label_value = ?4
+                WHERE work_items.project_id = ?1
                   AND claimed_by IS NULL
-                ORDER BY updated_at ASC, id ASC
+                ORDER BY work_items.updated_at ASC, work_items.id ASC
                 LIMIT 1
             )
             RETURNING id
@@ -277,7 +312,7 @@ pub async fn claim_item(
                 project_id.into(),
                 agent_id.to_owned().into(),
                 now.clone().into(),
-                state_filter.as_storage().to_owned().into(),
+                state_filter.into(),
             ],
         ))
         .await
@@ -291,6 +326,14 @@ pub async fn claim_item(
         return Ok(None);
     };
 
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(CLAIMED_STATE_LABEL),
+    )
+    .await?;
     let comment_body = format!("Claimed by {agent_id}");
     insert_comment_in_tx(
         &txn,
@@ -335,8 +378,7 @@ pub async fn claim_specific_item(
             sea_orm::DbBackend::Sqlite,
             r#"
             UPDATE work_items
-            SET state = 'in_progress',
-                claimed_by = ?3,
+            SET claimed_by = ?3,
                 claimed_at = ?4,
                 claim_expires_at = NULL,
                 finished_at = NULL,
@@ -344,8 +386,14 @@ pub async fn claim_specific_item(
                 updated_at = ?4
             WHERE id = ?2
               AND project_id = ?1
-              AND state = 'open'
               AND claimed_by IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM work_item_labels
+                  WHERE work_item_labels.work_item_id = work_items.id
+                    AND work_item_labels.label_key = 'state'
+                    AND work_item_labels.label_value = 'open'
+              )
             RETURNING id
             "#,
             vec![
@@ -368,6 +416,14 @@ pub async fn claim_specific_item(
         return Ok(None);
     };
 
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(CLAIMED_STATE_LABEL),
+    )
+    .await?;
     let comment_body = format!("Claimed by {agent_id}");
     insert_comment_in_tx(
         &txn,
@@ -414,7 +470,6 @@ pub async fn release_item(
     let now = utc_now();
     let version = existing.version;
     let mut active: WorkItemActiveModel = existing.into();
-    active.state = Set(WorkState::Open.as_storage().to_owned());
     active.claimed_by = Set(None);
     active.claimed_at = Set(None);
     active.claim_expires_at = Set(None);
@@ -424,6 +479,14 @@ pub async fn release_item(
         .update(&txn)
         .await
         .context("failed to release work item")?;
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(DEFAULT_STATE_LABEL),
+    )
+    .await?;
 
     if let Some(comment) = comment.filter(|body| !body.trim().is_empty()) {
         insert_comment_in_tx(
@@ -530,7 +593,6 @@ pub async fn finish_item(
 
     let version = existing.version;
     let mut active: WorkItemActiveModel = existing.into();
-    active.state = Set(WorkState::Done.as_storage().to_owned());
     active.claimed_by = Set(None);
     active.claimed_at = Set(None);
     active.claim_expires_at = Set(None);
@@ -541,6 +603,14 @@ pub async fn finish_item(
         .update(&txn)
         .await
         .context("failed to finish work item")?;
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(FINISHED_STATE_LABEL),
+    )
+    .await?;
     record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report).await?;
     txn.commit().await.context("failed to commit item finish")?;
 
@@ -570,6 +640,194 @@ pub async fn delete_item(store: &Store, project_name: &str, item_id: i64) -> Res
         .context("failed to delete work item")?;
     txn.commit().await.context("failed to commit item delete")?;
     Ok(())
+}
+
+pub async fn list_item_labels(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+) -> Result<Vec<WorkItemLabelView>> {
+    let project_id = projects::project_id(store, project_name).await?;
+    get_item_model(store, project_id, item_id).await?;
+    labels_for_item(store.db().as_ref(), project_id, item_id).await
+}
+
+pub async fn list_project_labels(
+    store: &Store,
+    project_name: &str,
+) -> Result<Vec<ProjectLabelView>> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let labels = WorkItemLabel::find()
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .order_by_asc(work_item_label::Column::Key)
+        .order_by_asc(work_item_label::Column::Value)
+        .all(store.db().as_ref())
+        .await
+        .context("failed to list project labels")?;
+
+    let mut grouped = std::collections::BTreeMap::<(String, Option<String>), (i64, String)>::new();
+    for label in labels {
+        let key = (label.key, label.value);
+        grouped
+            .entry(key)
+            .and_modify(|(count, last_used_at)| {
+                *count += 1;
+                if label.updated_at > *last_used_at {
+                    *last_used_at = label.updated_at.clone();
+                }
+            })
+            .or_insert((1, label.updated_at));
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(
+            |((key, value), (usage_count, last_used_at))| ProjectLabelView {
+                key,
+                value,
+                usage_count,
+                last_used_at,
+            },
+        )
+        .collect())
+}
+
+pub async fn add_label(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    key: String,
+    value: Option<String>,
+    expect_version: Option<i64>,
+) -> Result<WorkItemView> {
+    let key = normalize_label_key(key)?;
+    let value = normalize_label_value(value);
+    validate_label_pair(&key, value.as_deref())?;
+    let project_id = projects::project_id(store, project_name).await?;
+    let txn = store
+        .db()
+        .begin()
+        .await
+        .context("failed to start label add")?;
+    let item = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    check_expected_version(expect_version, item.version)?;
+    if WorkItemLabel::find()
+        .filter(work_item_label::Column::WorkItemId.eq(item_id))
+        .filter(work_item_label::Column::Key.eq(&key))
+        .one(&txn)
+        .await
+        .context("failed to check existing label")?
+        .is_some()
+    {
+        bail!("item already has label '{key}'");
+    }
+
+    insert_label_in_tx(&txn, project_id, item_id, &key, value.as_deref()).await?;
+    let updated = touch_item_in_tx(&txn, item).await?;
+    let body = format!("Added label {}", format_label(&key, value.as_deref()));
+    record_event_in_tx(&txn, project_id, Some(item_id), "label_added", &body).await?;
+    txn.commit().await.context("failed to commit label add")?;
+    model_to_view(store, updated).await
+}
+
+pub async fn update_label(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    label_id: i64,
+    key: Option<String>,
+    value: Option<Option<String>>,
+    expect_version: Option<i64>,
+) -> Result<WorkItemView> {
+    if key.is_none() && value.is_none() {
+        bail!("label update requires at least one field");
+    }
+
+    let project_id = projects::project_id(store, project_name).await?;
+    let txn = store
+        .db()
+        .begin()
+        .await
+        .context("failed to start label update")?;
+    let item = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    check_expected_version(expect_version, item.version)?;
+    let existing = get_label_model_in_tx(&txn, project_id, item_id, label_id).await?;
+    let key = match key {
+        Some(key) => normalize_label_key(key)?,
+        None => existing.key.clone(),
+    };
+    let value = match value {
+        Some(value) => normalize_label_value(value),
+        None => existing.value.clone(),
+    };
+    validate_label_pair(&key, value.as_deref())?;
+    if WorkItemLabel::find()
+        .filter(work_item_label::Column::WorkItemId.eq(item_id))
+        .filter(work_item_label::Column::Key.eq(&key))
+        .filter(work_item_label::Column::Id.ne(label_id))
+        .one(&txn)
+        .await
+        .context("failed to check conflicting label")?
+        .is_some()
+    {
+        bail!("item already has label '{key}'");
+    }
+
+    let mut active: WorkItemLabelActiveModel = existing.into();
+    active.key = Set(key.clone());
+    active.value = Set(value.clone());
+    active.updated_at = Set(utc_now());
+    active
+        .update(&txn)
+        .await
+        .context("failed to update label")?;
+    let updated = touch_item_in_tx(&txn, item).await?;
+    let body = format!("Updated label {}", format_label(&key, value.as_deref()));
+    record_event_in_tx(&txn, project_id, Some(item_id), "label_updated", &body).await?;
+    txn.commit()
+        .await
+        .context("failed to commit label update")?;
+    model_to_view(store, updated).await
+}
+
+pub async fn delete_label(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    label_id: i64,
+    expect_version: Option<i64>,
+) -> Result<DeleteWorkItemLabelResponse> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let txn = store
+        .db()
+        .begin()
+        .await
+        .context("failed to start label delete")?;
+    let item = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    check_expected_version(expect_version, item.version)?;
+    let label = get_label_model_in_tx(&txn, project_id, item_id, label_id).await?;
+    if label.key == STATE_LABEL_KEY {
+        bail!("state label cannot be deleted; move the item to another state instead");
+    }
+    let body = format!(
+        "Deleted label {}",
+        format_label(&label.key, label.value.as_deref())
+    );
+    WorkItemLabel::delete_by_id(label_id)
+        .exec(&txn)
+        .await
+        .context("failed to delete label")?;
+    let updated = touch_item_in_tx(&txn, item).await?;
+    record_event_in_tx(&txn, project_id, Some(item_id), "label_deleted", &body).await?;
+    txn.commit()
+        .await
+        .context("failed to commit label delete")?;
+    let work_item = model_to_view(store, updated).await?;
+    Ok(DeleteWorkItemLabelResponse {
+        deleted: true,
+        label_id,
+        work_item,
+    })
 }
 
 pub async fn list_events(
@@ -628,7 +886,6 @@ pub async fn recover_stale_claims(
     let project_id = projects::project_id(store, project_name).await?;
     let items = WorkItem::find()
         .filter(work_item::Column::ProjectId.eq(project_id))
-        .filter(work_item::Column::State.eq(WorkState::InProgress.as_storage()))
         .filter(work_item::Column::ClaimedBy.is_not_null())
         .all(store.db().as_ref())
         .await
@@ -700,6 +957,127 @@ where
         .await
         .with_context(|| format!("failed to load item {item_id}"))?
         .ok_or_else(|| anyhow::anyhow!("item {item_id} does not exist in this project"))
+}
+
+async fn get_label_model_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    label_id: i64,
+) -> Result<WorkItemLabelModel>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    WorkItemLabel::find_by_id(label_id)
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .filter(work_item_label::Column::WorkItemId.eq(item_id))
+        .one(conn)
+        .await
+        .with_context(|| format!("failed to load label {label_id}"))?
+        .ok_or_else(|| anyhow::anyhow!("label {label_id} does not exist on item {item_id}"))
+}
+
+async fn item_ids_with_state<C>(conn: &C, project_id: i64, state: &str) -> Result<Vec<i64>>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let labels = WorkItemLabel::find()
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .filter(work_item_label::Column::Key.eq(STATE_LABEL_KEY))
+        .filter(work_item_label::Column::Value.eq(state))
+        .all(conn)
+        .await
+        .with_context(|| format!("failed to list items with state label '{state}'"))?;
+    Ok(labels.into_iter().map(|label| label.work_item_id).collect())
+}
+
+async fn insert_label_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    key: &str,
+    value: Option<&str>,
+) -> Result<WorkItemLabelModel>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let now = utc_now();
+    let active = WorkItemLabelActiveModel {
+        project_id: Set(project_id),
+        work_item_id: Set(item_id),
+        key: Set(key.to_owned()),
+        value: Set(value.map(ToOwned::to_owned)),
+        created_at: Set(now.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    active
+        .insert(conn)
+        .await
+        .with_context(|| format!("failed to add label '{}'", format_label(key, value)))
+}
+
+async fn upsert_label_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    key: &str,
+    value: Option<&str>,
+) -> Result<WorkItemLabelModel>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    if let Some(existing) = WorkItemLabel::find()
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .filter(work_item_label::Column::WorkItemId.eq(item_id))
+        .filter(work_item_label::Column::Key.eq(key))
+        .one(conn)
+        .await
+        .with_context(|| format!("failed to load label '{key}'"))?
+    {
+        let mut active: WorkItemLabelActiveModel = existing.into();
+        active.value = Set(value.map(ToOwned::to_owned));
+        active.updated_at = Set(utc_now());
+        active
+            .update(conn)
+            .await
+            .with_context(|| format!("failed to update label '{key}'"))
+    } else {
+        insert_label_in_tx(conn, project_id, item_id, key, value).await
+    }
+}
+
+async fn labels_for_item<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+) -> Result<Vec<WorkItemLabelView>>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let labels = WorkItemLabel::find()
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .filter(work_item_label::Column::WorkItemId.eq(item_id))
+        .order_by_asc(work_item_label::Column::Key)
+        .order_by_asc(work_item_label::Column::Value)
+        .all(conn)
+        .await
+        .context("failed to list item labels")?;
+    Ok(labels.into_iter().map(label_to_view).collect())
+}
+
+async fn touch_item_in_tx<C>(conn: &C, item: WorkItemModel) -> Result<WorkItemModel>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let version = item.version;
+    let mut active: WorkItemActiveModel = item.into();
+    active.version = Set(version + 1);
+    active.updated_at = Set(utc_now());
+    active
+        .update(conn)
+        .await
+        .context("failed to update item version")
 }
 
 pub(crate) async fn record_event_in_tx<C>(
@@ -785,7 +1163,11 @@ async fn models_to_views(store: &Store, items: Vec<WorkItemModel>) -> Result<Vec
 }
 
 async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemView> {
-    let state = WorkState::from_str(&item.state)?;
+    let labels = labels_for_item(store.db().as_ref(), item.project_id, item.id).await?;
+    let state = labels
+        .iter()
+        .find(|label| label.key == STATE_LABEL_KEY)
+        .and_then(|label| label.value.clone());
     let comment_count = comment::Comment::find()
         .filter(comment::Column::WorkItemId.eq(item.id))
         .count(store.db().as_ref())
@@ -798,6 +1180,7 @@ async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemVie
         title: item.title,
         description: item.description,
         state,
+        labels,
         version: item.version,
         claimed_by: item.claimed_by,
         claimed_at: item.claimed_at,
@@ -815,6 +1198,18 @@ async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemVie
     })
 }
 
+fn label_to_view(label: WorkItemLabelModel) -> WorkItemLabelView {
+    WorkItemLabelView {
+        id: label.id,
+        project_id: label.project_id,
+        work_item_id: label.work_item_id,
+        key: label.key,
+        value: label.value,
+        created_at: label.created_at,
+        updated_at: label.updated_at,
+    }
+}
+
 fn validate_item_text(title: &str, description: &str) -> Result<()> {
     if title.trim().is_empty() {
         bail!("item title cannot be empty");
@@ -825,11 +1220,46 @@ fn validate_item_text(title: &str, description: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_create_state(state: WorkState) -> Result<()> {
-    if matches!(state, WorkState::Idea | WorkState::Open) {
-        Ok(())
-    } else {
-        bail!("new items must start in idea or open");
+fn normalize_state_value(value: impl Into<String>) -> Result<String> {
+    let value = value.into().trim().to_owned();
+    if value.is_empty() {
+        bail!("state label value cannot be empty");
+    }
+    if value.contains('=') {
+        bail!("state label value cannot contain '='");
+    }
+    Ok(value)
+}
+
+fn normalize_label_key(value: impl Into<String>) -> Result<String> {
+    let value = value.into().trim().to_owned();
+    if value.is_empty() {
+        bail!("label key cannot be empty");
+    }
+    if value.contains('=') {
+        bail!("label key cannot contain '='");
+    }
+    Ok(value)
+}
+
+fn normalize_label_value(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+fn validate_label_pair(key: &str, value: Option<&str>) -> Result<()> {
+    if key == STATE_LABEL_KEY && value.is_none() {
+        bail!("state label requires a value");
+    }
+    Ok(())
+}
+
+fn format_label(key: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{key}={value}"),
+        None => key.to_owned(),
     }
 }
 
@@ -927,7 +1357,7 @@ mod tests {
             CreateWorkItem {
                 title: "Demo item".to_owned(),
                 description: "Build the demo item".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -940,7 +1370,7 @@ mod tests {
             CreateWorkItem {
                 title: "Other item".to_owned(),
                 description: "Build the other item".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -969,7 +1399,7 @@ mod tests {
             CreateWorkItem {
                 title: "Move me".to_owned(),
                 description: "Move through states".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -981,13 +1411,13 @@ mod tests {
             &store,
             "demo",
             item.id,
-            WorkState::InProgress,
+            "in_progress".to_owned(),
             Some(item.version),
         )
         .await
         .unwrap();
 
-        assert_eq!(moved.state, WorkState::InProgress);
+        assert_eq!(moved.state.as_deref(), Some("in_progress"));
         assert_eq!(moved.version, item.version + 1);
     }
 
@@ -1000,7 +1430,7 @@ mod tests {
             CreateWorkItem {
                 title: "Update me".to_owned(),
                 description: "Expect conflict".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1035,7 +1465,7 @@ mod tests {
             CreateWorkItem {
                 title: "Delete me".to_owned(),
                 description: "Hide after deletion".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1058,7 +1488,7 @@ mod tests {
             CreateWorkItem {
                 title: "Claim me".to_owned(),
                 description: "Available work".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1066,7 +1496,7 @@ mod tests {
         .await
         .unwrap();
 
-        let claimed = claim_item(&store, "demo", "agent-a", WorkState::Open)
+        let claimed = claim_item(&store, "demo", "agent-a", "open")
             .await
             .unwrap()
             .unwrap();
@@ -1076,7 +1506,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(claimed.id, item.id);
-        assert_eq!(claimed.state, WorkState::InProgress);
+        assert_eq!(claimed.state.as_deref(), Some("in_progress"));
         assert_eq!(claimed.version, item.version + 1);
         assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
         assert!(claimed.claimed_at.is_some());
@@ -1101,7 +1531,7 @@ mod tests {
             CreateWorkItem {
                 title: "Race item".to_owned(),
                 description: "Only one agent can own this".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1110,11 +1540,11 @@ mod tests {
         .unwrap();
 
         let (first, second) = tokio::join!(
-            claim_item(&store, "demo", "agent-a", WorkState::Open),
-            claim_item(&store, "demo", "agent-b", WorkState::Open)
+            claim_item(&store, "demo", "agent-a", "open"),
+            claim_item(&store, "demo", "agent-b", "open")
         );
         let claims = [first.unwrap(), second.unwrap()];
-        let in_progress = list_items(&store, "demo", Some(WorkState::InProgress))
+        let in_progress = list_items(&store, "demo", Some("in_progress".to_owned()))
             .await
             .unwrap();
 
@@ -1135,7 +1565,7 @@ mod tests {
             CreateWorkItem {
                 title: "Other item".to_owned(),
                 description: "Should not be claimed from demo".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1143,9 +1573,7 @@ mod tests {
         .await
         .unwrap();
 
-        let claimed = claim_item(&store, "demo", "agent-a", WorkState::Open)
-            .await
-            .unwrap();
+        let claimed = claim_item(&store, "demo", "agent-a", "open").await.unwrap();
 
         assert!(claimed.is_none());
     }
@@ -1159,7 +1587,7 @@ mod tests {
             CreateWorkItem {
                 title: "Draft item".to_owned(),
                 description: "Hold this back from automation".to_owned(),
-                state: WorkState::Idea,
+                state: "idea".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1167,20 +1595,24 @@ mod tests {
         .await
         .unwrap();
 
-        let skipped = claim_item(&store, "demo", "agent-a", WorkState::Open)
-            .await
-            .unwrap();
+        let skipped = claim_item(&store, "demo", "agent-a", "open").await.unwrap();
         assert!(skipped.is_none());
 
-        let opened = move_item(&store, "demo", item.id, WorkState::Open, Some(item.version))
-            .await
-            .unwrap();
-        let claimed = claim_item(&store, "demo", "agent-a", WorkState::Open)
+        let opened = move_item(
+            &store,
+            "demo",
+            item.id,
+            "open".to_owned(),
+            Some(item.version),
+        )
+        .await
+        .unwrap();
+        let claimed = claim_item(&store, "demo", "agent-a", "open")
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(opened.state, WorkState::Open);
+        assert_eq!(opened.state.as_deref(), Some("open"));
         assert_eq!(claimed.id, item.id);
         assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
     }
@@ -1194,14 +1626,14 @@ mod tests {
             CreateWorkItem {
                 title: "Owned item".to_owned(),
                 description: "Only the claimant can release it".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
         )
         .await
         .unwrap();
-        claim_item(&store, "demo", "agent-a", WorkState::Open)
+        claim_item(&store, "demo", "agent-a", "open")
             .await
             .unwrap()
             .unwrap();
@@ -1222,14 +1654,14 @@ mod tests {
             CreateWorkItem {
                 title: "Finish item".to_owned(),
                 description: "Complete with report".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
         )
         .await
         .unwrap();
-        claim_item(&store, "demo", "agent-a", WorkState::Open)
+        claim_item(&store, "demo", "agent-a", "open")
             .await
             .unwrap()
             .unwrap();
@@ -1242,7 +1674,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(finished.state, WorkState::Done);
+        assert_eq!(finished.state.as_deref(), Some("done"));
         assert_eq!(finished.claimed_by, None);
         assert!(finished.finished_at.is_some());
         assert!(
@@ -1266,14 +1698,14 @@ mod tests {
             CreateWorkItem {
                 title: "Stale item".to_owned(),
                 description: "Claim should be recovered".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
         )
         .await
         .unwrap();
-        claim_item(&store, "demo", "agent-a", WorkState::Open)
+        claim_item(&store, "demo", "agent-a", "open")
             .await
             .unwrap()
             .unwrap();
@@ -1294,7 +1726,7 @@ mod tests {
 
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].agent_id, "agent-a");
-        assert_eq!(item.state, WorkState::Open);
+        assert_eq!(item.state.as_deref(), Some("open"));
         assert_eq!(item.claimed_by, None);
     }
 }

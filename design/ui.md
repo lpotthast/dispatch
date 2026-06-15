@@ -22,9 +22,9 @@ The UI should keep project context visible and avoid hiding workflow state behin
 
 The main workflow surface should make these states easy to inspect:
 
-- open work;
+- backlog and all work;
+- project-defined swim-lanes based on `state=<lane-identifier>` labels;
 - in-progress work and claimant;
-- done work;
 - recent comments and progress;
 - automation status;
 - stale or blocked work;
@@ -38,6 +38,7 @@ CrudKit is appropriate for ordinary resource administration:
 
 - projects;
 - work items;
+- swim-lanes;
 - comments;
 - agent tools;
 - agent runs;

@@ -957,11 +957,16 @@ button.link-danger {
   color: $muted;
 }
 
-.board {
+.board-stack {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
   margin-bottom: 22px;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
 }
 
 .lane {
@@ -1040,6 +1045,22 @@ button.link-danger {
   transform: translateY(0);
 }
 
+.all-items {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid $border;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: $shadow-sm;
+}
+
+.all-item-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
 .card,
 .comments article {
   @include surface;
@@ -1076,12 +1097,70 @@ button.link-danger {
     color: $ink-soft;
   }
 
+  .card-labels {
+    display: flex;
+    min-height: 24px;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
   footer {
     display: flex;
     gap: 8px 12px;
     flex-wrap: wrap;
     color: $muted;
     font-size: 12px;
+  }
+}
+
+.label-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 22px;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid $border;
+  border-radius: 999px;
+  background: $subtle;
+  color: $ink-soft;
+  font-size: 12px;
+  font-weight: 720;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-labels {
+  display: grid;
+  gap: 12px;
+}
+
+.label-list {
+  display: grid;
+  gap: 8px;
+}
+
+.label-row,
+.label-add-form {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.7fr) minmax(260px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.label-row {
+  padding: 8px;
+  border: 1px solid $border;
+  border-radius: 8px;
+  background: $surface-raised;
+
+  form {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
+    gap: 8px;
+    align-items: center;
   }
 }
 
@@ -1322,6 +1401,8 @@ button.link-danger {
 
   .crudkit-agent-tools,
   .crudkit-automation-triggers,
+  .crudkit-work-items,
+  .crudkit-swim-lanes,
   .compact-list {
     grid-column: 1 / -1;
   }
@@ -1340,7 +1421,9 @@ button.link-danger {
 
 .crudkit-projects,
 .crudkit-agent-tools,
-.crudkit-automation-triggers {
+.crudkit-automation-triggers,
+.crudkit-work-items,
+.crudkit-swim-lanes {
   overflow: auto;
   padding-top: 14px;
   border-top: 1px solid $border;
@@ -1918,11 +2001,19 @@ dd {
   .topbar-actions,
   .app-tools,
   .board-toolbar,
+  .label-row,
+  .label-add-form,
   .codex-status-header,
   .codex-auth-guide-main,
   .codex-status-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .label-row,
+  .label-add-form,
+  .label-row form {
+    grid-template-columns: 1fr;
   }
 
   .codex-usage-summary {

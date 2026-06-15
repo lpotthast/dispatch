@@ -397,60 +397,10 @@ impl FromStr for AgentReasoningEffort {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkState {
-    Idea,
-    Open,
-    InProgress,
-    Done,
-}
-
-impl WorkState {
-    pub fn as_storage(self) -> &'static str {
-        match self {
-            Self::Idea => "idea",
-            Self::Open => "open",
-            Self::InProgress => "in_progress",
-            Self::Done => "done",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Idea => "idea",
-            Self::Open => "open",
-            Self::InProgress => "in progress",
-            Self::Done => "done",
-        }
-    }
-
-    pub fn all() -> [Self; 4] {
-        [Self::Idea, Self::Open, Self::InProgress, Self::Done]
-    }
-}
-
-impl fmt::Display for WorkState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
-impl FromStr for WorkState {
-    type Err = ParseEnumError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_lowercase().replace('-', "_").as_str() {
-            "idea" => Ok(Self::Idea),
-            "open" => Ok(Self::Open),
-            "in progress" | "in_progress" => Ok(Self::InProgress),
-            "done" => Ok(Self::Done),
-            _ => Err(ParseEnumError(
-                "state must be one of: idea, open, in progress, done",
-            )),
-        }
-    }
-}
+pub const STATE_LABEL_KEY: &str = "state";
+pub const DEFAULT_STATE_LABEL: &str = "open";
+pub const CLAIMED_STATE_LABEL: &str = "in_progress";
+pub const FINISHED_STATE_LABEL: &str = "done";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkItemView {
@@ -458,7 +408,8 @@ pub struct WorkItemView {
     pub project_id: i64,
     pub title: String,
     pub description: String,
-    pub state: WorkState,
+    pub state: Option<String>,
+    pub labels: Vec<WorkItemLabelView>,
     pub version: i64,
     pub claimed_by: Option<String>,
     pub claimed_at: Option<String>,
@@ -469,6 +420,36 @@ pub struct WorkItemView {
     pub created_at: String,
     pub updated_at: String,
     pub comment_count: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkItemLabelView {
+    pub id: i64,
+    pub project_id: i64,
+    pub work_item_id: i64,
+    pub key: String,
+    pub value: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectLabelView {
+    pub key: String,
+    pub value: Option<String>,
+    pub usage_count: i64,
+    pub last_used_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SwimLaneView {
+    pub id: i64,
+    pub project_id: i64,
+    pub identifier: String,
+    pub name: String,
+    pub position: i64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -816,7 +797,7 @@ pub struct ApiError {
 pub struct CreateWorkItemRequest {
     pub title: String,
     pub description: String,
-    pub state: Option<WorkState>,
+    pub state: Option<String>,
     pub agent_model_override: Option<String>,
     pub agent_reasoning_effort_override: Option<AgentReasoningEffort>,
 }
@@ -825,7 +806,7 @@ pub struct CreateWorkItemRequest {
 pub struct UpdateWorkItemRequest {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub state: Option<WorkState>,
+    pub state: Option<String>,
     pub agent_model_override: Option<Option<String>>,
     pub agent_reasoning_effort_override: Option<Option<AgentReasoningEffort>>,
     pub expect_version: Option<i64>,
@@ -834,7 +815,7 @@ pub struct UpdateWorkItemRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClaimWorkItemRequest {
     pub agent_id: String,
-    pub state: WorkState,
+    pub state: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -846,6 +827,26 @@ impl ClaimWorkItemResponse {
     pub fn claimed(&self) -> bool {
         self.item.is_some()
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CreateWorkItemLabelRequest {
+    pub key: String,
+    pub value: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct UpdateWorkItemLabelRequest {
+    pub key: Option<String>,
+    pub value: Option<Option<String>>,
+    pub expect_version: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DeleteWorkItemLabelResponse {
+    pub deleted: bool,
+    pub label_id: i64,
+    pub work_item: WorkItemView,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

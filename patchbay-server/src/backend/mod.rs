@@ -12,5 +12,6 @@ pub(crate) mod migrations;
 pub(crate) mod process_sessions;
 pub(crate) mod projects;
 pub(crate) mod storage;
+pub(crate) mod swim_lanes;
 pub(crate) mod ui;
 pub(crate) mod workspace;

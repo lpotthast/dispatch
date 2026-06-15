@@ -28,7 +28,6 @@ Work items are the primary coordination unit.
 Core fields include:
 
 - title and description;
-- state: `idea`, `open`, `in_progress`, or `done`;
 - monotonically increasing version;
 - current claimant and claim timestamps;
 - claim expiration timestamp;
@@ -36,7 +35,9 @@ Core fields include:
 - optional agent model and reasoning effort overrides;
 - comment count and timestamps.
 
-`idea` items are not eligible for automatic pickup. `open` items are the executable queue for automation.
+Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook: swim-lanes show items whose `state=<swim-lane-identifier>` label matches the lane.
+
+Swim-lanes are project-scoped records with an identifier, display name, and position. New projects start with `idea`, `open`, `in_progress`, and `done` lanes, but users can add, rename, reorder, or remove lanes for their project. Automation defaults to the `open` state label unless configured otherwise.
 
 The version field supports optimistic safety for updates and workflow transitions. Claim ownership is enforced server-side.
 
@@ -50,7 +51,7 @@ Comment authors include user, agent, and system author types. The server records
 
 Patchbay records workflow and automation events for live UI updates and auditability. Event streams are project-scoped and can also be filtered to a work item.
 
-Events are used by item watch commands, live board updates, and automation visibility. They are not a substitute for the current state stored on projects, work items, comments, and runs.
+Events are used by item watch commands, live board updates, and automation visibility. They are not a substitute for the current state stored on projects, work item labels, comments, and runs.
 
 Memory history is reconstructable from `MemoryChanged` event snapshots until a user compacts memory history. Compaction removes old memory events but does not change the current `projects.memory` value. Agent runs may keep a memory event id reference; readers must tolerate the referenced event being unavailable after compaction.
 

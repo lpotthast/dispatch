@@ -1,6 +1,6 @@
 # Patchbay Agent Instructions
 
-`patchbay` (a CLI, available on PATH) is the source of truth for work state and project memory.
+`patchbay` (a CLI, available on PATH) is the source of truth for work state, labels, and project memory.
 
 ## Prepared Context
 
@@ -20,15 +20,20 @@ When `PATCHBAY_CLAIMED_ITEM_ID` is set, commands taking an `[item-id]` default t
 Work item and comment commands:
 
 ```text
-patchbay item list [--state idea|open|in_progress|done] [--json]
+patchbay item list [--state <state-label>] [--json]
 patchbay item show [item-id] [--json]
-patchbay item create --title "..." --description "..." [--state idea|open] [--agent-model MODEL] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--json]
-patchbay item update [item-id] [--title "..."] [--description "..."] [--state idea|open|in_progress|done] [--agent-model MODEL] [--clear-agent-model] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--clear-agent-reasoning-effort] [--expect-version N] [--json]
+patchbay item create --title "..." --description "..." [--state <state-label>] [--agent-model MODEL] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--json]
+patchbay item update [item-id] [--title "..."] [--description "..."] [--state <state-label>] [--agent-model MODEL] [--clear-agent-model] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--clear-agent-reasoning-effort] [--expect-version N] [--json]
 patchbay item claim [--state open] [--json]
 patchbay item progress [item-id] --body "..." [--json]
 patchbay item finish [item-id] --report "..." [--json]
 patchbay item release [item-id] [--comment "..."] [--json]
 patchbay item watch [item-id] [--since-version N] [--json]
+patchbay label list [item-id] [--json]
+patchbay label add [item-id] --key "..." [--value "..."] [--expect-version N] [--json]
+patchbay label update [item-id] <label-id> [--key "..."] [--value "..."] [--clear-value] [--expect-version N] [--json]
+patchbay label delete [item-id] <label-id> [--expect-version N] [--json]
+patchbay label suggestions [--json]
 patchbay comment list [item-id] [--json]
 patchbay comment add [item-id] --body "..." [--author "..."] [--author-type user|agent|system] [--json]
 ```
@@ -65,6 +70,8 @@ patchbay item release --comment "Why work is being stopped or handed back."
 
 - Treat the claimed Patchbay item as the current work contract.
 - Re-read the item and comments before finishing because humans may edit work while you run.
+- You may add, update, and delete work item labels yourself when doing so clarifies status, routing, priority, environment, or follow-up needs.
+- Work item swim-lanes are driven by the `state=<state-label>` label. Use `patchbay item update --state <state-label>` to move an item.
 - Keep progress comments concise and specific.
 - Do not finish unless the requested work is complete or the final report explains why no code change was needed.
 - If verification could not be run, say so in the finish report or release comment.

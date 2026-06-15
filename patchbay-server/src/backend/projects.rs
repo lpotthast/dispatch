@@ -20,6 +20,7 @@ use crate::{
         },
         items,
         storage::{Store, utc_now},
+        swim_lanes,
     },
     shared::view_models::{
         AgentReasoningEffort, AgentToolName, CodexAgentModel, ProjectMemoryCompactionView,
@@ -204,6 +205,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         .insert(&txn)
         .await
         .context("failed to create project")?;
+    swim_lanes::ensure_default_swim_lanes_in_conn(&txn, project.id).await?;
     if !project.memory.trim().is_empty() {
         record_memory_changed_event_in_tx(&txn, &project, "initial", &MemoryChangeSource::System)
             .await?;

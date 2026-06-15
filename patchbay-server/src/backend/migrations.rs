@@ -59,6 +59,30 @@ enum WorkItems {
 }
 
 #[derive(DeriveIden)]
+enum WorkItemLabels {
+    Table,
+    Id,
+    ProjectId,
+    WorkItemId,
+    LabelKey,
+    LabelValue,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum SwimLanes {
+    Table,
+    Id,
+    ProjectId,
+    Identifier,
+    Name,
+    Position,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
 enum Comments {
     Table,
     Id,
@@ -169,6 +193,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddAutomationRunTriggerOrigin),
             Box::new(AddProjectMemoryEvents),
             Box::new(RemoveWorkItemAutomationClaimable),
+            Box::new(AddLabelsAndSwimLanes),
         ]
     }
 }
@@ -1407,6 +1432,289 @@ impl MigrationTrait for RemoveWorkItemAutomationClaimable {
     }
 }
 
+struct AddLabelsAndSwimLanes;
+
+impl MigrationName for AddLabelsAndSwimLanes {
+    fn name(&self) -> &str {
+        "m20260615_000017_add_labels_and_swim_lanes"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddLabelsAndSwimLanes {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "work_items_read_view").await?;
+        create_work_item_labels(manager).await?;
+        create_swim_lanes(manager).await?;
+        migrate_work_item_state_to_labels(manager).await?;
+        drop_index_if_present(manager, "idx_work_items_project_state").await?;
+        drop_column_if_present(manager, "work_items", "state").await?;
+        create_read_view(manager, "work_items", "work_items_read_view").await?;
+        create_read_view(manager, "work_item_labels", "work_item_labels_read_view").await?;
+        create_read_view(manager, "swim_lanes", "swim_lanes_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "swim_lanes_read_view").await?;
+        drop_read_view(manager, "work_item_labels_read_view").await?;
+        drop_read_view(manager, "work_items_read_view").await?;
+        add_column_if_missing(
+            manager,
+            "work_items",
+            "state",
+            "TEXT NOT NULL DEFAULT 'open'",
+        )
+        .await?;
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                r#"
+                UPDATE "work_items"
+                SET "state" = COALESCE((
+                    SELECT "label_value"
+                    FROM "work_item_labels"
+                    WHERE "work_item_labels"."work_item_id" = "work_items"."id"
+                      AND "label_key" = 'state'
+                    LIMIT 1
+                ), 'open');
+                "#,
+            ))
+            .await?;
+        manager
+            .drop_table(Table::drop().table(SwimLanes::Table).if_exists().to_owned())
+            .await?;
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(WorkItemLabels::Table)
+                    .if_exists()
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_work_items_project_state")
+                    .table(WorkItems::Table)
+                    .col(WorkItems::ProjectId)
+                    .col(WorkItems::State)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        create_read_view(manager, "work_items", "work_items_read_view").await
+    }
+}
+
+async fn create_work_item_labels(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    manager
+        .create_table(
+            Table::create()
+                .table(WorkItemLabels::Table)
+                .if_not_exists()
+                .col(
+                    ColumnDef::new(WorkItemLabels::Id)
+                        .big_integer()
+                        .not_null()
+                        .auto_increment()
+                        .primary_key(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemLabels::ProjectId)
+                        .big_integer()
+                        .not_null(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemLabels::WorkItemId)
+                        .big_integer()
+                        .not_null(),
+                )
+                .col(ColumnDef::new(WorkItemLabels::LabelKey).string().not_null())
+                .col(ColumnDef::new(WorkItemLabels::LabelValue).string().null())
+                .col(
+                    ColumnDef::new(WorkItemLabels::CreatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .col(
+                    ColumnDef::new(WorkItemLabels::UpdatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .foreign_key(
+                    ForeignKey::create()
+                        .name("fk_work_item_labels_project_id")
+                        .from(WorkItemLabels::Table, WorkItemLabels::ProjectId)
+                        .to(Projects::Table, Projects::Id)
+                        .on_delete(ForeignKeyAction::Cascade),
+                )
+                .foreign_key(
+                    ForeignKey::create()
+                        .name("fk_work_item_labels_work_item_id")
+                        .from(WorkItemLabels::Table, WorkItemLabels::WorkItemId)
+                        .to(WorkItems::Table, WorkItems::Id)
+                        .on_delete(ForeignKeyAction::Cascade),
+                )
+                .to_owned(),
+        )
+        .await?;
+
+    manager
+        .create_index(
+            Index::create()
+                .name("idx_work_item_labels_project_key_value")
+                .table(WorkItemLabels::Table)
+                .col(WorkItemLabels::ProjectId)
+                .col(WorkItemLabels::LabelKey)
+                .col(WorkItemLabels::LabelValue)
+                .if_not_exists()
+                .to_owned(),
+        )
+        .await?;
+    manager
+        .create_index(
+            Index::create()
+                .name("idx_work_item_labels_unique_item_key")
+                .table(WorkItemLabels::Table)
+                .col(WorkItemLabels::WorkItemId)
+                .col(WorkItemLabels::LabelKey)
+                .unique()
+                .if_not_exists()
+                .to_owned(),
+        )
+        .await
+}
+
+async fn create_swim_lanes(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    manager
+        .create_table(
+            Table::create()
+                .table(SwimLanes::Table)
+                .if_not_exists()
+                .col(
+                    ColumnDef::new(SwimLanes::Id)
+                        .big_integer()
+                        .not_null()
+                        .auto_increment()
+                        .primary_key(),
+                )
+                .col(
+                    ColumnDef::new(SwimLanes::ProjectId)
+                        .big_integer()
+                        .not_null(),
+                )
+                .col(ColumnDef::new(SwimLanes::Identifier).string().not_null())
+                .col(ColumnDef::new(SwimLanes::Name).string().not_null())
+                .col(
+                    ColumnDef::new(SwimLanes::Position)
+                        .big_integer()
+                        .not_null()
+                        .default(0),
+                )
+                .col(
+                    ColumnDef::new(SwimLanes::CreatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .col(
+                    ColumnDef::new(SwimLanes::UpdatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .foreign_key(
+                    ForeignKey::create()
+                        .name("fk_swim_lanes_project_id")
+                        .from(SwimLanes::Table, SwimLanes::ProjectId)
+                        .to(Projects::Table, Projects::Id)
+                        .on_delete(ForeignKeyAction::Cascade),
+                )
+                .to_owned(),
+        )
+        .await?;
+
+    manager
+        .create_index(
+            Index::create()
+                .name("idx_swim_lanes_unique_project_identifier")
+                .table(SwimLanes::Table)
+                .col(SwimLanes::ProjectId)
+                .col(SwimLanes::Identifier)
+                .unique()
+                .if_not_exists()
+                .to_owned(),
+        )
+        .await
+}
+
+async fn migrate_work_item_state_to_labels(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let backend = manager.get_database_backend();
+    let conn = manager.get_connection();
+    conn.execute(Statement::from_string(
+        backend,
+        r#"
+        INSERT OR IGNORE INTO "work_item_labels"
+            ("project_id", "work_item_id", "label_key", "label_value", "created_at", "updated_at")
+        SELECT
+            "project_id",
+            "id",
+            'state',
+            COALESCE(NULLIF("state", ''), 'open'),
+            COALESCE("created_at", CURRENT_TIMESTAMP),
+            COALESCE("updated_at", CURRENT_TIMESTAMP)
+        FROM "work_items"
+        WHERE "state" IS NOT NULL;
+        "#,
+    ))
+    .await?;
+
+    conn.execute(Statement::from_string(
+        backend,
+        r#"
+        INSERT OR IGNORE INTO "swim_lanes"
+            ("project_id", "identifier", "name", "position", "created_at", "updated_at")
+        SELECT "id", 'idea', 'Idea', 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM "projects";
+        "#,
+    ))
+    .await?;
+    conn.execute(Statement::from_string(
+        backend,
+        r#"
+        INSERT OR IGNORE INTO "swim_lanes"
+            ("project_id", "identifier", "name", "position", "created_at", "updated_at")
+        SELECT "id", 'open', 'Open', 20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM "projects";
+        "#,
+    ))
+    .await?;
+    conn.execute(Statement::from_string(
+        backend,
+        r#"
+        INSERT OR IGNORE INTO "swim_lanes"
+            ("project_id", "identifier", "name", "position", "created_at", "updated_at")
+        SELECT "id", 'in_progress', 'In progress', 30, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM "projects";
+        "#,
+    ))
+    .await?;
+    conn.execute(Statement::from_string(
+        backend,
+        r#"
+        INSERT OR IGNORE INTO "swim_lanes"
+            ("project_id", "identifier", "name", "position", "created_at", "updated_at")
+        SELECT "id", 'done', 'Done', 40, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM "projects";
+        "#,
+    ))
+    .await?;
+    Ok(())
+}
+
 async fn create_read_views(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     create_read_view(manager, "projects", "projects_read_view").await?;
     create_read_view(manager, "work_items", "work_items_read_view").await?;
@@ -1596,6 +1904,32 @@ async fn drop_column_if_present(
         ))
         .await
         .map(|_| ())
+}
+
+async fn drop_index_if_present(manager: &SchemaManager<'_>, index_name: &str) -> Result<(), DbErr> {
+    if !index_exists(manager, index_name).await? {
+        return Ok(());
+    }
+
+    manager
+        .get_connection()
+        .execute(Statement::from_string(
+            manager.get_database_backend(),
+            format!(r#"DROP INDEX "{index_name}";"#),
+        ))
+        .await
+        .map(|_| ())
+}
+
+async fn index_exists(manager: &SchemaManager<'_>, index_name: &str) -> Result<bool, DbErr> {
+    Ok(manager
+        .get_connection()
+        .query_one(Statement::from_string(
+            manager.get_database_backend(),
+            format!("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = '{index_name}'"),
+        ))
+        .await?
+        .is_some())
 }
 
 async fn column_exists(

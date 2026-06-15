@@ -5,8 +5,9 @@ use clap::{Args, Parser, Subcommand};
 use patchbay_api_client::PatchbayClient;
 use patchbay_types::{
     AddCommentRequest, AgentReasoningEffort, AgentRunOutputPiece, AuthorType, ClaimWorkItemRequest,
-    CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
-    UpdateProjectMemoryRequest, UpdateWorkItemRequest, WorkState,
+    CreateWorkItemLabelRequest, CreateWorkItemRequest, FinishWorkItemRequest,
+    ProgressWorkItemRequest, ReleaseWorkItemRequest, UpdateProjectMemoryRequest,
+    UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemView,
 };
 use serde::Serialize;
 
@@ -43,6 +44,11 @@ enum Command {
     Comment {
         #[command(subcommand)]
         command: CommentCommand,
+    },
+    /// Manage work item labels.
+    Label {
+        #[command(subcommand)]
+        command: LabelCommand,
     },
     /// Read and update project memory.
     Memory {
@@ -87,6 +93,20 @@ enum CommentCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum LabelCommand {
+    /// List labels on an item.
+    List(LabelListArgs),
+    /// Add a label to an item.
+    Add(LabelAddArgs),
+    /// Update a label on an item.
+    Update(LabelUpdateArgs),
+    /// Delete a label from an item.
+    Delete(LabelDeleteArgs),
+    /// List labels already used in this project.
+    Suggestions(JsonArgs),
+}
+
+#[derive(Debug, Subcommand)]
 enum MemoryCommand {
     /// Show current project memory.
     Show(JsonArgs),
@@ -108,9 +128,9 @@ enum AutomationCommand {
 
 #[derive(Debug, Args)]
 struct ItemListArgs {
-    /// Filter items by state.
+    /// Filter items by state label value.
     #[arg(long)]
-    state: Option<WorkState>,
+    state: Option<String>,
 
     /// Print JSON instead of text.
     #[arg(long)]
@@ -137,9 +157,9 @@ struct ItemCreateArgs {
     #[arg(long)]
     description: String,
 
-    /// Initial item state; defaults to open.
+    /// Initial item state label; defaults to open.
     #[arg(long)]
-    state: Option<WorkState>,
+    state: Option<String>,
 
     /// Agent model override for this item.
     #[arg(long)]
@@ -167,9 +187,9 @@ struct ItemUpdateArgs {
     #[arg(long)]
     description: Option<String>,
 
-    /// Move the item to a new state.
+    /// Move the item to a new state label.
     #[arg(long)]
-    state: Option<WorkState>,
+    state: Option<String>,
 
     /// Set the item-specific agent model.
     #[arg(long)]
@@ -198,9 +218,9 @@ struct ItemUpdateArgs {
 
 #[derive(Debug, Args)]
 struct ItemClaimArgs {
-    /// State to claim from.
+    /// State label to claim from.
     #[arg(long, default_value = "open")]
-    state: WorkState,
+    state: String,
 
     /// Print JSON instead of text.
     #[arg(long)]
@@ -257,6 +277,84 @@ struct ItemWatchArgs {
     /// Only print versions newer than this value.
     #[arg(long)]
     since_version: Option<i64>,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LabelListArgs {
+    /// Item id; defaults to the claimed item when available.
+    item_id: Option<i64>,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LabelAddArgs {
+    /// Item id; defaults to the claimed item when available.
+    item_id: Option<i64>,
+
+    /// Label key.
+    #[arg(long)]
+    key: String,
+
+    /// Optional label value.
+    #[arg(long)]
+    value: Option<String>,
+
+    /// Require the current item version.
+    #[arg(long)]
+    expect_version: Option<i64>,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LabelUpdateArgs {
+    /// Item id; defaults to the claimed item when available.
+    item_id: Option<i64>,
+
+    /// Label id to update.
+    label_id: i64,
+
+    /// Replacement label key.
+    #[arg(long)]
+    key: Option<String>,
+
+    /// Replacement label value.
+    #[arg(long)]
+    value: Option<String>,
+
+    /// Clear the label value.
+    #[arg(long)]
+    clear_value: bool,
+
+    /// Require the current item version.
+    #[arg(long)]
+    expect_version: Option<i64>,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LabelDeleteArgs {
+    /// Item id; defaults to the claimed item when available.
+    item_id: Option<i64>,
+
+    /// Label id to delete.
+    label_id: i64,
+
+    /// Require the current item version.
+    #[arg(long)]
+    expect_version: Option<i64>,
 
     /// Print JSON instead of text.
     #[arg(long)]
@@ -368,6 +466,7 @@ async fn run(command: Command, context: ResolvedContext) -> Result<()> {
     match command {
         Command::Item { command } => run_item(command, context).await,
         Command::Comment { command } => run_comment(command, context).await,
+        Command::Label { command } => run_label(command, context).await,
         Command::Memory { command } => run_memory(command, context).await,
         Command::Automation { command } => run_automation(command, context).await,
     }
@@ -378,13 +477,13 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
     let project = context.project()?;
     match command {
         ItemCommand::List(args) => {
-            let items = client.list_items(project, args.state).await?;
+            let items = client.list_items(project, args.state.as_deref()).await?;
             output(args.json, &items, || {
                 for item in &items {
                     println!(
                         "#{}\t{}\tv{}\t{}",
                         item.id,
-                        item.state.label(),
+                        item_state_label(item),
                         item.version,
                         item.title
                     );
@@ -396,10 +495,25 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                 .get_item(project, context.item_id(args.item_id)?)
                 .await?;
             output(args.json, &item, || {
-                println!("#{} [{}] v{}", item.id, item.state.label(), item.version);
+                println!(
+                    "#{} [{}] v{}",
+                    item.id,
+                    item_state_label(&item),
+                    item.version
+                );
                 println!("{}", item.title);
                 if let Some(agent) = &item.claimed_by {
                     println!("claimed by: {agent}");
+                }
+                if !item.labels.is_empty() {
+                    println!(
+                        "labels: {}",
+                        item.labels
+                            .iter()
+                            .map(|label| format_label(&label.key, label.value.as_deref()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                 }
                 println!();
                 println!("{}", item.description);
@@ -447,7 +561,7 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                     project,
                     &ClaimWorkItemRequest {
                         agent_id: agent_id.to_owned(),
-                        state: args.state,
+                        state: args.state.clone(),
                     },
                 )
                 .await?;
@@ -518,7 +632,11 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                 )
                 .await?;
             output(args.json, &item, || {
-                println!("Released item #{} back to {}", item.id, item.state.label());
+                println!(
+                    "Released item #{} back to {}",
+                    item.id,
+                    item_state_label(&item)
+                );
             })
         }
         ItemCommand::Watch(args) => {
@@ -532,7 +650,7 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                         println!(
                             "#{}\t{}\tv{}\t{}",
                             item.id,
-                            item.state.label(),
+                            item_state_label(&item),
                             item.version,
                             item.title
                         );
@@ -540,6 +658,81 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
+        }
+    }
+}
+
+async fn run_label(command: LabelCommand, context: ResolvedContext) -> Result<()> {
+    let client = context.client();
+    let project = context.project()?;
+    match command {
+        LabelCommand::List(args) => {
+            let item_id = context.item_id(args.item_id)?;
+            let labels = client.list_item_labels(project, item_id).await?;
+            output(args.json, &labels, || {
+                for label in &labels {
+                    println!(
+                        "#{}\t{}",
+                        label.id,
+                        format_label(&label.key, label.value.as_deref())
+                    );
+                }
+            })
+        }
+        LabelCommand::Add(args) => {
+            let item_id = context.item_id(args.item_id)?;
+            let item = client
+                .add_item_label(
+                    project,
+                    item_id,
+                    &CreateWorkItemLabelRequest {
+                        key: args.key,
+                        value: args.value,
+                    },
+                    args.expect_version,
+                )
+                .await?;
+            output(args.json, &item, || {
+                println!("Added label on item #{} v{}", item.id, item.version);
+            })
+        }
+        LabelCommand::Update(args) => {
+            let item_id = context.item_id(args.item_id)?;
+            let request = UpdateWorkItemLabelRequest {
+                key: args.key,
+                value: optional_override(args.value, args.clear_value),
+                expect_version: args.expect_version,
+            };
+            let item = client
+                .update_item_label(project, item_id, args.label_id, &request)
+                .await?;
+            output(args.json, &item, || {
+                println!(
+                    "Updated label #{} on item #{} v{}",
+                    args.label_id, item.id, item.version
+                );
+            })
+        }
+        LabelCommand::Delete(args) => {
+            let item_id = context.item_id(args.item_id)?;
+            let deleted = client
+                .delete_item_label(project, item_id, args.label_id, args.expect_version)
+                .await?;
+            output(args.json, &deleted, || {
+                println!("Deleted label #{}", deleted.label_id);
+            })
+        }
+        LabelCommand::Suggestions(args) => {
+            let labels = client.list_project_labels(project).await?;
+            output(args.json, &labels, || {
+                for label in &labels {
+                    println!(
+                        "{}\t{}",
+                        format_label(&label.key, label.value.as_deref()),
+                        label.usage_count
+                    );
+                }
+            })
         }
     }
 }
@@ -727,6 +920,17 @@ fn resolve_context(
 
 fn optional_override<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
     if clear { Some(None) } else { value.map(Some) }
+}
+
+fn item_state_label(item: &WorkItemView) -> &str {
+    item.state.as_deref().unwrap_or("(no state)")
+}
+
+fn format_label(key: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{key}={value}"),
+        None => key.to_owned(),
+    }
 }
 
 fn print_output_pieces(output: &[AgentRunOutputPiece]) {
@@ -922,6 +1126,7 @@ mod tests {
         let root = help_output(&["patchbay", "--help"]);
         assert!(root.contains("Work with project-scoped items"));
         assert!(root.contains("Read and add item comments"));
+        assert!(root.contains("Manage work item labels"));
         assert!(root.contains("Read and update project memory"));
         assert!(root.contains("Inspect automation runs and logs"));
         assert!(root.contains("Override the Patchbay API URL"));
@@ -943,6 +1148,13 @@ mod tests {
         assert!(comment.contains("Add a comment to an item"));
         assert!(comment.contains("List comments on an item"));
 
+        let label = help_output(&["patchbay", "label", "--help"]);
+        assert!(label.contains("List labels on an item"));
+        assert!(label.contains("Add a label to an item"));
+        assert!(label.contains("Update a label on an item"));
+        assert!(label.contains("Delete a label from an item"));
+        assert!(label.contains("List labels already used in this project"));
+
         let memory = help_output(&["patchbay", "memory", "--help"]);
         assert!(memory.contains("Show current project memory"));
         assert!(memory.contains("List project memory change events"));
@@ -959,15 +1171,19 @@ mod tests {
         let create = help_output(&["patchbay", "item", "create", "--help"]);
         assert!(create.contains("Title for the new item"));
         assert!(create.contains("Full task description"));
-        assert!(create.contains("Initial item state"));
+        assert!(create.contains("Initial item state label"));
         assert!(create.contains("Reasoning effort override for this item"));
         assert!(create.contains("Print JSON instead of text"));
 
         let update = help_output(&["patchbay", "item", "update", "--help"]);
         assert!(update.contains("Item id; defaults to the claimed item"));
-        assert!(update.contains("Move the item to a new state"));
+        assert!(update.contains("Move the item to a new state label"));
         assert!(update.contains("Clear the item-specific agent model"));
         assert!(update.contains("Require the current item version"));
+
+        let label_add = help_output(&["patchbay", "label", "add", "--help"]);
+        assert!(label_add.contains("Label key"));
+        assert!(label_add.contains("Optional label value"));
 
         let progress = help_output(&["patchbay", "item", "progress", "--help"]);
         assert!(progress.contains("Progress text to record"));

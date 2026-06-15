@@ -12,12 +12,17 @@ use utoipa::ToSchema;
 use crate::{
     backend::{
         automation_triggers,
-        entities::{agent_run, agent_tool, automation_trigger, comment, project, work_item},
-        projects,
+        entities::{
+            agent_run, agent_tool, automation_trigger, comment, project, swim_lane, work_item,
+            work_item_label,
+        },
+        items, projects,
         storage::{Store, utc_now},
+        swim_lanes,
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentToolName, TriggerKind, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentReasoningEffort, AgentToolName, DEFAULT_STATE_LABEL, STATE_LABEL_KEY, TriggerKind,
+        WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -29,6 +34,7 @@ pub enum CrudResources {
     AgentTool,
     AgentRun,
     AutomationTrigger,
+    SwimLane,
 }
 
 impl ResourceType for CrudResources {
@@ -40,6 +46,7 @@ impl ResourceType for CrudResources {
             Self::AgentTool => "agent_tools",
             Self::AgentRun => "agent_runs",
             Self::AutomationTrigger => "automation_triggers",
+            Self::SwimLane => "swim_lanes",
         }
     }
 }
@@ -131,6 +138,10 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
         data: ProjectHookData,
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
         refresh_crud_project_path_status(context, model).await?;
+        swim_lanes::ensure_default_swim_lanes_for_project_id(&context.store, model.id)
+            .await
+            .map_err(|err| ProjectHookError(err.to_string()))
+            .map_err(HookError::Internal)?;
         if !model.memory.trim().is_empty() {
             projects::snapshot_current_memory_event(
                 &context.store,
@@ -323,8 +334,192 @@ async fn refresh_crud_project_path_status(
         .map_err(|err| HookError::Internal(ProjectHookError(err.to_string())))
 }
 
-#[derive(Debug, CkResourceContext)]
-pub struct WorkItemResourceContext;
+#[derive(Clone)]
+pub struct WorkItemResourceContext {
+    store: Store,
+}
+
+impl fmt::Debug for WorkItemResourceContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("WorkItemResourceContext")
+    }
+}
+
+impl CrudResourceContext for WorkItemResourceContext {}
+
+#[derive(Debug, Clone)]
+pub struct WorkItemHookError(String);
+
+impl fmt::Display for WorkItemHookError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for WorkItemHookError {}
+
+#[derive(Debug)]
+pub struct WorkItemLifetime;
+
+impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
+    type Error = WorkItemHookError;
+
+    async fn before_read(
+        _read_request: &mut ReadRequest<CrudWorkItemResource>,
+        _context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn after_read(
+        _read_request: &ReadRequest<CrudWorkItemResource>,
+        _read_result: &mut ReadResult<CrudWorkItemResource>,
+        _context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn before_create(
+        create_model: &mut work_item::CreateModel,
+        _context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        validate_work_item_text(&create_model.title, &create_model.description)?;
+        create_model.agent_model_override =
+            projects::normalize_optional(create_model.agent_model_override.take());
+        create_model.agent_reasoning_effort_override = create_model
+            .agent_reasoning_effort_override
+            .take()
+            .and_then(|effort| projects::normalize_optional(Some(effort)))
+            .map(|effort| {
+                effort
+                    .parse::<AgentReasoningEffort>()
+                    .map(|effort| effort.as_storage().to_owned())
+                    .map_err(|err| work_item_unprocessable_error(err.to_string()))
+            })
+            .transpose()?;
+        Ok(data)
+    }
+
+    async fn after_create(
+        _create_model: &work_item::CreateModel,
+        model: &work_item::Model,
+        context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        let now = utc_now();
+        let active = work_item_label::ActiveModel {
+            project_id: Set(model.project_id),
+            work_item_id: Set(model.id),
+            key: Set(STATE_LABEL_KEY.to_owned()),
+            value: Set(Some(DEFAULT_STATE_LABEL.to_owned())),
+            created_at: Set(now.clone()),
+            updated_at: Set(now),
+            ..Default::default()
+        };
+        active
+            .insert(context.store.db().as_ref())
+            .await
+            .map_err(work_item_internal_error)?;
+        items::record_event_in_tx(
+            context.store.db().as_ref(),
+            model.project_id,
+            Some(model.id),
+            "item_created",
+            "Created item",
+        )
+        .await
+        .map_err(work_item_internal_error)?;
+        Ok(data)
+    }
+
+    async fn before_update(
+        _existing: &work_item::Model,
+        update_model: &mut work_item::UpdateModel,
+        _update_request: &UpdateRequest,
+        _context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        validate_work_item_text(&update_model.title, &update_model.description)?;
+        update_model.agent_model_override =
+            projects::normalize_optional(update_model.agent_model_override.take());
+        update_model.agent_reasoning_effort_override = update_model
+            .agent_reasoning_effort_override
+            .take()
+            .and_then(|effort| projects::normalize_optional(Some(effort)))
+            .map(|effort| {
+                effort
+                    .parse::<AgentReasoningEffort>()
+                    .map(|effort| effort.as_storage().to_owned())
+                    .map_err(|err| work_item_unprocessable_error(err.to_string()))
+            })
+            .transpose()?;
+        Ok(data)
+    }
+
+    async fn after_update(
+        _update_model: &work_item::UpdateModel,
+        _model: &work_item::Model,
+        _update_request: &UpdateRequest,
+        _context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn before_delete(
+        _model: &work_item::Model,
+        _delete_request: &DeleteRequest<CrudWorkItemResource>,
+        _context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn after_delete(
+        _model: &work_item::Model,
+        _delete_request: &DeleteRequest<CrudWorkItemResource>,
+        _context: &WorkItemResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+}
+
+fn validate_work_item_text(
+    title: &str,
+    description: &str,
+) -> Result<(), HookError<WorkItemHookError>> {
+    if title.trim().is_empty() {
+        return Err(work_item_unprocessable_error(
+            "item title cannot be empty".to_owned(),
+        ));
+    }
+    if description.trim().is_empty() {
+        return Err(work_item_unprocessable_error(
+            "item description cannot be empty".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn work_item_unprocessable_error(reason: String) -> HookError<WorkItemHookError> {
+    HookError::UnprocessableEntity { reason }
+}
+
+fn work_item_internal_error(error: impl fmt::Display) -> HookError<WorkItemHookError> {
+    HookError::Internal(WorkItemHookError(error.to_string()))
+}
 
 #[derive(Debug, ToSchema)]
 pub struct CrudWorkItemResource;
@@ -350,7 +545,7 @@ impl CrudResource for CrudWorkItemResource {
     type CollaborationService = NoopCollaborationService;
     type Context = WorkItemResourceContext;
     type HookData = ();
-    type Lifetime = NoopLifetimeHooks;
+    type Lifetime = WorkItemLifetime;
     type Auth = NoAuth;
     type AuthPolicy = OpenAuthPolicy;
     type ResourceType = CrudResources;
@@ -859,6 +1054,174 @@ impl SeaOrmResource for CrudAutomationTriggerResource {
     }
 }
 
+#[derive(Debug, CkResourceContext)]
+pub struct SwimLaneResourceContext;
+
+#[derive(Debug, Clone)]
+pub struct SwimLaneHookError(String);
+
+impl fmt::Display for SwimLaneHookError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SwimLaneHookError {}
+
+#[derive(Debug)]
+pub struct SwimLaneLifetime;
+
+impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
+    type Error = SwimLaneHookError;
+
+    async fn before_read(
+        _read_request: &mut ReadRequest<CrudSwimLaneResource>,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn after_read(
+        _read_request: &ReadRequest<CrudSwimLaneResource>,
+        _read_result: &mut ReadResult<CrudSwimLaneResource>,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn before_create(
+        create_model: &mut swim_lane::CreateModel,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        create_model.identifier = swim_lanes::normalize_identifier(create_model.identifier.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        create_model.name = swim_lanes::normalize_name(create_model.name.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        Ok(data)
+    }
+
+    async fn after_create(
+        _create_model: &swim_lane::CreateModel,
+        _model: &swim_lane::Model,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn before_update(
+        _existing: &swim_lane::Model,
+        update_model: &mut swim_lane::UpdateModel,
+        _update_request: &UpdateRequest,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        update_model.identifier = swim_lanes::normalize_identifier(update_model.identifier.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        update_model.name = swim_lanes::normalize_name(update_model.name.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        Ok(data)
+    }
+
+    async fn after_update(
+        _update_model: &swim_lane::UpdateModel,
+        _model: &swim_lane::Model,
+        _update_request: &UpdateRequest,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn before_delete(
+        _model: &swim_lane::Model,
+        _delete_request: &DeleteRequest<CrudSwimLaneResource>,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn after_delete(
+        _model: &swim_lane::Model,
+        _delete_request: &DeleteRequest<CrudSwimLaneResource>,
+        _context: &SwimLaneResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+}
+
+fn swim_lane_unprocessable_error(reason: String) -> HookError<SwimLaneHookError> {
+    HookError::UnprocessableEntity { reason }
+}
+
+#[derive(Debug, ToSchema)]
+pub struct CrudSwimLaneResource;
+
+impl CrudResource for CrudSwimLaneResource {
+    type ReadModel = swim_lane::read_view::Model;
+    type ReadModelId = swim_lane::read_view::ModelId;
+    type ReadModelField = swim_lane::read_view::ModelField;
+
+    type CreateModel = swim_lane::CreateModel;
+    type CreateModelField = swim_lane::ModelField;
+
+    type UpdateModel = swim_lane::UpdateModel;
+    type UpdateModelField = swim_lane::ModelField;
+
+    type Model = swim_lane::Model;
+    type Id = swim_lane::SwimLaneId;
+    type ModelField = swim_lane::ModelField;
+
+    type Repository = SeaOrmRepo;
+    type ValidationResultRepository =
+        crudkit_sea_orm::validation::unified::repository::UnifiedValidationRepository;
+    type CollaborationService = NoopCollaborationService;
+    type Context = SwimLaneResourceContext;
+    type HookData = ();
+    type Lifetime = SwimLaneLifetime;
+    type Auth = NoAuth;
+    type AuthPolicy = OpenAuthPolicy;
+    type ResourceType = CrudResources;
+    const TYPE: CrudResources = CrudResources::SwimLane;
+}
+
+impl SeaOrmResource for CrudSwimLaneResource {
+    type Entity = swim_lane::Entity;
+    type SeaOrmModel = swim_lane::Model;
+    type ActiveModel = swim_lane::ActiveModel;
+    type Column = swim_lane::Column;
+    type PrimaryKey = <swim_lane::Entity as EntityTrait>::PrimaryKey;
+
+    type ReadViewEntity = swim_lane::read_view::Entity;
+    type ReadViewSeaOrmModel = swim_lane::read_view::Model;
+    type ReadViewActiveModel = swim_lane::read_view::ActiveModel;
+    type ReadViewColumn = swim_lane::read_view::Column;
+    type ReadViewPrimaryKey = <swim_lane::read_view::Entity as EntityTrait>::PrimaryKey;
+
+    fn model_field_to_column(field: &Self::ModelField) -> Self::Column {
+        <swim_lane::ModelField as CrudColumns<swim_lane::Column>>::to_sea_orm_column(field)
+    }
+
+    fn read_model_field_to_column(field: &Self::ReadModelField) -> Self::ReadViewColumn {
+        <swim_lane::read_view::ModelField as CrudColumns<
+            swim_lane::read_view::Column,
+        >>::to_sea_orm_column(field)
+    }
+}
+
 #[derive(Clone)]
 pub struct CrudContexts {
     pub project: Arc<CrudContext<CrudProjectResource>>,
@@ -867,6 +1230,7 @@ pub struct CrudContexts {
     pub agent_tool: Arc<CrudContext<CrudAgentToolResource>>,
     pub agent_run: Arc<CrudContext<CrudAgentRunResource>>,
     pub automation_trigger: Arc<CrudContext<CrudAutomationTriggerResource>>,
+    pub swim_lane: Arc<CrudContext<CrudSwimLaneResource>>,
 }
 
 pub fn build_contexts(store: Store) -> CrudContexts {
@@ -890,7 +1254,9 @@ pub fn build_contexts(store: Store) -> CrudContexts {
             global_validation_state: Arc::new(GlobalValidationState::new()),
         }),
         work_item: Arc::new(CrudContext {
-            res_context: Arc::new(WorkItemResourceContext),
+            res_context: Arc::new(WorkItemResourceContext {
+                store: store.clone(),
+            }),
             repository: repository.clone(),
             validators: vec![],
             resource_validators: vec![],
@@ -926,12 +1292,23 @@ pub fn build_contexts(store: Store) -> CrudContexts {
             global_validation_state: Arc::new(GlobalValidationState::new()),
         }),
         automation_trigger: Arc::new(CrudContext {
-            res_context: Arc::new(AutomationTriggerResourceContext { store }),
-            repository,
+            res_context: Arc::new(AutomationTriggerResourceContext {
+                store: store.clone(),
+            }),
+            repository: repository.clone(),
             validators: vec![],
             resource_validators: vec![],
-            validation_result_repository,
-            collab_service,
+            validation_result_repository: validation_result_repository.clone(),
+            collab_service: collab_service.clone(),
+            global_validation_state: Arc::new(GlobalValidationState::new()),
+        }),
+        swim_lane: Arc::new(CrudContext {
+            res_context: Arc::new(SwimLaneResourceContext),
+            repository: repository.clone(),
+            validators: vec![],
+            resource_validators: vec![],
+            validation_result_repository: validation_result_repository.clone(),
+            collab_service: collab_service.clone(),
             global_validation_state: Arc::new(GlobalValidationState::new()),
         }),
     }

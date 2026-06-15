@@ -23,7 +23,7 @@ use crate::{
     },
     shared::view_models::{
         AgentReasoningEffort, AgentRunOutputPiece, AgentToolName, AuthorType, AutomationMode,
-        TriggerKind, WorkState, WorkspaceMode, WorktreeCleanupPolicy,
+        DEFAULT_STATE_LABEL, TriggerKind, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -268,7 +268,7 @@ struct ItemListArgs {
     project: ProjectArg,
 
     #[arg(long)]
-    state: Option<WorkState>,
+    state: Option<String>,
 
     #[arg(long)]
     json: bool,
@@ -297,7 +297,7 @@ struct ItemCreateArgs {
     description: String,
 
     #[arg(long)]
-    state: Option<WorkState>,
+    state: Option<String>,
 
     #[arg(long)]
     agent_model: Option<String>,
@@ -349,7 +349,7 @@ struct ItemMoveArgs {
     item_id: i64,
 
     #[arg(long)]
-    state: WorkState,
+    state: String,
 
     #[arg(long)]
     expect_version: Option<i64>,
@@ -367,7 +367,7 @@ struct ItemClaimArgs {
     agent: Option<String>,
 
     #[arg(long, default_value = "open")]
-    state: WorkState,
+    state: String,
 
     #[arg(long)]
     json: bool,
@@ -831,7 +831,7 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
                     println!(
                         "#{}\t{}\tv{}\t{}\t{}",
                         item.id,
-                        item.state.label(),
+                        item_state_label(item),
                         item.version,
                         claim,
                         item.title
@@ -842,7 +842,12 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
         ItemCommand::Show(args) => {
             let item = items::get_item(store, &args.project.project, args.item_id).await?;
             output(args.json, &item, || {
-                println!("#{} [{}] v{}", item.id, item.state.label(), item.version);
+                println!(
+                    "#{} [{}] v{}",
+                    item.id,
+                    item_state_label(&item),
+                    item.version
+                );
                 println!("{}", item.title);
                 if let Some(agent) = &item.claimed_by {
                     println!("claimed by: {agent}");
@@ -861,7 +866,7 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
                 CreateWorkItem {
                     title: args.title,
                     description: args.description,
-                    state: args.state.unwrap_or(WorkState::Open),
+                    state: args.state.unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned()),
                     agent_model_override: args.agent_model,
                     agent_reasoning_effort_override: args.agent_reasoning_effort,
                 },
@@ -905,7 +910,7 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
             )
             .await?;
             output(args.json, &item, || {
-                println!("Moved item #{} to {}", item.id, item.state.label());
+                println!("Moved item #{} to {}", item.id, item_state_label(&item));
             })
         }
         ItemCommand::Delete(args) => {
@@ -923,7 +928,7 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
         ItemCommand::Claim(args) => {
             let agent_id = args.agent.unwrap_or_else(default_agent_id);
             let claimed =
-                items::claim_item(store, &args.project.project, &agent_id, args.state).await?;
+                items::claim_item(store, &args.project.project, &agent_id, &args.state).await?;
             match claimed {
                 Some(item) => output(args.json, &item, || {
                     println!("Claimed item #{} for {}", item.id, agent_id);
@@ -955,7 +960,11 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
             )
             .await?;
             output(args.json, &item, || {
-                println!("Released item #{} back to {}", item.id, item.state.label());
+                println!(
+                    "Released item #{} back to {}",
+                    item.id,
+                    item_state_label(&item)
+                );
             })
         }
         ItemCommand::Progress(args) => {
@@ -996,7 +1005,7 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
                         println!(
                             "#{}\t{}\tv{}\t{}",
                             item.id,
-                            item.state.label(),
+                            item_state_label(&item),
                             item.version,
                             item.title
                         );
@@ -1265,6 +1274,10 @@ fn project_path_status_label(path_exists: bool) -> &'static str {
 
 fn optional_override<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
     if clear { Some(None) } else { value.map(Some) }
+}
+
+fn item_state_label(item: &WorkItemView) -> &str {
+    item.state.as_deref().unwrap_or("(no state)")
 }
 
 fn print_output_pieces(output: &[AgentRunOutputPiece]) {

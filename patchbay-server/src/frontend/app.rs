@@ -18,13 +18,22 @@ use crate::{
             CreateProject, CreateProjectField, CrudProjectResource, Project as CrudProject,
             ProjectField, ReadProject, ReadProjectField,
         },
+        swim_lane::{
+            CreateSwimLane, CreateSwimLaneField, CrudSwimLaneResource, ReadSwimLane,
+            ReadSwimLaneField, SwimLane, SwimLaneField,
+        },
+        work_item::{
+            CreateWorkItem as CrudCreateWorkItem, CreateWorkItemField, CrudWorkItemResource,
+            ReadWorkItem, ReadWorkItemField, WorkItem as CrudWorkItem, WorkItemField,
+        },
     },
     shared::view_models::{
         AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece, AgentRunStatus,
         AgentRunView, AutomationStatusView, CodexAgentModel, CodexAppServerStatusView,
         CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
-        ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView, ProjectView,
-        RunLogView, WorkItemView, WorkState,
+        DEFAULT_STATE_LABEL, ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView,
+        ProjectSettingsView, ProjectView, RunLogView, STATE_LABEL_KEY, SwimLaneView,
+        WorkItemLabelView, WorkItemView,
     },
 };
 use crudkit_leptos::crud_instance::CrudInstanceContext;
@@ -74,6 +83,8 @@ pub struct BoardPage {
     pub automation_running: bool,
     pub run_sessions: Vec<BoardRunSessionView>,
     pub items: Vec<WorkItemView>,
+    pub swim_lanes: Vec<SwimLaneView>,
+    pub api_base_url: String,
     pub codex_status: CodexAppServerStatusView,
     pub runtime: RuntimeConfigView,
 }
@@ -110,6 +121,7 @@ pub struct ItemPage {
     pub project: String,
     pub item: WorkItemView,
     pub comments: Vec<CommentView>,
+    pub label_suggestions: Vec<ProjectLabelView>,
     pub automation_runs: Vec<AgentRunView>,
     pub codex_status: CodexAppServerStatusView,
 }
@@ -575,6 +587,8 @@ fn board_content(page: BoardPage) -> AnyView {
         automation_running,
         run_sessions,
         items,
+        swim_lanes,
+        api_base_url,
         codex_status,
         runtime,
     } = page;
@@ -601,18 +615,21 @@ fn board_content(page: BoardPage) -> AnyView {
         let project_workspace =
             project_workspace_panel(&project, &project_view, board_return_to.clone());
         let (show_create_item_modal, set_show_create_item_modal) = signal(false);
-        let (create_item_state, set_create_item_state) = signal(WorkState::Idea);
-        let open_create_item = Callback::new(move |state: WorkState| {
+        let (create_item_state, set_create_item_state) = signal(DEFAULT_STATE_LABEL.to_owned());
+        let open_create_item = Callback::new(move |state: String| {
             set_create_item_state.set(state);
             set_show_create_item_modal.set(true);
         });
-        let board = board_view(&project, items, open_create_item);
+        let board = board_view(&project, items, swim_lanes, open_create_item);
         let create_item = create_item_modal(
             &project,
             show_create_item_modal,
             set_show_create_item_modal,
             create_item_state,
         );
+        let work_items_api_base_url = api_base_url.clone();
+        let swim_lanes_api_base_url = api_base_url;
+        let admin_project_id = project_view.id;
         let project_settings =
             project_settings_view(&project, project_view, settings, memory_events);
         let automation_view = automation_view(&project, automation_status, run_sessions);
@@ -629,7 +646,7 @@ fn board_content(page: BoardPage) -> AnyView {
                         </div>
                         <button
                             type="button"
-                            on:click=move |_| open_create_item.run(WorkState::Idea)
+                            on:click=move |_| open_create_item.run(DEFAULT_STATE_LABEL.to_owned())
                         >
                             "New item"
                         </button>
@@ -642,6 +659,8 @@ fn board_content(page: BoardPage) -> AnyView {
                     </section>
                     {board}
                     {create_item}
+                    <WorkItemsPanel api_base_url=work_items_api_base_url project_id=admin_project_id/>
+                    <SwimLanesPanel api_base_url=swim_lanes_api_base_url project_id=admin_project_id/>
                     {project_settings}
                     {automation_view}
                     {runtime}
@@ -1223,6 +1242,7 @@ fn item_content(page: ItemPage) -> AnyView {
         project,
         item,
         comments,
+        label_suggestions,
         automation_runs,
         codex_status,
     } = page;
@@ -1253,21 +1273,13 @@ fn item_content(page: ItemPage) -> AnyView {
     );
     let update_title = item.title.clone();
     let update_description = item.description.clone();
+    let header_title = item.title.clone();
+    let header_description = item.description.clone();
+    let item_state_display = state_label(&item).to_owned();
     let model_override_value = item.agent_model_override.clone().unwrap_or_default();
     let reasoning_override_options = agent_reasoning_options(item.agent_reasoning_effort_override);
-    let state_actions = WorkState::all()
-        .into_iter()
-        .map(|state| {
-            let action = format!("/projects/{}/items/{}/move", encode_path(&project), item.id);
-            view! {
-                <form method="post" action=action>
-                    <input type="hidden" name="state" value=state.as_storage()/>
-                    <input type="hidden" name="version" value=item.version.to_string()/>
-                    <button>{state.label()}</button>
-                </form>
-            }
-        })
-        .collect::<Vec<_>>();
+    let state_action = format!("/projects/{}/items/{}/move", encode_path(&project), item.id);
+    let current_state = item.state.clone().unwrap_or_default();
     let claim = item.claimed_by.clone().map(|agent| {
         view! { <span>"claimed by " {agent}</span> }
     });
@@ -1290,6 +1302,7 @@ fn item_content(page: ItemPage) -> AnyView {
             }
         })
         .collect::<Vec<_>>();
+    let labels = item_labels_view(&project, &item, label_suggestions);
 
     view! {
         <div>
@@ -1297,11 +1310,11 @@ fn item_content(page: ItemPage) -> AnyView {
             <main class="page-shell item-page">
                 <section class="item-header">
                     <a href=board_href>"Board"</a>
-                    <h1>{item.title}</h1>
-                    <p>{item.description}</p>
+                    <h1>{header_title}</h1>
+                    <p>{header_description}</p>
                 </section>
                 <section class="item-meta">
-                    <span>{item.state.label()}</span>
+                    <span>{item_state_display}</span>
                     <span>"v" {item.version}</span>
                     {claim}
                     {finished}
@@ -1336,7 +1349,16 @@ fn item_content(page: ItemPage) -> AnyView {
                     </form>
                 </section>
                 <section class="actions">
-                    {state_actions}
+                    <form method="post" action=state_action>
+                        <input type="hidden" name="version" value=item.version.to_string()/>
+                        <input
+                            name="state"
+                            value=current_state
+                            placeholder="state label"
+                            required
+                        />
+                        <button>"Set state"</button>
+                    </form>
                     <form method="post" action=delete_action>
                         <button class="danger">"Delete"</button>
                     </form>
@@ -1349,6 +1371,7 @@ fn item_content(page: ItemPage) -> AnyView {
                         <button>"Start agent"</button>
                     </form>
                 </section>
+                {labels}
                 {automation_run_views}
                 <section class="comments">
                     <h2>"Comments"</h2>
@@ -1363,6 +1386,112 @@ fn item_content(page: ItemPage) -> AnyView {
         </div>
     }
     .into_any()
+}
+
+fn item_labels_view(
+    project: &str,
+    item: &WorkItemView,
+    suggestions: Vec<ProjectLabelView>,
+) -> AnyView {
+    let add_action = format!(
+        "/projects/{}/items/{}/labels",
+        encode_path(project),
+        item.id
+    );
+    let suggestion_options = label_suggestion_options(&suggestions);
+    let state_suggestion_options = state_suggestion_options(&suggestions);
+    let rows = item
+        .labels
+        .iter()
+        .cloned()
+        .map(|label| item_label_row(project, item, label))
+        .collect::<Vec<_>>();
+
+    view! {
+        <section class="item-labels panel">
+            <h2>"Labels"</h2>
+            <datalist id="label-key-suggestions">{suggestion_options}</datalist>
+            <datalist id="state-value-suggestions">{state_suggestion_options}</datalist>
+            <div class="label-list">{rows}</div>
+            <form class="label-add-form" method="post" action=add_action>
+                <input type="hidden" name="version" value=item.version.to_string()/>
+                <input
+                    name="key"
+                    list="label-key-suggestions"
+                    placeholder="key"
+                    required
+                />
+                <input
+                    name="value"
+                    list="state-value-suggestions"
+                    placeholder="value"
+                />
+                <button>"Add label"</button>
+            </form>
+        </section>
+    }
+    .into_any()
+}
+
+fn item_label_row(
+    project: &str,
+    item: &WorkItemView,
+    label: WorkItemLabelView,
+) -> impl IntoView + 'static {
+    let update_action = format!(
+        "/projects/{}/items/{}/labels/{}/update",
+        encode_path(project),
+        item.id,
+        label.id
+    );
+    let delete_action = format!(
+        "/projects/{}/items/{}/labels/{}/delete",
+        encode_path(project),
+        item.id,
+        label.id
+    );
+    let value = label.value.clone().unwrap_or_default();
+    let rendered = format_label(&label.key, label.value.as_deref());
+    let can_delete = label.key != STATE_LABEL_KEY;
+
+    view! {
+        <article class="label-row">
+            <span class="label-chip">{rendered}</span>
+            <form method="post" action=update_action>
+                <input type="hidden" name="version" value=item.version.to_string()/>
+                <input name="key" value=label.key required/>
+                <input name="value" value=value/>
+                <button>"Update"</button>
+            </form>
+            {can_delete.then(|| view! {
+                <form method="post" action=delete_action>
+                    <input type="hidden" name="version" value=item.version.to_string()/>
+                    <button class="danger">"Delete"</button>
+                </form>
+            })}
+        </article>
+    }
+}
+
+fn label_suggestion_options(suggestions: &[ProjectLabelView]) -> Vec<impl IntoView> {
+    let mut keys = suggestions
+        .iter()
+        .map(|label| label.key.clone())
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .map(|key| view! { <option value=key></option> })
+        .collect()
+}
+
+fn state_suggestion_options(suggestions: &[ProjectLabelView]) -> Vec<impl IntoView> {
+    suggestions
+        .iter()
+        .filter(|label| label.key == STATE_LABEL_KEY)
+        .filter_map(|label| label.value.clone())
+        .map(|value| view! { <option value=value></option> })
+        .collect()
 }
 
 fn automation_runs_view(project: &str, runs: Vec<AgentRunView>) -> AnyView {
@@ -1863,6 +1992,353 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             )
             .build(),
     }
+}
+
+#[component]
+fn WorkItemsPanel(api_base_url: String, project_id: i64) -> impl IntoView + 'static {
+    view! {
+        <section class="work-items-admin panel">
+            <div class="panel-heading">
+                <h2>"Work items"</h2>
+            </div>
+            <div class="crudkit-work-items" data-crudkit-leptos="work-items">
+                {work_items_crudkit_instance(api_base_url, project_id)}
+            </div>
+        </section>
+    }
+}
+
+fn work_items_crudkit_instance(api_base_url: String, project_id: i64) -> impl IntoView + 'static {
+    view! {
+        <CrudInstance name="work-items" config=work_items_crudkit_config(api_base_url, project_id) />
+    }
+}
+
+fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
+    CrudInstanceConfig {
+        api_base_url,
+        view: SerializableCrudView::List,
+        list_columns: vec![
+            Header::showing(
+                ReadWorkItemField::Id,
+                HeaderOptions {
+                    display_name: "#".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadWorkItemField::Title,
+                HeaderOptions {
+                    display_name: "Title".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadWorkItemField::ClaimedBy,
+                HeaderOptions {
+                    display_name: "Claimed by".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadWorkItemField::Version,
+                HeaderOptions {
+                    display_name: "Version".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadWorkItemField::UpdatedAt,
+                HeaderOptions {
+                    display_name: "Updated".into(),
+                    ..Default::default()
+                },
+            ),
+        ],
+        create_elements: CreateElements::Custom(vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::create_field(
+                    CreateWorkItemField::Title,
+                    FieldOptions {
+                        label: Some(Label::new("Title")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateWorkItemField::Description,
+                    FieldOptions {
+                        label: Some(Label::new("Description")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateWorkItemField::AgentModelOverride,
+                    FieldOptions {
+                        label: Some(Label::new("Agent model override")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateWorkItemField::AgentReasoningEffortOverride,
+                    FieldOptions {
+                        label: Some(Label::new("Reasoning override")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))]),
+        elements: vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::field(
+                    CrudWorkItem::Id,
+                    FieldOptions {
+                        disabled: true,
+                        label: Some(Label::new("ID")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    WorkItemField::Title,
+                    FieldOptions {
+                        label: Some(Label::new("Title")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    WorkItemField::Description,
+                    FieldOptions {
+                        label: Some(Label::new("Description")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    WorkItemField::AgentModelOverride,
+                    FieldOptions {
+                        label: Some(Label::new("Agent model override")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    WorkItemField::AgentReasoningEffortOverride,
+                    FieldOptions {
+                        label: Some(Label::new("Reasoning override")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))],
+        order_by: indexmap! {
+            ReadWorkItem::Id.into() => Order::Desc,
+        },
+        items_per_page: ItemsPerPage::default(),
+        page_nr: PageNr::first(),
+        base_condition: Some(project_id_condition(project_id)),
+        resource_name: CrudWorkItemResource::resource_name().to_owned(),
+        reqwest_executor: Arc::new(NewClientPerRequestExecutor),
+        model_handler: work_item_model_handler(project_id),
+        actions: vec![],
+        entity_actions: vec![],
+        read_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                ReadWorkItemField::AgentModelOverride,
+                agent_model_field_renderer::<DynReadField>(),
+            )
+            .build(),
+        create_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                CreateWorkItemField::AgentModelOverride,
+                agent_model_field_renderer::<DynCreateField>(),
+            )
+            .register(
+                CreateWorkItemField::AgentReasoningEffortOverride,
+                select_field_renderer::<DynCreateField>(
+                    &[
+                        ("", "Project default"),
+                        ("none", "none"),
+                        ("minimal", "minimal"),
+                        ("low", "low"),
+                        ("medium", "medium"),
+                        ("high", "high"),
+                        ("xhigh", "xhigh"),
+                    ],
+                    true,
+                ),
+            )
+            .build(),
+        update_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                WorkItemField::AgentModelOverride,
+                agent_model_field_renderer::<DynUpdateField>(),
+            )
+            .register(
+                WorkItemField::AgentReasoningEffortOverride,
+                select_field_renderer::<DynUpdateField>(
+                    &[
+                        ("", "Project default"),
+                        ("none", "none"),
+                        ("minimal", "minimal"),
+                        ("low", "low"),
+                        ("medium", "medium"),
+                        ("high", "high"),
+                        ("xhigh", "xhigh"),
+                    ],
+                    true,
+                ),
+            )
+            .build(),
+    }
+}
+
+fn work_item_model_handler(project_id: i64) -> ModelHandler {
+    let mut handler = ModelHandler::new::<CrudCreateWorkItem, ReadWorkItem, CrudWorkItem>();
+    handler.get_default_create_model = Callback::new(move |()| {
+        DynCreateModel::from(CrudCreateWorkItem {
+            project_id,
+            ..Default::default()
+        })
+    });
+    handler
+}
+
+#[component]
+fn SwimLanesPanel(api_base_url: String, project_id: i64) -> impl IntoView + 'static {
+    view! {
+        <section class="swim-lanes-admin panel">
+            <div class="panel-heading">
+                <h2>"Swim-lanes"</h2>
+            </div>
+            <div class="crudkit-swim-lanes" data-crudkit-leptos="swim-lanes">
+                {swim_lanes_crudkit_instance(api_base_url, project_id)}
+            </div>
+        </section>
+    }
+}
+
+fn swim_lanes_crudkit_instance(api_base_url: String, project_id: i64) -> impl IntoView + 'static {
+    view! {
+        <CrudInstance name="swim-lanes" config=swim_lanes_crudkit_config(api_base_url, project_id) />
+    }
+}
+
+fn swim_lanes_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
+    CrudInstanceConfig {
+        api_base_url,
+        view: SerializableCrudView::List,
+        list_columns: vec![
+            Header::showing(
+                ReadSwimLaneField::Identifier,
+                HeaderOptions {
+                    display_name: "Identifier".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadSwimLaneField::Name,
+                HeaderOptions {
+                    display_name: "Name".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadSwimLaneField::Position,
+                HeaderOptions {
+                    display_name: "Position".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+        ],
+        create_elements: CreateElements::Custom(vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::create_field(
+                    CreateSwimLaneField::Identifier,
+                    FieldOptions {
+                        label: Some(Label::new("Identifier")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateSwimLaneField::Name,
+                    FieldOptions {
+                        label: Some(Label::new("Name")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateSwimLaneField::Position,
+                    FieldOptions {
+                        label: Some(Label::new("Position")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))]),
+        elements: vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::field(
+                    SwimLane::Id,
+                    FieldOptions {
+                        disabled: true,
+                        label: Some(Label::new("ID")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    SwimLaneField::Identifier,
+                    FieldOptions {
+                        label: Some(Label::new("Identifier")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    SwimLaneField::Name,
+                    FieldOptions {
+                        label: Some(Label::new("Name")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    SwimLaneField::Position,
+                    FieldOptions {
+                        label: Some(Label::new("Position")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))],
+        order_by: indexmap! {
+            ReadSwimLane::Id.into() => Order::Asc,
+        },
+        items_per_page: ItemsPerPage::default(),
+        page_nr: PageNr::first(),
+        base_condition: Some(project_id_condition(project_id)),
+        resource_name: CrudSwimLaneResource::resource_name().to_owned(),
+        reqwest_executor: Arc::new(NewClientPerRequestExecutor),
+        model_handler: swim_lane_model_handler(project_id),
+        actions: vec![],
+        entity_actions: vec![],
+        read_field_renderer: FieldRendererRegistry::builder().build(),
+        create_field_renderer: FieldRendererRegistry::builder().build(),
+        update_field_renderer: FieldRendererRegistry::builder().build(),
+    }
+}
+
+fn swim_lane_model_handler(project_id: i64) -> ModelHandler {
+    let mut handler = ModelHandler::new::<CreateSwimLane, ReadSwimLane, SwimLane>();
+    handler.get_default_create_model = Callback::new(move |()| {
+        DynCreateModel::from(CreateSwimLane {
+            project_id,
+            position: 50,
+            ..Default::default()
+        })
+    });
+    handler
 }
 
 fn agent_tools_panel(api_base_url: String) -> impl IntoView + 'static {
@@ -3319,7 +3795,7 @@ fn create_item_modal(
     project: &str,
     show_when: ReadSignal<bool>,
     set_show_when: WriteSignal<bool>,
-    selected_state: ReadSignal<WorkState>,
+    selected_state: ReadSignal<String>,
 ) -> impl IntoView + 'static {
     let action = StoredValue::new(format!("/projects/{}/items", encode_path(project)));
     view! {
@@ -3353,7 +3829,9 @@ fn create_item_modal(
                     <label>
                         <span>"Lane"</span>
                         <select name="state">
-                            {move || create_item_state_options(selected_state.get())}
+                            <option value=move || selected_state.get() selected=true>
+                                {move || selected_state.get()}
+                            </option>
                         </select>
                     </label>
                     <label>
@@ -3382,19 +3860,6 @@ fn create_item_modal(
     }
 }
 
-fn create_item_state_options(selected: WorkState) -> Vec<impl IntoView> {
-    [WorkState::Idea, WorkState::Open]
-        .into_iter()
-        .map(|state| {
-            view! {
-                <option value=state.as_storage() selected=selected == state>
-                    {state.label()}
-                </option>
-            }
-        })
-        .collect()
-}
-
 fn agent_reasoning_options(selected: Option<AgentReasoningEffort>) -> Vec<impl IntoView> {
     let mut options = vec![
         view! {
@@ -3416,30 +3881,23 @@ fn agent_reasoning_options(selected: Option<AgentReasoningEffort>) -> Vec<impl I
 fn board_view(
     project: &str,
     items: Vec<WorkItemView>,
-    open_create_item: Callback<WorkState>,
+    swim_lanes: Vec<SwimLaneView>,
+    open_create_item: Callback<String>,
 ) -> impl IntoView + 'static {
-    let lanes = WorkState::all()
+    let all_items = items.clone();
+    let lanes = swim_lanes
         .into_iter()
-        .map(|state| {
-            let label = state.label();
+        .map(|lane| {
+            let lane_identifier = lane.identifier.clone();
+            let label = lane.name;
             let cards = items
                 .iter()
-                .filter(|item| item.state == state)
+                .filter(|item| item.state.as_deref() == Some(lane_identifier.as_str()))
                 .cloned()
                 .map(|item| item_card(project, item))
                 .collect::<Vec<_>>();
             let count = cards.len();
-            let lane_add = matches!(state, WorkState::Idea | WorkState::Open).then(|| {
-                view! {
-                    <button
-                        type="button"
-                        class="lane-add"
-                        on:click=move |_| open_create_item.run(state)
-                    >
-                        "+ Add"
-                    </button>
-                }
-            });
+            let create_state = lane_identifier.clone();
             view! {
                 <section class="lane">
                     <header class="lane-header">
@@ -3447,20 +3905,50 @@ fn board_view(
                         <span class="lane-count">{count}</span>
                     </header>
                     <div class="lane-cards">{cards}</div>
-                    {lane_add}
+                    <button
+                        type="button"
+                        class="lane-add"
+                        on:click=move |_| open_create_item.run(create_state.clone())
+                    >
+                        "+ Add"
+                    </button>
                 </section>
             }
         })
         .collect::<Vec<_>>();
-    view! { <section class="board">{lanes}</section> }
+    let all_cards = all_items
+        .into_iter()
+        .map(|item| item_card(project, item))
+        .collect::<Vec<_>>();
+    let all_count = all_cards.len();
+    view! {
+        <div class="board-stack">
+            <section class="board">{lanes}</section>
+            <section class="all-items">
+                <header class="lane-header">
+                    <h2>"All items"</h2>
+                    <span class="lane-count">{all_count}</span>
+                </header>
+                <div class="all-item-cards">{all_cards}</div>
+            </section>
+        </div>
+    }
 }
 
 fn item_card(project: &str, item: WorkItemView) -> impl IntoView + 'static {
     let href = format!("/projects/{}/items/{}", encode_path(project), item.id);
     let description = preview(&item.description);
     let claimed = item.claimed_by.is_some();
+    let label_chips = item
+        .labels
+        .iter()
+        .map(|label| {
+            let label = format_label(&label.key, label.value.as_deref());
+            view! { <span class="label-chip">{label}</span> }
+        })
+        .collect::<Vec<_>>();
     let claim = item.claimed_by.clone().map(|agent| {
-        let status = if item.state == WorkState::InProgress {
+        let status = if item.state.as_deref() == Some("in_progress") {
             "In progress"
         } else {
             "Claimed"
@@ -3480,6 +3968,7 @@ fn item_card(project: &str, item: WorkItemView) -> impl IntoView + 'static {
                 <h3>{item.title}</h3>
             </a>
             <p>{description}</p>
+            <div class="card-labels">{label_chips}</div>
             <footer>
                 <span>"v" {item.version}</span>
                 <span>{item.comment_count} " comments"</span>
@@ -3658,6 +4147,17 @@ fn active_class(active: ActivePage, page: ActivePage) -> &'static str {
 
 fn encode_path(value: &str) -> String {
     urlencoding::encode(value).into_owned()
+}
+
+fn state_label(item: &WorkItemView) -> &str {
+    item.state.as_deref().unwrap_or("(no state)")
+}
+
+fn format_label(key: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{key}={value}"),
+        None => key.to_owned(),
+    }
 }
 
 fn preview(value: &str) -> String {

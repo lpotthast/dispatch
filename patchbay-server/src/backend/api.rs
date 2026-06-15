@@ -7,8 +7,9 @@ use axum::{
 };
 use patchbay_types::{
     AddCommentRequest, ApiError, ClaimWorkItemRequest, ClaimWorkItemResponse,
-    CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
-    UpdateProjectMemoryRequest, UpdateWorkItemRequest, WorkState,
+    CreateWorkItemLabelRequest, CreateWorkItemRequest, DEFAULT_STATE_LABEL, FinishWorkItemRequest,
+    ProgressWorkItemRequest, ReleaseWorkItemRequest, UpdateProjectMemoryRequest,
+    UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +24,12 @@ use crate::backend::{
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListItemsQuery {
-    state: Option<WorkState>,
+    state: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LabelMutationQuery {
+    expect_version: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,6 +118,13 @@ pub(crate) async fn list_items(
     json_result(items::list_items(&state.store, &project, query.state).await)
 }
 
+pub(crate) async fn list_project_labels(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+) -> Response {
+    json_result(items::list_project_labels(&state.store, &project).await)
+}
+
 pub(crate) async fn create_item(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
@@ -124,7 +137,9 @@ pub(crate) async fn create_item(
             CreateWorkItem {
                 title: request.title,
                 description: request.description,
-                state: request.state.unwrap_or(WorkState::Open),
+                state: request
+                    .state
+                    .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned()),
                 agent_model_override: request.agent_model_override,
                 agent_reasoning_effort_override: request.agent_reasoning_effort_override,
             },
@@ -154,7 +169,7 @@ pub(crate) async fn claim_item(
     Json(request): Json<ClaimWorkItemRequest>,
 ) -> Response {
     json_result(
-        items::claim_item(&state.store, &project, &request.agent_id, request.state)
+        items::claim_item(&state.store, &project, &request.agent_id, &request.state)
             .await
             .map(|item| ClaimWorkItemResponse { item }),
     )
@@ -321,14 +336,77 @@ where
     }
 }
 
+pub(crate) async fn list_item_labels(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(items::list_item_labels(&state.store, &project, item_id).await)
+}
+
+pub(crate) async fn add_item_label(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id)): Path<(String, i64)>,
+    Query(query): Query<LabelMutationQuery>,
+    Json(request): Json<CreateWorkItemLabelRequest>,
+) -> Response {
+    json_result(
+        items::add_label(
+            &state.store,
+            &project,
+            item_id,
+            request.key,
+            request.value,
+            query.expect_version,
+        )
+        .await,
+    )
+}
+
+pub(crate) async fn update_item_label(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    Json(request): Json<UpdateWorkItemLabelRequest>,
+) -> Response {
+    json_result(
+        items::update_label(
+            &state.store,
+            &project,
+            item_id,
+            label_id,
+            request.key,
+            request.value,
+            request.expect_version,
+        )
+        .await,
+    )
+}
+
+pub(crate) async fn delete_item_label(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    Query(query): Query<LabelMutationQuery>,
+) -> Response {
+    json_result(
+        items::delete_label(
+            &state.store,
+            &project,
+            item_id,
+            label_id,
+            query.expect_version,
+        )
+        .await,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use axum::body::{Body, to_bytes};
     use patchbay_types::{
-        ClaimWorkItemResponse, CommentView, ProjectMemoryCompactionView, ProjectMemoryEventView,
-        ProjectMemoryUpdateView, ProjectMemoryView, WorkItemView,
+        ClaimWorkItemResponse, CommentView, ProjectLabelView, ProjectMemoryCompactionView,
+        ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, WorkItemLabelView,
+        WorkItemView,
     };
     use serde::de::DeserializeOwned;
     use tempfile::{TempDir, tempdir};
@@ -365,7 +443,7 @@ mod tests {
             CreateWorkItem {
                 title: "Endpoint work".to_owned(),
                 description: "Exercise workflow API endpoints".to_owned(),
-                state: WorkState::Open,
+                state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -407,7 +485,7 @@ mod tests {
                 Path("demo".to_owned()),
                 Json(ClaimWorkItemRequest {
                     agent_id: agent_id.clone(),
-                    state: WorkState::Open,
+                    state: "open".to_owned(),
                 }),
             )
             .await,
@@ -443,7 +521,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(released.state, WorkState::Open);
+        assert_eq!(released.state.as_deref(), Some("open"));
         assert_eq!(released.claimed_by, None);
 
         let claimed: ClaimWorkItemResponse = decode(
@@ -452,7 +530,7 @@ mod tests {
                 Path("demo".to_owned()),
                 Json(ClaimWorkItemRequest {
                     agent_id: agent_id.clone(),
-                    state: WorkState::Open,
+                    state: "open".to_owned(),
                 }),
             )
             .await,
@@ -472,8 +550,80 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(finished.state, WorkState::Done);
+        assert_eq!(finished.state.as_deref(), Some("done"));
         assert_eq!(finished.claimed_by, None);
+    }
+
+    #[tokio::test]
+    async fn label_endpoints_add_update_delete_and_suggest() {
+        let (_temp, state, item_id) = test_state().await;
+
+        let labeled: WorkItemView = decode(
+            add_item_label(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), item_id)),
+                Query(LabelMutationQuery {
+                    expect_version: None,
+                }),
+                Json(CreateWorkItemLabelRequest {
+                    key: "severity".to_owned(),
+                    value: Some("high".to_owned()),
+                }),
+            )
+            .await,
+        )
+        .await;
+        let label = labeled
+            .labels
+            .iter()
+            .find(|label| label.key == "severity")
+            .cloned()
+            .unwrap();
+
+        let labels: Vec<WorkItemLabelView> = decode(
+            list_item_labels(Extension(state.clone()), Path(("demo".to_owned(), item_id))).await,
+        )
+        .await;
+        assert!(labels.iter().any(|label| label.key == "severity"));
+
+        let updated: WorkItemView = decode(
+            update_item_label(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), item_id, label.id)),
+                Json(UpdateWorkItemLabelRequest {
+                    key: Some("priority".to_owned()),
+                    value: Some(Some("p1".to_owned())),
+                    expect_version: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            updated
+                .labels
+                .iter()
+                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("p1") })
+        );
+
+        let suggestions: Vec<ProjectLabelView> =
+            decode(list_project_labels(Extension(state.clone()), Path("demo".to_owned())).await)
+                .await;
+        assert!(
+            suggestions
+                .iter()
+                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("p1") })
+        );
+
+        let deleted = delete_item_label(
+            Extension(state),
+            Path(("demo".to_owned(), item_id, label.id)),
+            Query(LabelMutationQuery {
+                expect_version: None,
+            }),
+        )
+        .await;
+        assert_eq!(deleted.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -1,1 +1,4 @@
 - per project .patchbay/codex/config.toml differences (maybe even user-editable in patchbay UI)?
+- tracing instead of simple println! statements
+- rootcause for error handling
+- codex model selection through dropdown instead of text field 

@@ -34,7 +34,7 @@ Automation CLI override: `PATCHBAY_CLI_PATH`.
 
 The Patchbay server is the only process that owns or writes the database. Agents interact with Patchbay through the `patchbay` CLI, and the CLI is an API relay to `PATCHBAY_API_URL`.
 
-Patchbay-launched agents receive `PATCHBAY_API_URL`, `PATCHBAY_PROJECT`, `PATCHBAY_AGENT_ID`, and `PATCHBAY_CLAIMED_ITEM_ID`. For the claimed item, prompts should use short commands such as `patchbay item show --json`, `patchbay comment list --json`, `patchbay item progress --body ...`, `patchbay item finish --report ...`, and `patchbay item release --comment ...`.
+Patchbay-launched agents receive `PATCHBAY_API_URL`, `PATCHBAY_PROJECT`, `PATCHBAY_AGENT_ID`, and `PATCHBAY_CLAIMED_ITEM_ID`. For the claimed item, prompts should use short commands such as `patchbay item show --json`, `patchbay label list --json`, `patchbay label add --key ...`, `patchbay comment list --json`, `patchbay item progress --body ...`, `patchbay item finish --report ...`, and `patchbay item release --comment ...`. Agents may edit item labels themselves when that clarifies routing, status, priority, environment, or follow-up needs.
 
 Project memory is Patchbay-owned storage, not Codex internal memory. Agents should persist important run discoveries with `patchbay memory append --body ...` and use `patchbay memory set --body ...` only for intentional full rewrites; memory writes must go through the Patchbay CLI/API so they create attributed `MemoryChanged` events.
 
