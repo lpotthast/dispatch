@@ -32,10 +32,12 @@ use crate::{
         AgentRunView, AutomationStatusView, CodexAgentModel, CodexAppServerStatusView,
         CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
         DEFAULT_STATE_LABEL, ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView,
-        ProjectSettingsView, ProjectView, RunLogView, STATE_LABEL_KEY, SwimLaneView,
-        WorkItemLabelView, WorkItemView,
+        ProjectSettingsView, ProjectView, RunLogView, STATE_LABEL_KEY, SwimLaneView, UiEvent,
+        UiEventKind, WorkItemLabelView, WorkItemView,
     },
 };
+#[cfg(not(feature = "ssr"))]
+use codee::string::FromToStringCodec;
 use crudkit_leptos::crud_instance::CrudInstanceContext;
 use crudkit_leptos::crud_instance_mgr::CrudInstanceMgr;
 use crudkit_leptos::crudkit_core::{
@@ -66,6 +68,10 @@ use leptos_router::{
     NavigateOptions,
     components::{Outlet, Router},
     hooks::use_query_map,
+};
+#[cfg(not(feature = "ssr"))]
+use leptos_use::{
+    ReconnectLimit, UseWebSocketOptions, UseWebSocketReturn, use_websocket_with_options,
 };
 use serde::{Deserialize, Serialize};
 
@@ -176,6 +182,11 @@ struct TopBarAutomation {
     running: bool,
 }
 
+#[derive(Clone, Copy)]
+struct LiveEventContext {
+    latest_event: ReadSignal<Option<UiEvent>>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ProjectSelectOption {
     name: String,
@@ -224,17 +235,47 @@ pub fn App() -> impl IntoView {
 pub fn MainLayout() -> impl IntoView {
     view! {
         <CrudInstanceMgr>
+            <LiveEventsProvider/>
             <Outlet/>
         </CrudInstanceMgr>
     }
 }
 
 #[component]
+fn LiveEventsProvider() -> impl IntoView {
+    let (latest_event, set_latest_event) = signal(None::<UiEvent>);
+    provide_context(LiveEventContext { latest_event });
+    #[cfg(feature = "ssr")]
+    let _ = set_latest_event;
+
+    #[cfg(not(feature = "ssr"))]
+    {
+        let UseWebSocketReturn { message, .. } =
+            use_websocket_with_options::<String, String, FromToStringCodec, _, _>(
+                "/api/events/ws",
+                UseWebSocketOptions::default()
+                    .reconnect_limit(ReconnectLimit::Infinite)
+                    .reconnect_interval(1_000),
+            );
+        Effect::new(move |_| {
+            if let Some(raw) = message.get()
+                && let Ok(event) = serde_json::from_str::<UiEvent>(&raw)
+            {
+                set_latest_event.set(Some(event));
+            }
+        });
+    }
+}
+
+#[component]
 pub fn PageBoard() -> impl IntoView {
-    let selected_project = selected_project_from_query();
+    let selected_project = selected_project_signal();
     let api_base_url = api_base_url();
     let page =
-        LocalResource::new(move || load_board_page(selected_project.clone(), api_base_url.clone()));
+        LocalResource::new(move || load_board_page(selected_project.get(), api_base_url.clone()));
+    refetch_on_live_event(page, move |event| {
+        board_event_matches(event, selected_project.get())
+    });
 
     view! {
         <Title text="Patchbay"/>
@@ -263,12 +304,13 @@ async fn load_board_page(
 
 #[component]
 pub fn PageProjects() -> impl IntoView {
-    let selected_project = selected_project_from_query();
+    let selected_project = selected_project_signal();
     let api_base_url = api_base_url();
     let api_base_url_for_panel = api_base_url.clone();
     let page = LocalResource::new(move || {
-        load_projects_page(selected_project.clone(), api_base_url.clone())
+        load_projects_page(selected_project.get(), api_base_url.clone())
     });
+    refetch_on_live_event(page, projects_event_matches);
 
     view! {
         <Title text="Projects"/>
@@ -299,10 +341,13 @@ async fn load_projects_page(
 
 #[component]
 pub fn PageTriggers() -> impl IntoView {
-    let selected_project = selected_project_from_query();
+    let selected_project = selected_project_signal();
     let api_base_url = api_base_url();
     let page = LocalResource::new(move || {
-        load_triggers_page(selected_project.clone(), api_base_url.clone())
+        load_triggers_page(selected_project.get(), api_base_url.clone())
+    });
+    refetch_on_live_event(page, move |event| {
+        triggers_event_matches(event, selected_project.get())
     });
 
     view! {
@@ -342,8 +387,9 @@ async fn load_trigger_run_sessions(
 
 #[component]
 pub fn PageCodex() -> impl IntoView {
-    let selected_project = selected_project_from_query();
-    let page = LocalResource::new(move || load_codex_status_page(selected_project.clone()));
+    let selected_project = selected_project_signal();
+    let page = LocalResource::new(move || load_codex_status_page(selected_project.get()));
+    refetch_on_live_event(page, codex_event_matches);
 
     view! {
         <Title text="Codex automation"/>
@@ -375,7 +421,12 @@ pub fn PageItem() -> impl IntoView {
         .read_untracked()
         .get("item_id")
         .and_then(|value| value.parse::<i64>().ok());
-    let page = LocalResource::new(move || load_item_page(project.clone(), item_id));
+    let project_for_loader = project.clone();
+    let project_for_events = project;
+    let page = LocalResource::new(move || load_item_page(project_for_loader.clone(), item_id));
+    refetch_on_live_event(page, move |event| {
+        item_event_matches(event, project_for_events.clone(), item_id)
+    });
 
     view! {
         <Title text="Patchbay"/>
@@ -412,7 +463,12 @@ pub fn PageRunLog() -> impl IntoView {
         .read_untracked()
         .get("run_id")
         .and_then(|value| value.parse::<i64>().ok());
-    let page = LocalResource::new(move || load_run_log_page(project.clone(), run_id));
+    let project_for_loader = project.clone();
+    let project_for_events = project;
+    let page = LocalResource::new(move || load_run_log_page(project_for_loader.clone(), run_id));
+    refetch_on_live_event(page, move |event| {
+        run_log_event_matches(event, project_for_events.clone(), run_id)
+    });
 
     view! {
         <Title text="Run log"/>
@@ -443,8 +499,9 @@ async fn load_run_log_page(
 
 #[component]
 pub fn PageApiDocs() -> impl IntoView {
-    let selected_project = selected_project_from_query();
-    let page = LocalResource::new(move || load_api_docs_page(selected_project.clone()));
+    let selected_project = selected_project_signal();
+    let page = LocalResource::new(move || load_api_docs_page(selected_project.get()));
+    refetch_on_live_event(page, projects_event_matches);
 
     view! {
         <Title text="Patchbay API"/>
@@ -494,8 +551,137 @@ pub fn PageErr404() -> impl IntoView {
     }
 }
 
-fn selected_project_from_query() -> Option<String> {
-    use_query_map().read_untracked().get("project")
+fn selected_project_signal() -> Memo<Option<String>> {
+    let query = use_query_map();
+    Memo::new(move |_| query.read().get("project"))
+}
+
+fn refetch_on_live_event<T>(
+    resource: LocalResource<Result<T, ServerFnError>>,
+    should_refetch: impl Fn(&UiEvent) -> bool + 'static,
+) where
+    T: 'static,
+{
+    if let Some(context) = use_context::<LiveEventContext>() {
+        Effect::new(move |_| {
+            if let Some(event) = context.latest_event.get()
+                && should_refetch(&event)
+            {
+                resource.refetch();
+            }
+        });
+    }
+}
+
+fn board_event_matches(event: &UiEvent, selected_project: Option<String>) -> bool {
+    match event.kind {
+        UiEventKind::ProjectListChanged
+        | UiEventKind::CodexStatusChanged
+        | UiEventKind::AgentToolChanged => true,
+        UiEventKind::ProjectChanged
+        | UiEventKind::WorkItemChanged
+        | UiEventKind::CommentChanged
+        | UiEventKind::MemoryChanged
+        | UiEventKind::SwimLaneChanged
+        | UiEventKind::AutomationChanged
+        | UiEventKind::AgentRunChanged
+        | UiEventKind::AgentOutputChanged => event_scopes_selected_project(event, selected_project),
+    }
+}
+
+fn projects_event_matches(event: &UiEvent) -> bool {
+    matches!(
+        event.kind,
+        UiEventKind::ProjectListChanged
+            | UiEventKind::ProjectChanged
+            | UiEventKind::AutomationChanged
+            | UiEventKind::CodexStatusChanged
+            | UiEventKind::AgentToolChanged
+    )
+}
+
+fn triggers_event_matches(event: &UiEvent, selected_project: Option<String>) -> bool {
+    match event.kind {
+        UiEventKind::ProjectListChanged
+        | UiEventKind::CodexStatusChanged
+        | UiEventKind::AgentToolChanged => true,
+        UiEventKind::ProjectChanged | UiEventKind::AutomationChanged => {
+            event_scopes_selected_project(event, selected_project)
+        }
+        UiEventKind::WorkItemChanged
+        | UiEventKind::CommentChanged
+        | UiEventKind::MemoryChanged
+        | UiEventKind::SwimLaneChanged
+        | UiEventKind::AgentRunChanged
+        | UiEventKind::AgentOutputChanged => false,
+    }
+}
+
+fn codex_event_matches(event: &UiEvent) -> bool {
+    matches!(
+        event.kind,
+        UiEventKind::CodexStatusChanged
+            | UiEventKind::AgentToolChanged
+            | UiEventKind::ProjectListChanged
+            | UiEventKind::ProjectChanged
+            | UiEventKind::AutomationChanged
+    )
+}
+
+fn item_event_matches(event: &UiEvent, project: Option<String>, item_id: Option<i64>) -> bool {
+    if !event_scopes_named_project(event, project.as_deref()) {
+        return false;
+    }
+    match event.kind {
+        UiEventKind::ProjectListChanged
+        | UiEventKind::ProjectChanged
+        | UiEventKind::AutomationChanged
+        | UiEventKind::CodexStatusChanged
+        | UiEventKind::AgentToolChanged => true,
+        UiEventKind::WorkItemChanged | UiEventKind::CommentChanged => {
+            event.item_id.is_none() || event.item_id == item_id
+        }
+        UiEventKind::AgentRunChanged | UiEventKind::AgentOutputChanged => {
+            event.item_id.is_some() && event.item_id == item_id
+        }
+        UiEventKind::MemoryChanged | UiEventKind::SwimLaneChanged => false,
+    }
+}
+
+fn run_log_event_matches(event: &UiEvent, project: Option<String>, run_id: Option<i64>) -> bool {
+    if !event_scopes_named_project(event, project.as_deref()) {
+        return false;
+    }
+    match event.kind {
+        UiEventKind::AgentRunChanged | UiEventKind::AgentOutputChanged => {
+            event.run_id.is_some() && event.run_id == run_id
+        }
+        UiEventKind::ProjectListChanged
+        | UiEventKind::ProjectChanged
+        | UiEventKind::AutomationChanged
+        | UiEventKind::CodexStatusChanged
+        | UiEventKind::AgentToolChanged => true,
+        UiEventKind::WorkItemChanged
+        | UiEventKind::CommentChanged
+        | UiEventKind::MemoryChanged
+        | UiEventKind::SwimLaneChanged => false,
+    }
+}
+
+fn event_scopes_selected_project(event: &UiEvent, selected_project: Option<String>) -> bool {
+    match (selected_project.as_deref(), event.project.as_deref()) {
+        (Some(selected), Some(project)) => selected == project,
+        (Some(_), None) => true,
+        (None, _) => true,
+    }
+}
+
+fn event_scopes_named_project(event: &UiEvent, project: Option<&str>) -> bool {
+    match (project, event.project.as_deref()) {
+        (Some(expected), Some(actual)) => expected == actual,
+        (Some(_), None) => true,
+        (None, _) => true,
+    }
 }
 
 fn error_message_from_query() -> Option<String> {
@@ -1643,6 +1829,7 @@ fn api_docs_content(page: ApiDocsPage) -> AnyView {
         "POST /api/projects/{project}/memory/append",
         "GET /api/projects/{project}/memory/events",
         "POST /api/projects/{project}/memory/events/compact",
+        "GET /api/events/ws",
         "GET /api/projects/{project}/events",
         "GET /api/projects/{project}/items/{item_id}/events",
         "GET /api/projects/{project}/automation/sessions",
@@ -3367,6 +3554,18 @@ fn trigger_runs_panel(
                 None => Ok(None),
             }
         }
+    });
+    let project_for_events = project.clone();
+    refetch_on_live_event(trigger_runs, move |event| {
+        event_scopes_named_project(event, Some(project_for_events.as_str()))
+            && matches!(
+                event.kind,
+                UiEventKind::AutomationChanged
+                    | UiEventKind::AgentRunChanged
+                    | UiEventKind::AgentOutputChanged
+                    | UiEventKind::CodexStatusChanged
+            )
+            && selected_trigger_id.get().is_some()
     });
 
     view! {

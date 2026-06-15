@@ -37,8 +37,10 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["ssr"]
 hydrate = [
+    "dep:codee",
     "dep:gloo-net",
     "dep:indexmap",
+    "dep:leptos-use",
     "dep:serde",
     "dep:serde_json",
     "dep:typetag",
@@ -61,6 +63,7 @@ ssr = [
     "dep:futures-core",
     "dep:git2",
     "dep:indexmap",
+    "dep:leptos-use",
     "dep:leptos_axum",
     "dep:paste",
     "dep:sea-orm",
@@ -74,6 +77,7 @@ ssr = [
     "dep:utoipa",
     "dep:urlencoding",
     "leptos/ssr",
+    "leptos-use/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
     "leptonic/ssr",
@@ -83,9 +87,10 @@ ssr = [
 anyhow = { version = "1", optional = true }
 async-stream = { version = "0.3", optional = true }
 async-trait = { version = "0.1", optional = true }
-axum = { version = "0.8", optional = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
 axum-macros = { version = "0.5", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
+codee = { version = "0.3.5", optional = true }
 codex-app-server-sdk = { version = "0.5.1", optional = true }
 crudkit-core = { path = "../crudkit/crudkit-core", optional = true }
 crudkit-leptos = { path = "../crudkit/crudkit-leptos" }
@@ -97,6 +102,7 @@ gloo-net = { version = "0.6", default-features = false, features = ["http", "jso
 indexmap = { version = "2", features = ["serde"], optional = true }
 leptonic = { version = "0.5.0", git = "https://github.com/lpotthast/leptonic", branch = "migrate-to-leptos-0.8", features = ["tiptap"] }
 leptos = "0.8.15"
+leptos-use = { version = "0.18.3", default-features = false, features = ["use_websocket"], optional = true }
 leptos_axum = { version = "=0.8.7", optional = true }
 leptos_meta = "=0.8.5"
 leptos-routes = "0.3.1"

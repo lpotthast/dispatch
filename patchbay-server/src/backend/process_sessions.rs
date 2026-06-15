@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 
 use crate::{
-    backend::storage::utc_now,
-    shared::view_models::{AgentRunOutputPiece, ProcessSessionView},
+    backend::{events, storage::utc_now},
+    shared::view_models::{AgentRunOutputPiece, ProcessSessionView, UiEventKind},
 };
 
 #[cfg(test)]
@@ -27,6 +27,8 @@ impl ProcessSessionRegistry {
     pub async fn begin(&self, start: ProcessSessionStart) -> watch::Receiver<bool> {
         let now = utc_now();
         let (cancel_tx, cancel_rx) = watch::channel(false);
+        let project_name = start.project_name.clone();
+        let run_id = start.run_id;
         let session = ProcessSession {
             run_id: start.run_id,
             project_name: start.project_name,
@@ -40,19 +42,34 @@ impl ProcessSessionRegistry {
             updated_at: now,
         };
         self.sessions.lock().await.insert(session.run_id, session);
+        events::publish_run(UiEventKind::AgentRunChanged, &project_name, run_id, None);
         cancel_rx
     }
 
     pub async fn append_output_piece(&self, run_id: i64, piece: AgentRunOutputPiece) {
-        if let Some(session) = self.sessions.lock().await.get_mut(&run_id) {
+        let project_name = if let Some(session) = self.sessions.lock().await.get_mut(&run_id) {
             session.output.push(piece);
             trim_output_pieces(&mut session.output, MAX_SESSION_OUTPUT_BYTES);
             session.updated_at = utc_now();
+            Some(session.project_name.clone())
+        } else {
+            None
+        };
+        if let Some(project_name) = project_name {
+            events::publish_run(UiEventKind::AgentOutputChanged, &project_name, run_id, None);
         }
     }
 
     pub async fn finish(&self, run_id: i64) {
-        self.sessions.lock().await.remove(&run_id);
+        let session = self.sessions.lock().await.remove(&run_id);
+        if let Some(session) = session {
+            events::publish_run(
+                UiEventKind::AgentRunChanged,
+                &session.project_name,
+                run_id,
+                None,
+            );
+        }
     }
 
     pub async fn list_for_project(&self, project_name: &str) -> Vec<ProcessSessionView> {

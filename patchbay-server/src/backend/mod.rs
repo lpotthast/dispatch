@@ -7,6 +7,7 @@ pub(crate) mod codex_app_server;
 pub(crate) mod comments;
 pub(crate) mod crudkit_resources;
 pub(crate) mod entities;
+pub(crate) mod events;
 pub(crate) mod items;
 pub(crate) mod migrations;
 pub(crate) mod process_sessions;

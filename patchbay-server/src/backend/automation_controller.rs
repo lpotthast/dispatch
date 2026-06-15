@@ -9,12 +9,12 @@ use tokio::{
 use crate::{
     backend::{
         automation::{self, StartAutomation},
-        items,
+        events, items,
         process_sessions::ProcessSessionRegistry,
         projects,
         storage::Store,
     },
-    shared::view_models::{AgentRunStatus, AutomationMode, DEFAULT_STATE_LABEL},
+    shared::view_models::{AgentRunStatus, AutomationMode, DEFAULT_STATE_LABEL, UiEventKind},
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -56,7 +56,8 @@ impl AutomationController {
             sessions,
             shutdown_rx,
         ));
-        projects.insert(project_name, ProjectAutomation { shutdown, handle });
+        projects.insert(project_name.clone(), ProjectAutomation { shutdown, handle });
+        events::publish_project(UiEventKind::AutomationChanged, &project_name);
         Ok(())
     }
 
@@ -74,11 +75,13 @@ impl AutomationController {
                 .await
                 .context("project automation task failed")?;
         }
+        events::publish_project(UiEventKind::AutomationChanged, project_name);
         Ok(())
     }
 
     pub async fn shutdown_all(&self, sessions: &ProcessSessionRegistry) {
         let projects = std::mem::take(&mut *self.projects.lock().await);
+        let project_names = projects.keys().cloned().collect::<Vec<_>>();
         for automation in projects.values() {
             let _ = automation.shutdown.send(true);
         }
@@ -87,6 +90,9 @@ impl AutomationController {
             if let Err(err) = automation.handle.await {
                 eprintln!("project automation task failed for {project_name}: {err:#}");
             }
+        }
+        for project_name in project_names {
+            events::publish_project(UiEventKind::AutomationChanged, &project_name);
         }
     }
 

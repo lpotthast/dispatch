@@ -18,14 +18,14 @@ use crate::{
             project::{self, Project, ProjectActiveModel, ProjectModel},
             work_item_event,
         },
-        items,
+        events, items,
         storage::{Store, utc_now},
         swim_lanes,
     },
     shared::view_models::{
         AgentReasoningEffort, AgentToolName, CodexAgentModel, ProjectMemoryCompactionView,
         ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView,
-        ProjectView, WorkspaceMode, WorktreeCleanupPolicy,
+        ProjectView, UiEventKind, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -214,7 +214,10 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         .await
         .context("failed to commit project create")?;
 
-    Ok(project.into())
+    let view = ProjectView::from(project);
+    events::publish_global(UiEventKind::ProjectListChanged);
+    events::publish_project(UiEventKind::ProjectChanged, &view.name);
+    Ok(view)
 }
 
 pub async fn get_project(store: &Store, name: &str) -> Result<ProjectView> {
@@ -262,7 +265,10 @@ pub async fn update_project(
         .update(store.db().as_ref())
         .await
         .with_context(|| format!("failed to update project '{name}'"))?;
-    Ok(updated.into())
+    let view = ProjectView::from(updated);
+    events::publish_global(UiEventKind::ProjectListChanged);
+    events::publish_project(UiEventKind::ProjectChanged, &view.name);
+    Ok(view)
 }
 
 pub async fn update_system_prompt(store: &Store, name: &str, body: String) -> Result<ProjectView> {
@@ -275,7 +281,9 @@ pub async fn update_system_prompt(store: &Store, name: &str, body: String) -> Re
         .update(store.db().as_ref())
         .await
         .with_context(|| format!("failed to update system prompt for project '{name}'"))?;
-    Ok(updated.into())
+    let view = ProjectView::from(updated);
+    events::publish_project(UiEventKind::ProjectChanged, &view.name);
+    Ok(view)
 }
 
 pub async fn update_memory(store: &Store, name: &str, body: String) -> Result<ProjectView> {
@@ -360,6 +368,7 @@ pub async fn compact_memory_events(
         .exec(store.db().as_ref())
         .await
         .context("failed to compact project memory events")?;
+    events::publish_project(UiEventKind::MemoryChanged, project_name);
     Ok(ProjectMemoryCompactionView {
         project_id,
         project_name: project_name.to_owned(),
@@ -383,6 +392,7 @@ pub async fn snapshot_current_memory_event(
     let db = store.db();
     let event =
         record_memory_changed_event_in_tx(db.as_ref(), &project, operation, &source).await?;
+    events::publish_project(UiEventKind::MemoryChanged, project_name);
     Ok(memory_event_to_view(project_name, event))
 }
 
@@ -432,6 +442,7 @@ async fn change_memory(
     txn.commit()
         .await
         .context("failed to commit project memory update")?;
+    events::publish_project(UiEventKind::MemoryChanged, name);
 
     Ok(ProjectMemoryUpdateView {
         project: updated.clone().into(),
@@ -588,7 +599,9 @@ pub async fn update_settings(
         .update(store.db().as_ref())
         .await
         .with_context(|| format!("failed to update settings for project '{project_name}'"))?;
-    project_settings_to_view(updated)
+    let settings = project_settings_to_view(updated)?;
+    events::publish_project(UiEventKind::ProjectChanged, project_name);
+    Ok(settings)
 }
 
 pub fn allowed_code_edit_agents(settings: &ProjectSettingsView) -> i64 {
@@ -605,6 +618,7 @@ pub async fn delete_project(store: &Store, name: &str) -> Result<()> {
         .exec(store.db().as_ref())
         .await
         .with_context(|| format!("failed to delete project '{name}'"))?;
+    events::publish_global(UiEventKind::ProjectListChanged);
     Ok(())
 }
 
@@ -659,6 +673,15 @@ pub(crate) async fn refresh_project_path_status(
 
 pub(crate) async fn project_id(store: &Store, name: &str) -> Result<i64> {
     Ok(find_project_by_name(store, name).await?.id)
+}
+
+pub(crate) async fn project_name_by_id(store: &Store, project_id: i64) -> Result<String> {
+    Ok(Project::find_by_id(project_id)
+        .one(store.db().as_ref())
+        .await
+        .with_context(|| format!("failed to load project {project_id}"))?
+        .ok_or_else(|| anyhow::anyhow!("project {project_id} does not exist"))?
+        .name)
 }
 
 pub(crate) async fn find_project_by_name(store: &Store, name: &str) -> Result<ProjectModel> {

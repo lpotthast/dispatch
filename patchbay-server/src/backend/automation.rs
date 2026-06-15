@@ -26,7 +26,7 @@ use crate::{
     backend::{
         agent_tools, codex_app_server,
         entities::agent_run::{self, AgentRun, AgentRunActiveModel, AgentRunModel},
-        items,
+        events, items,
         process_sessions::{ProcessSessionRegistry, ProcessSessionStart},
         projects,
         storage::{Store, utc_now},
@@ -35,7 +35,8 @@ use crate::{
         AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece,
         AgentRunStatus, AgentRunView, AgentToolName, AutomationMode, AutomationStatusView,
         DEFAULT_STATE_LABEL, FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView,
-        RecoveredClaimView, RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
+        RecoveredClaimView, RunLogView, UiEventKind, WorkItemView, WorkspaceMode,
+        WorktreeCleanupPolicy,
     },
 };
 
@@ -1046,7 +1047,7 @@ async fn create_run(
     trigger: Option<&AutomationTriggerOrigin>,
 ) -> Result<AgentRunModel> {
     let now = utc_now();
-    AgentRunActiveModel {
+    let run = AgentRunActiveModel {
         project_id: Set(project_id),
         work_item_id: Set(None),
         memory_event_id: Set(None),
@@ -1078,7 +1079,9 @@ async fn create_run(
     }
     .insert(store.db().as_ref())
     .await
-    .context("failed to create agent run")
+    .context("failed to create agent run")?;
+    publish_run_model_event(store, &run, UiEventKind::AgentRunChanged).await;
+    Ok(run)
 }
 
 async fn update_run_launch_details(
@@ -1110,10 +1113,12 @@ async fn update_run_launch_details(
         "not_applicable".to_owned()
     });
     active.updated_at = Set(utc_now());
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to update agent run launch details")
+        .context("failed to update agent run launch details")?;
+    publish_run_model_event(store, &updated, UiEventKind::AgentRunChanged).await;
+    Ok(updated)
 }
 
 async fn update_run_work_item_id(
@@ -1124,10 +1129,12 @@ async fn update_run_work_item_id(
     let mut active: AgentRunActiveModel = run.into();
     active.work_item_id = Set(Some(work_item_id));
     active.updated_at = Set(utc_now());
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to update agent run work item")
+        .context("failed to update agent run work item")?;
+    publish_run_model_event(store, &updated, UiEventKind::AgentRunChanged).await;
+    Ok(updated)
 }
 
 async fn finish_run(
@@ -1144,10 +1151,12 @@ async fn finish_run(
     active.result_summary = Set(result_summary);
     active.finished_at = Set(Some(now.clone()));
     active.updated_at = Set(now);
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to finish agent run")
+        .context("failed to finish agent run")?;
+    publish_run_model_event(store, &updated, UiEventKind::AgentRunChanged).await;
+    Ok(updated)
 }
 
 async fn update_run_process_id(
@@ -1158,10 +1167,23 @@ async fn update_run_process_id(
     let mut active: AgentRunActiveModel = run.into();
     active.process_id = Set(process_id);
     active.updated_at = Set(utc_now());
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to update agent run process id")
+        .context("failed to update agent run process id")?;
+    publish_run_model_event(store, &updated, UiEventKind::AgentRunChanged).await;
+    Ok(updated)
+}
+
+async fn publish_run_model_event(store: &Store, run: &AgentRunModel, kind: UiEventKind) {
+    match projects::project_name_by_id(store, run.project_id).await {
+        Ok(project_name) => {
+            events::publish_run(kind, &project_name, run.id, run.work_item_id);
+        }
+        Err(err) => {
+            eprintln!("failed to resolve project for agent run UI event: {err:#}");
+        }
+    }
 }
 
 fn prepare_workspace(
@@ -1565,10 +1587,12 @@ async fn update_run_pr_url(
     let mut active: AgentRunActiveModel = run.into();
     active.pr_url = Set(pr_url);
     active.updated_at = Set(utc_now());
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to update run PR URL")
+        .context("failed to update run PR URL")?;
+    publish_run_model_event(store, &updated, UiEventKind::AgentRunChanged).await;
+    Ok(updated)
 }
 
 async fn cleanup_worktree_for_run(
@@ -1603,10 +1627,12 @@ async fn update_run_cleanup(
     active.cleanup_status = Set(cleanup_status.to_owned());
     active.worktree_cleaned_at = Set(worktree_cleaned_at);
     active.updated_at = Set(utc_now());
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to update worktree cleanup status")
+        .context("failed to update worktree cleanup status")?;
+    publish_run_model_event(store, &updated, UiEventKind::AgentRunChanged).await;
+    Ok(updated)
 }
 
 fn prune_git_worktree(repo_path: &Path, branch_name: &str, worktree_path: &Path) -> Result<()> {

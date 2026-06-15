@@ -2,6 +2,32 @@ use std::{error::Error, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UiEvent {
+    pub sequence: u64,
+    pub kind: UiEventKind,
+    pub project: Option<String>,
+    pub item_id: Option<i64>,
+    pub run_id: Option<i64>,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiEventKind {
+    ProjectListChanged,
+    ProjectChanged,
+    WorkItemChanged,
+    CommentChanged,
+    MemoryChanged,
+    SwimLaneChanged,
+    AgentToolChanged,
+    AutomationChanged,
+    AgentRunChanged,
+    AgentOutputChanged,
+    CodexStatusChanged,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParseEnumError(&'static str);
 

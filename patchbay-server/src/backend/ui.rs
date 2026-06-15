@@ -14,7 +14,10 @@ use anyhow::{Context, Result, bail};
 use async_stream::stream;
 use axum::{
     Extension, Form, Json, Router,
-    extract::{Path, Query},
+    extract::{
+        Path, Query,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::StatusCode,
     response::{
         IntoResponse, Redirect, Response,
@@ -35,7 +38,7 @@ use crate::{
         automation_triggers::{self, CreateAutomationTrigger},
         codex_app_server,
         comments::{self, AddComment},
-        crudkit_resources,
+        crudkit_resources, events,
         items::{self, CreateWorkItem, UpdateWorkItem},
         process_sessions::ProcessSessionRegistry,
         projects::{self, UpdateProjectSettings},
@@ -49,7 +52,8 @@ use crate::{
     },
     shared::view_models::{
         AgentReasoningEffort, AgentToolName, AuthorType, AutomationMode, CodexAppServerStatusView,
-        DEFAULT_STATE_LABEL, ProcessSessionView, TriggerKind, WorkspaceMode, WorktreeCleanupPolicy,
+        DEFAULT_STATE_LABEL, ProcessSessionView, TriggerKind, UiEventKind, WorkspaceMode,
+        WorktreeCleanupPolicy,
     },
 };
 
@@ -109,6 +113,7 @@ fn install_app_state(state: AppState) {
 
 pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
     automation::set_server_api_url(local_api_url(bind));
+    events::install();
     let contexts = crudkit_resources::build_contexts(store.clone());
     let sessions = ProcessSessionRegistry::new();
     let automation_controller = AutomationController::new();
@@ -310,6 +315,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
             "/api/projects/{project}/items/{item_id}/events",
             get(item_events),
         )
+        .route("/api/events/ws", get(ui_events_ws))
         .merge(crud_router.with_state(()))
         .leptos_routes(&leptos_options, routes, leptos_shell)
         .fallback(leptos_axum::file_and_error_handler(frontend::shell))
@@ -894,6 +900,7 @@ async fn start_automation(
         let usable = status.usable;
         let message = status.message.clone();
         *state.codex_status.write().await = status;
+        events::publish_global(UiEventKind::CodexStatusChanged);
         if !usable {
             return error_response(anyhow::anyhow!(message)).await;
         }
@@ -1080,6 +1087,8 @@ async fn discover_agent_tools(
         Ok(_) => {
             let status = codex_app_server::app_server_status(&state.store).await;
             *state.codex_status.write().await = status;
+            events::publish_global(UiEventKind::AgentToolChanged);
+            events::publish_global(UiEventKind::CodexStatusChanged);
             let target = codex_return_target(form.return_to, form.project);
             Redirect::to(&target).into_response()
         }
@@ -1094,6 +1103,7 @@ async fn logout_codex(
     match codex_app_server::logout_current_account(&state.store).await {
         Ok(status) => {
             *state.codex_status.write().await = status;
+            events::publish_global(UiEventKind::CodexStatusChanged);
             let target = codex_return_target(form.return_to, form.project);
             Redirect::to(&target).into_response()
         }
@@ -1407,6 +1417,32 @@ async fn item_events(
     Query(query): Query<EventsQuery>,
 ) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     event_stream(state.store.clone(), project, Some(item_id), query.since)
+}
+
+async fn ui_events_ws(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(handle_ui_events_socket).into_response()
+}
+
+async fn handle_ui_events_socket(mut socket: WebSocket) {
+    let mut receiver = events::subscribe();
+    loop {
+        match receiver.recv().await {
+            Ok(event) => match serde_json::to_string(&event) {
+                Ok(body) => {
+                    if socket.send(Message::Text(body.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("failed to serialize UI event: {err}");
+                }
+            },
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
 }
 
 fn event_stream(

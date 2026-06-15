@@ -11,12 +11,12 @@ use tokio::{sync::watch, time::timeout};
 
 use crate::{
     backend::{
-        agent_tools,
+        agent_tools, events,
         storage::{Store, patchbay_home_dir, utc_now},
     },
     shared::view_models::{
         AgentToolName, CodexAppServerStatusView, CodexAuthSetupView, CodexPreconditionView,
-        CodexRateLimitView, CodexUsageSummaryView,
+        CodexRateLimitView, CodexUsageSummaryView, UiEventKind,
     },
 };
 
@@ -78,6 +78,7 @@ pub fn spawn_status_refresher_until(
                     }
                     let refreshed = app_server_status(&store).await;
                     *status.write().await = refreshed;
+                    events::publish_global(UiEventKind::CodexStatusChanged);
                 }
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() {

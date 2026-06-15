@@ -16,13 +16,13 @@ use crate::{
             agent_run, agent_tool, automation_trigger, comment, project, swim_lane, work_item,
             work_item_label,
         },
-        items, projects,
+        events, items, projects,
         storage::{Store, utc_now},
         swim_lanes,
     },
     shared::view_models::{
         AgentReasoningEffort, AgentToolName, DEFAULT_STATE_LABEL, STATE_LABEL_KEY, TriggerKind,
-        WorkspaceMode, WorktreeCleanupPolicy,
+        UiEventKind, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -153,6 +153,8 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
             .map_err(|err| ProjectHookError(err.to_string()))
             .map_err(HookError::Internal)?;
         }
+        events::publish_global(UiEventKind::ProjectListChanged);
+        events::publish_project(UiEventKind::ProjectChanged, &model.name);
         Ok(data)
     }
 
@@ -233,6 +235,8 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
             .map_err(|err| ProjectHookError(err.to_string()))
             .map_err(HookError::Internal)?;
         }
+        events::publish_global(UiEventKind::ProjectListChanged);
+        events::publish_project(UiEventKind::ProjectChanged, &model.name);
         Ok(data)
     }
 
@@ -247,12 +251,14 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
     }
 
     async fn after_delete(
-        _model: &project::Model,
+        model: &project::Model,
         _delete_request: &DeleteRequest<CrudProjectResource>,
         _context: &ProjectResourceContext,
         _request: RequestContext<NoAuth>,
         data: ProjectHookData,
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
+        events::publish_global(UiEventKind::ProjectListChanged);
+        events::publish_project(UiEventKind::ProjectChanged, &model.name);
         Ok(data)
     }
 }
@@ -436,6 +442,13 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
         )
         .await
         .map_err(work_item_internal_error)?;
+        publish_work_item_crud_event(
+            &context.store,
+            model.project_id,
+            model.id,
+            UiEventKind::WorkItemChanged,
+        )
+        .await;
         Ok(data)
     }
 
@@ -466,12 +479,19 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
 
     async fn after_update(
         _update_model: &work_item::UpdateModel,
-        _model: &work_item::Model,
+        model: &work_item::Model,
         _update_request: &UpdateRequest,
-        _context: &WorkItemResourceContext,
+        context: &WorkItemResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        publish_work_item_crud_event(
+            &context.store,
+            model.project_id,
+            model.id,
+            UiEventKind::WorkItemChanged,
+        )
+        .await;
         Ok(data)
     }
 
@@ -486,13 +506,34 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
     }
 
     async fn after_delete(
-        _model: &work_item::Model,
+        model: &work_item::Model,
         _delete_request: &DeleteRequest<CrudWorkItemResource>,
-        _context: &WorkItemResourceContext,
+        context: &WorkItemResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        publish_work_item_crud_event(
+            &context.store,
+            model.project_id,
+            model.id,
+            UiEventKind::WorkItemChanged,
+        )
+        .await;
         Ok(data)
+    }
+}
+
+async fn publish_work_item_crud_event(
+    store: &Store,
+    project_id: i64,
+    item_id: i64,
+    kind: UiEventKind,
+) {
+    match projects::project_name_by_id(store, project_id).await {
+        Ok(project_name) => events::publish_item(kind, &project_name, item_id),
+        Err(err) => {
+            eprintln!("failed to resolve project for work item UI event: {err:#}");
+        }
     }
 }
 
@@ -833,6 +874,12 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
         apply_trigger_hook_data(context, model, data.clone()).await?;
+        publish_project_id_event(
+            &context.store,
+            model.project_id,
+            UiEventKind::AutomationChanged,
+        )
+        .await;
         Ok(data)
     }
 
@@ -876,6 +923,12 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
         apply_trigger_hook_data(context, model, data.clone()).await?;
+        publish_project_id_event(
+            &context.store,
+            model.project_id,
+            UiEventKind::AutomationChanged,
+        )
+        .await;
         Ok(data)
     }
 
@@ -890,12 +943,18 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
     }
 
     async fn after_delete(
-        _model: &automation_trigger::Model,
+        model: &automation_trigger::Model,
         _delete_request: &DeleteRequest<CrudAutomationTriggerResource>,
-        _context: &AutomationTriggerResourceContext,
+        context: &AutomationTriggerResourceContext,
         _request: RequestContext<NoAuth>,
         data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
+        publish_project_id_event(
+            &context.store,
+            model.project_id,
+            UiEventKind::AutomationChanged,
+        )
+        .await;
         Ok(data)
     }
 }
@@ -909,6 +968,15 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+async fn publish_project_id_event(store: &Store, project_id: i64, kind: UiEventKind) {
+    match projects::project_name_by_id(store, project_id).await {
+        Ok(project_name) => events::publish_project(kind, &project_name),
+        Err(err) => {
+            eprintln!("failed to resolve project for UI event: {err:#}");
+        }
+    }
 }
 
 fn parse_trigger_kind(value: &str) -> Result<TriggerKind, HookError<AutomationTriggerHookError>> {
@@ -1054,8 +1122,18 @@ impl SeaOrmResource for CrudAutomationTriggerResource {
     }
 }
 
-#[derive(Debug, CkResourceContext)]
-pub struct SwimLaneResourceContext;
+#[derive(Clone)]
+pub struct SwimLaneResourceContext {
+    store: Store,
+}
+
+impl fmt::Debug for SwimLaneResourceContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SwimLaneResourceContext")
+    }
+}
+
+impl CrudResourceContext for SwimLaneResourceContext {}
 
 #[derive(Debug, Clone)]
 pub struct SwimLaneHookError(String);
@@ -1108,11 +1186,17 @@ impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
 
     async fn after_create(
         _create_model: &swim_lane::CreateModel,
-        _model: &swim_lane::Model,
-        _context: &SwimLaneResourceContext,
+        model: &swim_lane::Model,
+        context: &SwimLaneResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        publish_project_id_event(
+            &context.store,
+            model.project_id,
+            UiEventKind::SwimLaneChanged,
+        )
+        .await;
         Ok(data)
     }
 
@@ -1133,12 +1217,18 @@ impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
 
     async fn after_update(
         _update_model: &swim_lane::UpdateModel,
-        _model: &swim_lane::Model,
+        model: &swim_lane::Model,
         _update_request: &UpdateRequest,
-        _context: &SwimLaneResourceContext,
+        context: &SwimLaneResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        publish_project_id_event(
+            &context.store,
+            model.project_id,
+            UiEventKind::SwimLaneChanged,
+        )
+        .await;
         Ok(data)
     }
 
@@ -1153,12 +1243,18 @@ impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
     }
 
     async fn after_delete(
-        _model: &swim_lane::Model,
+        model: &swim_lane::Model,
         _delete_request: &DeleteRequest<CrudSwimLaneResource>,
-        _context: &SwimLaneResourceContext,
+        context: &SwimLaneResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        publish_project_id_event(
+            &context.store,
+            model.project_id,
+            UiEventKind::SwimLaneChanged,
+        )
+        .await;
         Ok(data)
     }
 }
@@ -1303,7 +1399,9 @@ pub fn build_contexts(store: Store) -> CrudContexts {
             global_validation_state: Arc::new(GlobalValidationState::new()),
         }),
         swim_lane: Arc::new(CrudContext {
-            res_context: Arc::new(SwimLaneResourceContext),
+            res_context: Arc::new(SwimLaneResourceContext {
+                store: store.clone(),
+            }),
             repository: repository.clone(),
             validators: vec![],
             resource_validators: vec![],

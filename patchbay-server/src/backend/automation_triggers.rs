@@ -18,12 +18,14 @@ use crate::{
             },
             project, work_item_event,
         },
+        events,
         process_sessions::ProcessSessionRegistry,
         projects,
         storage::{Store, utc_now},
     },
     shared::view_models::{
         AgentToolName, AutomationMode, AutomationTriggerView, TriggerKind, TriggerRunOutcome,
+        UiEventKind,
     },
 };
 
@@ -105,6 +107,7 @@ pub async fn create_trigger(
     .await
     .context("failed to create automation trigger")?;
 
+    events::publish_project(UiEventKind::AutomationChanged, project_name);
     model_to_view(trigger)
 }
 
@@ -120,6 +123,7 @@ pub async fn delete_trigger(store: &Store, project_name: &str, trigger_id: i64) 
         .exec(store.db().as_ref())
         .await
         .context("failed to delete automation trigger")?;
+    events::publish_project(UiEventKind::AutomationChanged, project_name);
     Ok(())
 }
 
@@ -171,6 +175,7 @@ pub async fn update_trigger(
         .update(store.db().as_ref())
         .await
         .context("failed to update automation trigger")?;
+    events::publish_project(UiEventKind::AutomationChanged, project_name);
     model_to_view(trigger)
 }
 
@@ -365,10 +370,12 @@ async fn update_trigger_after_run(
     active.last_run_at = Set(Some(now.clone()));
     active.next_run_at = Set(next);
     active.updated_at = Set(now);
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to update automation trigger after run")
+        .context("failed to update automation trigger after run")?;
+    publish_project_id_event(store, updated.project_id, UiEventKind::AutomationChanged).await;
+    Ok(updated)
 }
 
 async fn update_trigger_event_cursor(
@@ -379,10 +386,21 @@ async fn update_trigger_event_cursor(
     let mut active: AutomationTriggerActiveModel = trigger.into();
     active.last_event_id = Set(last_event_id);
     active.updated_at = Set(utc_now());
-    active
+    let updated = active
         .update(store.db().as_ref())
         .await
-        .context("failed to update automation trigger event cursor")
+        .context("failed to update automation trigger event cursor")?;
+    publish_project_id_event(store, updated.project_id, UiEventKind::AutomationChanged).await;
+    Ok(updated)
+}
+
+async fn publish_project_id_event(store: &Store, project_id: i64, kind: UiEventKind) {
+    match projects::project_name_by_id(store, project_id).await {
+        Ok(project_name) => events::publish_project(kind, &project_name),
+        Err(err) => {
+            eprintln!("failed to resolve project for automation trigger UI event: {err:#}");
+        }
+    }
 }
 
 async fn new_item_created_events(
