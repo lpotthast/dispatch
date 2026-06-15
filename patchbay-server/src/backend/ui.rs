@@ -51,9 +51,9 @@ use crate::{
         RunLogPage, RuntimeConfigView, TriggersPage,
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentToolName, AuthorType, AutomationMode, CodexAppServerStatusView,
-        DEFAULT_STATE_LABEL, ProcessSessionView, TriggerKind, UiEventKind, WorkspaceMode,
-        WorktreeCleanupPolicy,
+        AgentReasoningEffort, AgentToolName, AuthorType, AutomationActivation, AutomationEffect,
+        AutomationMode, CodexAppServerStatusView, DEFAULT_STATE_LABEL, ProcessSessionView,
+        UiEventKind, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -211,6 +211,10 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
         .route(
             "/projects/{project}/automation/triggers/{trigger_id}/update",
             post(update_automation_trigger),
+        )
+        .route(
+            "/projects/{project}/automation/triggers/{trigger_id}/schedule-evaluation",
+            post(schedule_automation_trigger_evaluation),
         )
         .route("/projects/{project}/items", post(create_item))
         .route(
@@ -888,6 +892,7 @@ async fn start_automation(
                 mode,
                 tool,
                 work_item_id: form.item_id,
+                work_item_selector: None,
                 extra_prompt: form.prompt.filter(|value| !value.trim().is_empty()),
                 trigger: None,
             },
@@ -970,10 +975,16 @@ async fn active_sessions(
 #[derive(serde::Deserialize)]
 struct CreateAutomationTriggerForm {
     name: String,
-    kind: String,
-    schedule: Option<String>,
+    #[serde(default = "default_automation_activation", alias = "kind")]
+    activation: String,
+    #[serde(default = "default_automation_effect")]
+    effect: String,
+    #[serde(default = "default_automation_schedule")]
+    schedule: String,
     mode: Option<String>,
     tool: Option<String>,
+    work_item_selector: Option<String>,
+    priority: Option<i64>,
     prompt: Option<String>,
 }
 
@@ -982,7 +993,11 @@ async fn create_automation_trigger(
     Path(project): Path<String>,
     Form(form): Form<CreateAutomationTriggerForm>,
 ) -> Response {
-    let trigger_kind = match form.kind.parse::<TriggerKind>() {
+    let activation = match form.activation.parse::<AutomationActivation>() {
+        Ok(value) => value,
+        Err(err) => return error_response(err).await,
+    };
+    let effect = match form.effect.parse::<AutomationEffect>() {
         Ok(value) => value,
         Err(err) => return error_response(err).await,
     };
@@ -1000,17 +1015,25 @@ async fn create_automation_trigger(
         },
         None => None,
     };
+    let work_item_selector =
+        match automation_triggers::selector_from_storage(form.work_item_selector.as_deref()) {
+            Ok(selector) => selector,
+            Err(err) => return error_response(err).await,
+        };
     match automation_triggers::create_trigger(
         &state.store,
         &project,
         CreateAutomationTrigger {
             name: form.name,
             enabled: true,
-            trigger_kind,
-            schedule: form.schedule.filter(|value| !value.trim().is_empty()),
+            activation,
+            effect,
+            schedule: form.schedule,
             mode,
             tool_name,
             prompt: form.prompt.unwrap_or_default(),
+            work_item_selector,
+            priority: form.priority.unwrap_or_default(),
         },
     )
     .await
@@ -1037,9 +1060,15 @@ async fn delete_automation_trigger(
 #[derive(serde::Deserialize)]
 struct UpdateAutomationTriggerForm {
     name: String,
-    kind: String,
-    schedule: Option<String>,
+    #[serde(default = "default_automation_activation", alias = "kind")]
+    activation: String,
+    #[serde(default = "default_automation_effect")]
+    effect: String,
+    #[serde(default = "default_automation_schedule")]
+    schedule: String,
     enabled: Option<String>,
+    work_item_selector: Option<String>,
+    priority: Option<i64>,
     prompt: Option<String>,
 }
 
@@ -1048,10 +1077,19 @@ async fn update_automation_trigger(
     Path((project, trigger_id)): Path<(String, i64)>,
     Form(form): Form<UpdateAutomationTriggerForm>,
 ) -> Response {
-    let trigger_kind = match form.kind.parse::<TriggerKind>() {
+    let activation = match form.activation.parse::<AutomationActivation>() {
         Ok(value) => value,
         Err(err) => return error_response(err).await,
     };
+    let effect = match form.effect.parse::<AutomationEffect>() {
+        Ok(value) => value,
+        Err(err) => return error_response(err).await,
+    };
+    let work_item_selector =
+        match automation_triggers::selector_from_storage(form.work_item_selector.as_deref()) {
+            Ok(selector) => selector,
+            Err(err) => return error_response(err).await,
+        };
     match automation_triggers::update_trigger(
         &state.store,
         &project,
@@ -1059,9 +1097,12 @@ async fn update_automation_trigger(
         automation_triggers::UpdateAutomationTrigger {
             name: form.name,
             enabled: form.enabled.is_some(),
-            trigger_kind,
-            schedule: form.schedule.filter(|value| !value.trim().is_empty()),
+            activation,
+            effect,
+            schedule: form.schedule,
             prompt: form.prompt.unwrap_or_default(),
+            work_item_selector,
+            priority: form.priority,
         },
     )
     .await
@@ -1071,6 +1112,33 @@ async fn update_automation_trigger(
         }
         Err(err) => error_response(err).await,
     }
+}
+
+async fn schedule_automation_trigger_evaluation(
+    Extension(state): Extension<AppState>,
+    Path((project, trigger_id)): Path<(String, i64)>,
+) -> Response {
+    match automation_triggers::schedule_trigger_evaluation(&state.store, &project, trigger_id).await
+    {
+        Ok(_) => Redirect::to(&format!(
+            "/automation?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
+        Err(err) => error_response(err).await,
+    }
+}
+
+fn default_automation_activation() -> String {
+    AutomationActivation::WorkItem.as_storage().to_owned()
+}
+
+fn default_automation_effect() -> String {
+    AutomationEffect::ConsumeWork.as_storage().to_owned()
+}
+
+fn default_automation_schedule() -> String {
+    "@every 15s".to_owned()
 }
 
 #[derive(serde::Deserialize)]

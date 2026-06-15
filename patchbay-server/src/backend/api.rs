@@ -221,6 +221,7 @@ pub(crate) async fn release_item(
             item_id,
             &request.agent_id,
             request.comment,
+            items::ReleaseAutomationDisposition::Blocked,
         )
         .await,
     )
@@ -404,9 +405,9 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use patchbay_types::{
-        ClaimWorkItemResponse, CommentView, ProjectLabelView, ProjectMemoryCompactionView,
-        ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, WorkItemLabelView,
-        WorkItemView,
+        AUTOMATION_BLOCKED_LABEL_KEY, ClaimWorkItemResponse, CommentView, ProjectLabelView,
+        ProjectMemoryCompactionView, ProjectMemoryEventView, ProjectMemoryUpdateView,
+        ProjectMemoryView, WorkItemLabelView, WorkItemView,
     };
     use serde::de::DeserializeOwned;
     use tempfile::{TempDir, tempdir};
@@ -523,6 +524,12 @@ mod tests {
         .await;
         assert_eq!(released.state.as_deref(), Some("open"));
         assert_eq!(released.claimed_by, None);
+        assert!(
+            released
+                .labels
+                .iter()
+                .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+        );
 
         let claimed: ClaimWorkItemResponse = decode(
             claim_item(
@@ -536,12 +543,41 @@ mod tests {
             .await,
         )
         .await;
-        assert!(claimed.claimed());
+        assert!(!claimed.claimed());
+
+        let finish_item_id = items::create_item(
+            &state.store,
+            "demo",
+            CreateWorkItem {
+                title: "Endpoint finish".to_owned(),
+                description: "Exercise finish endpoint".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+
+        let claimed: ClaimWorkItemResponse = decode(
+            claim_item(
+                Extension(state.clone()),
+                Path("demo".to_owned()),
+                Json(ClaimWorkItemRequest {
+                    agent_id: agent_id.clone(),
+                    state: "open".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(claimed.item.unwrap().id, finish_item_id);
 
         let finished: WorkItemView = decode(
             finish_item(
                 Extension(state),
-                Path(("demo".to_owned(), item_id)),
+                Path(("demo".to_owned(), finish_item_id)),
                 Json(FinishWorkItemRequest {
                     agent_id,
                     report: "Done".to_owned(),

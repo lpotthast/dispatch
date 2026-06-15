@@ -1,6 +1,9 @@
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
+use crudkit_core::condition::{
+    Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait,
     QueryFilter, QueryOrder, Statement, TransactionTrait,
@@ -19,7 +22,8 @@ use crate::{
         storage::{Store, utc_now},
     },
     shared::view_models::{
-        AgentReasoningEffort, AuthorType, CLAIMED_STATE_LABEL, CommentView, DEFAULT_STATE_LABEL,
+        AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AuthorType,
+        CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL, CommentView, DEFAULT_STATE_LABEL,
         DeleteWorkItemLabelResponse, FINISHED_STATE_LABEL, ProjectLabelView, RecoveredClaimView,
         STATE_LABEL_KEY, UiEventKind, WorkItemEventView, WorkItemLabelView, WorkItemView,
     },
@@ -48,6 +52,12 @@ pub(crate) struct EventAttribution<'a> {
     pub actor_type: Option<&'a str>,
     pub actor_id: Option<&'a str>,
     pub agent_run_id: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReleaseAutomationDisposition {
+    Claimable,
+    Blocked,
 }
 
 pub async fn list_items(
@@ -83,25 +93,33 @@ pub async fn list_items(
     models_to_views(store, items).await
 }
 
-pub async fn has_unclaimed_item_in_state(
+pub async fn has_unclaimed_item_matching_condition(
     store: &Store,
     project_name: &str,
-    state: &str,
+    condition: &Condition,
 ) -> Result<bool> {
+    validate_label_condition(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
-    let state = normalize_state_value(state)?;
-    let item_ids = item_ids_with_state(store.db().as_ref(), project_id, &state).await?;
-    if item_ids.is_empty() {
-        return Ok(false);
-    }
-    let count = WorkItem::find()
+    let items = WorkItem::find()
         .filter(work_item::Column::ProjectId.eq(project_id))
-        .filter(work_item::Column::Id.is_in(item_ids))
         .filter(work_item::Column::ClaimedBy.is_null())
-        .count(store.db().as_ref())
+        .order_by_asc(work_item::Column::UpdatedAt)
+        .order_by_asc(work_item::Column::Id)
+        .all(store.db().as_ref())
         .await
-        .context("failed to count unclaimed work items")?;
-    Ok(count > 0)
+        .context("failed to list unclaimed work items")?;
+
+    for item in items {
+        let labels = labels_for_item(store.db().as_ref(), project_id, item.id).await?;
+        if automation_blocked(&labels) {
+            continue;
+        }
+        if label_condition_matches(condition, &labels)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 pub async fn get_item(store: &Store, project_name: &str, item_id: i64) -> Result<WorkItemView> {
@@ -302,10 +320,16 @@ pub async fn claim_item(
                 FROM work_items
                 INNER JOIN work_item_labels
                     ON work_item_labels.work_item_id = work_items.id
-                   AND work_item_labels.label_key = 'state'
+                   AND work_item_labels.label_key = ?5
                    AND work_item_labels.label_value = ?4
                 WHERE work_items.project_id = ?1
                   AND claimed_by IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM work_item_labels blocked_labels
+                      WHERE blocked_labels.work_item_id = work_items.id
+                        AND blocked_labels.label_key = ?6
+                  )
                 ORDER BY work_items.updated_at ASC, work_items.id ASC
                 LIMIT 1
             )
@@ -315,7 +339,9 @@ pub async fn claim_item(
                 project_id.into(),
                 agent_id.to_owned().into(),
                 now.clone().into(),
-                state_filter.into(),
+                state_filter.clone().into(),
+                STATE_LABEL_KEY.into(),
+                AUTOMATION_BLOCKED_LABEL_KEY.into(),
             ],
         ))
         .await
@@ -329,6 +355,14 @@ pub async fn claim_item(
         return Ok(None);
     };
 
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        CLAIMED_FROM_STATE_LABEL_KEY,
+        Some(state_filter.as_str()),
+    )
+    .await?;
     upsert_label_in_tx(
         &txn,
         project_id,
@@ -361,6 +395,118 @@ pub async fn claim_item(
     Ok(Some(model_to_view(store, item).await?))
 }
 
+pub async fn claim_item_matching_condition(
+    store: &Store,
+    project_name: &str,
+    agent_id: &str,
+    condition: &Condition,
+) -> Result<Option<WorkItemView>> {
+    validate_agent_id(agent_id)?;
+    validate_label_condition(condition)?;
+
+    let project_id = projects::project_id(store, project_name).await?;
+    let txn = store
+        .db()
+        .begin()
+        .await
+        .context("failed to start item claim")?;
+    let candidates = WorkItem::find()
+        .filter(work_item::Column::ProjectId.eq(project_id))
+        .filter(work_item::Column::ClaimedBy.is_null())
+        .order_by_asc(work_item::Column::UpdatedAt)
+        .order_by_asc(work_item::Column::Id)
+        .all(&txn)
+        .await
+        .context("failed to list claimable work items")?;
+
+    for candidate in candidates {
+        let labels = labels_for_item(&txn, project_id, candidate.id).await?;
+        if automation_blocked(&labels) {
+            continue;
+        }
+        if !label_condition_matches(condition, &labels)? {
+            continue;
+        }
+        let source_state = claimed_from_state(&labels);
+
+        let now = utc_now();
+        let claimed_id = txn
+            .query_one(Statement::from_sql_and_values(
+                sea_orm::DbBackend::Sqlite,
+                r#"
+                UPDATE work_items
+                SET claimed_by = ?3,
+                    claimed_at = ?4,
+                    claim_expires_at = NULL,
+                    finished_at = NULL,
+                    version = version + 1,
+                    updated_at = ?4
+                WHERE id = ?2
+                  AND project_id = ?1
+                  AND claimed_by IS NULL
+                RETURNING id
+                "#,
+                vec![
+                    project_id.into(),
+                    candidate.id.into(),
+                    agent_id.to_owned().into(),
+                    now.clone().into(),
+                ],
+            ))
+            .await
+            .context("failed to claim matching work item")?
+            .map(|row| row.try_get::<i64>("", "id"))
+            .transpose()
+            .context("failed to read claimed item id")?;
+
+        let Some(item_id) = claimed_id else {
+            continue;
+        };
+
+        upsert_label_in_tx(
+            &txn,
+            project_id,
+            item_id,
+            CLAIMED_FROM_STATE_LABEL_KEY,
+            Some(source_state.as_str()),
+        )
+        .await?;
+        upsert_label_in_tx(
+            &txn,
+            project_id,
+            item_id,
+            STATE_LABEL_KEY,
+            Some(CLAIMED_STATE_LABEL),
+        )
+        .await?;
+        let comment_body = format!("Claimed by {agent_id}");
+        insert_comment_in_tx(
+            &txn,
+            item_id,
+            AuthorType::System,
+            None,
+            comment_body.as_str(),
+        )
+        .await?;
+        record_event_in_tx(
+            &txn,
+            project_id,
+            Some(item_id),
+            "item_claimed",
+            comment_body.as_str(),
+        )
+        .await?;
+        let item = get_item_model_in_tx(&txn, project_id, item_id).await?;
+        txn.commit().await.context("failed to commit item claim")?;
+        events::publish_item(UiEventKind::WorkItemChanged, project_name, item_id);
+
+        return Ok(Some(model_to_view(store, item).await?));
+    }
+
+    txn.commit().await.context("failed to commit empty claim")?;
+    Ok(None)
+}
+
 pub async fn claim_specific_item(
     store: &Store,
     project_name: &str,
@@ -375,6 +521,15 @@ pub async fn claim_specific_item(
         .begin()
         .await
         .context("failed to start specific item claim")?;
+    let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    if existing.claimed_by.is_some() || existing.finished_at.is_some() {
+        txn.commit()
+            .await
+            .context("failed to commit empty specific claim")?;
+        return Ok(None);
+    }
+    let labels = labels_for_item(&txn, project_id, item_id).await?;
+    let source_state = claimed_from_state(&labels);
     let now = utc_now();
 
     let claimed_id = txn
@@ -391,13 +546,7 @@ pub async fn claim_specific_item(
             WHERE id = ?2
               AND project_id = ?1
               AND claimed_by IS NULL
-              AND EXISTS (
-                  SELECT 1
-                  FROM work_item_labels
-                  WHERE work_item_labels.work_item_id = work_items.id
-                    AND work_item_labels.label_key = 'state'
-                    AND work_item_labels.label_value = 'open'
-              )
+              AND finished_at IS NULL
             RETURNING id
             "#,
             vec![
@@ -420,6 +569,14 @@ pub async fn claim_specific_item(
         return Ok(None);
     };
 
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        CLAIMED_FROM_STATE_LABEL_KEY,
+        Some(source_state.as_str()),
+    )
+    .await?;
     upsert_label_in_tx(
         &txn,
         project_id,
@@ -460,6 +617,7 @@ pub async fn release_item(
     item_id: i64,
     agent_id: &str,
     comment: Option<String>,
+    automation_disposition: ReleaseAutomationDisposition,
 ) -> Result<WorkItemView> {
     validate_agent_id(agent_id)?;
 
@@ -471,6 +629,8 @@ pub async fn release_item(
         .context("failed to start item release")?;
     let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
     ensure_active_claim(&existing, agent_id)?;
+    let labels = labels_for_item(&txn, project_id, item_id).await?;
+    let release_state = claimed_from_state(&labels);
 
     let now = utc_now();
     let version = existing.version;
@@ -489,9 +649,20 @@ pub async fn release_item(
         project_id,
         item_id,
         STATE_LABEL_KEY,
-        Some(DEFAULT_STATE_LABEL),
+        Some(release_state.as_str()),
     )
     .await?;
+    delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
+    if automation_disposition == ReleaseAutomationDisposition::Blocked {
+        upsert_label_in_tx(
+            &txn,
+            project_id,
+            item_id,
+            AUTOMATION_BLOCKED_LABEL_KEY,
+            None,
+        )
+        .await?;
+    }
 
     if let Some(comment) = comment.filter(|body| !body.trim().is_empty()) {
         insert_comment_in_tx(
@@ -504,7 +675,7 @@ pub async fn release_item(
         .await?;
     }
 
-    let event_body = format!("Released by {agent_id}");
+    let event_body = format!("Released by {agent_id}; restored state to {release_state}");
     record_event_in_tx(
         &txn,
         project_id,
@@ -618,6 +789,8 @@ pub async fn finish_item(
         Some(FINISHED_STATE_LABEL),
     )
     .await?;
+    delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
+    delete_label_by_key_in_tx(&txn, project_id, item_id, AUTOMATION_BLOCKED_LABEL_KEY).await?;
     record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report).await?;
     txn.commit().await.context("failed to commit item finish")?;
     events::publish_item(UiEventKind::WorkItemChanged, project_name, item_id);
@@ -934,6 +1107,7 @@ pub async fn recover_stale_claims(
             Some(format!(
                 "Recovered stale claim after {stale_after_minutes} minute(s)."
             )),
+            ReleaseAutomationDisposition::Claimable,
         )
         .await?;
         recovered.push(claim);
@@ -1057,6 +1231,45 @@ where
     } else {
         insert_label_in_tx(conn, project_id, item_id, key, value).await
     }
+}
+
+async fn delete_label_by_key_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    key: &str,
+) -> Result<()>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    WorkItemLabel::delete_many()
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .filter(work_item_label::Column::WorkItemId.eq(item_id))
+        .filter(work_item_label::Column::Key.eq(key))
+        .exec(conn)
+        .await
+        .with_context(|| format!("failed to delete label '{key}'"))?;
+    Ok(())
+}
+
+fn automation_blocked(labels: &[WorkItemLabelView]) -> bool {
+    labels
+        .iter()
+        .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+}
+
+fn claimed_from_state(labels: &[WorkItemLabelView]) -> String {
+    labels
+        .iter()
+        .find(|label| label.key == CLAIMED_FROM_STATE_LABEL_KEY)
+        .and_then(|label| label.value.clone())
+        .or_else(|| {
+            labels
+                .iter()
+                .find(|label| label.key == STATE_LABEL_KEY)
+                .and_then(|label| label.value.clone())
+        })
+        .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
 }
 
 async fn labels_for_item<C>(
@@ -1266,6 +1479,131 @@ fn validate_label_pair(key: &str, value: Option<&str>) -> Result<()> {
         bail!("state label requires a value");
     }
     Ok(())
+}
+
+pub fn validate_label_condition(condition: &Condition) -> Result<()> {
+    match condition {
+        Condition::All(elements) | Condition::Any(elements) => {
+            for element in elements {
+                match element {
+                    ConditionElement::Clause(clause) => validate_label_clause(clause)?,
+                    ConditionElement::Condition(condition) => validate_label_condition(condition)?,
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_label_clause(clause: &ConditionClause) -> Result<()> {
+    normalize_label_key(clause.column_name.clone())?;
+    match clause.operator {
+        Operator::Equal | Operator::NotEqual => match &clause.value {
+            ConditionClauseValue::Bool(_)
+            | ConditionClauseValue::String(_)
+            | ConditionClauseValue::Json(serde_json::Value::Null) => Ok(()),
+            other => bail!(
+                "label condition '{}' with operator '{}' requires a string, bool, or null value; got {other:?}",
+                clause.column_name,
+                label_operator_name(clause.operator)
+            ),
+        },
+        Operator::IsIn => match &clause.value {
+            ConditionClauseValue::Json(serde_json::Value::Array(values))
+                if values.iter().all(|value| value.as_str().is_some()) =>
+            {
+                Ok(())
+            }
+            _ => bail!(
+                "label condition '{}' with is_in requires a JSON array of strings",
+                clause.column_name
+            ),
+        },
+        operator => bail!(
+            "label condition '{}' uses unsupported operator '{}'",
+            clause.column_name,
+            label_operator_name(operator)
+        ),
+    }
+}
+
+fn label_condition_matches(condition: &Condition, labels: &[WorkItemLabelView]) -> Result<bool> {
+    match condition {
+        Condition::All(elements) => {
+            for element in elements {
+                if !label_condition_element_matches(element, labels)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        Condition::Any(elements) => {
+            for element in elements {
+                if label_condition_element_matches(element, labels)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn label_condition_element_matches(
+    element: &ConditionElement,
+    labels: &[WorkItemLabelView],
+) -> Result<bool> {
+    match element {
+        ConditionElement::Clause(clause) => label_clause_matches(clause, labels),
+        ConditionElement::Condition(condition) => label_condition_matches(condition, labels),
+    }
+}
+
+fn label_clause_matches(clause: &ConditionClause, labels: &[WorkItemLabelView]) -> Result<bool> {
+    validate_label_clause(clause)?;
+    let key = clause.column_name.trim();
+    let label = labels.iter().find(|label| label.key == key);
+    let label_value = label.and_then(|label| label.value.as_deref());
+
+    match (&clause.operator, &clause.value) {
+        (Operator::Equal, ConditionClauseValue::Bool(expected)) => Ok(label.is_some() == *expected),
+        (Operator::NotEqual, ConditionClauseValue::Bool(expected)) => {
+            Ok(label.is_some() != *expected)
+        }
+        (Operator::Equal, ConditionClauseValue::String(expected)) => {
+            Ok(label_value == Some(expected.as_str()))
+        }
+        (Operator::NotEqual, ConditionClauseValue::String(expected)) => {
+            Ok(label_value != Some(expected.as_str()))
+        }
+        (Operator::Equal, ConditionClauseValue::Json(serde_json::Value::Null)) => {
+            Ok(label.is_some() && label_value.is_none())
+        }
+        (Operator::NotEqual, ConditionClauseValue::Json(serde_json::Value::Null)) => {
+            Ok(label.is_none() || label_value.is_some())
+        }
+        (Operator::IsIn, ConditionClauseValue::Json(serde_json::Value::Array(values))) => {
+            let Some(label_value) = label_value else {
+                return Ok(false);
+            };
+            Ok(values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .any(|expected| expected == label_value))
+        }
+        _ => bail!("invalid label condition clause"),
+    }
+}
+
+fn label_operator_name(operator: Operator) -> &'static str {
+    match operator {
+        Operator::Equal => "=",
+        Operator::NotEqual => "!=",
+        Operator::Less => "<",
+        Operator::LessOrEqual => "<=",
+        Operator::Greater => ">",
+        Operator::GreaterOrEqual => ">=",
+        Operator::IsIn => "is_in",
+    }
 }
 
 fn format_label(key: &str, value: Option<&str>) -> String {
@@ -1535,6 +1873,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claiming_can_use_nested_label_conditions() {
+        let (_temp, store) = test_store().await;
+        create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Plain item".to_owned(),
+                description: "Should not match the selector".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        let matching = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Urgent bug".to_owned(),
+                description: "Should match the selector".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            matching.id,
+            "severity".to_owned(),
+            Some("high".to_owned()),
+            None,
+        )
+        .await
+        .unwrap();
+        add_label(&store, "demo", matching.id, "bug".to_owned(), None, None)
+            .await
+            .unwrap();
+
+        let selector = Condition::All(vec![
+            ConditionElement::Clause(ConditionClause {
+                column_name: "state".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String("open".to_owned()),
+            }),
+            ConditionElement::Condition(Box::new(Condition::Any(vec![
+                ConditionElement::Clause(ConditionClause {
+                    column_name: "severity".to_owned(),
+                    operator: Operator::Equal,
+                    value: ConditionClauseValue::String("high".to_owned()),
+                }),
+                ConditionElement::Clause(ConditionClause {
+                    column_name: "bug".to_owned(),
+                    operator: Operator::Equal,
+                    value: ConditionClauseValue::Bool(true),
+                }),
+            ]))),
+        ]);
+
+        assert!(
+            has_unclaimed_item_matching_condition(&store, "demo", &selector)
+                .await
+                .unwrap()
+        );
+
+        let claimed = claim_item_matching_condition(&store, "demo", "agent-a", &selector)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claimed.id, matching.id);
+        assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
+        assert_eq!(claimed.state.as_deref(), Some("in_progress"));
+    }
+
+    #[tokio::test]
+    async fn blocked_items_are_skipped_by_selector_claims() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Blocked bug".to_owned(),
+                description: "Should wait for human triage".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            item.id,
+            AUTOMATION_BLOCKED_LABEL_KEY.to_owned(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            item.id,
+            "severity".to_owned(),
+            Some("high".to_owned()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let selector = Condition::All(vec![
+            ConditionElement::Clause(ConditionClause {
+                column_name: "state".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String("open".to_owned()),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "severity".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String("high".to_owned()),
+            }),
+        ]);
+
+        assert!(
+            !has_unclaimed_item_matching_condition(&store, "demo", &selector)
+                .await
+                .unwrap()
+        );
+        let claimed = claim_item_matching_condition(&store, "demo", "agent-a", &selector)
+            .await
+            .unwrap();
+
+        assert!(claimed.is_none());
+    }
+
+    #[tokio::test]
     async fn claiming_is_atomic_for_racing_agents() {
         let (_temp, store) = test_store().await;
         create_item(
@@ -1630,6 +2109,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn release_restores_claim_source_state_and_blocks_automation() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Custom lane item".to_owned(),
+                description: "Release should return to this lane".to_owned(),
+                state: "ready".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let claimed = claim_item(&store, "demo", "agent-a", "ready")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
+        assert!(claimed.labels.iter().any(|label| {
+            label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("ready")
+        }));
+
+        let released = release_item(
+            &store,
+            "demo",
+            item.id,
+            "agent-a",
+            Some("Cannot operate on this item.".to_owned()),
+            ReleaseAutomationDisposition::Blocked,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(released.state.as_deref(), Some("ready"));
+        assert_eq!(released.claimed_by, None);
+        assert!(
+            released
+                .labels
+                .iter()
+                .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+        );
+        assert!(
+            released
+                .labels
+                .iter()
+                .all(|label| label.key != CLAIMED_FROM_STATE_LABEL_KEY)
+        );
+
+        let claimed_again = claim_item(&store, "demo", "agent-b", "ready")
+            .await
+            .unwrap();
+        assert!(claimed_again.is_none());
+    }
+
+    #[tokio::test]
+    async fn specific_claim_release_restores_current_state() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Manual retry".to_owned(),
+                description: "Explicit item claims are not tied to open".to_owned(),
+                state: "triage".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let claimed = claim_specific_item(&store, "demo", item.id, "agent-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
+
+        let released = release_item(
+            &store,
+            "demo",
+            item.id,
+            "agent-a",
+            None,
+            ReleaseAutomationDisposition::Claimable,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(released.state.as_deref(), Some("triage"));
+        assert_eq!(released.claimed_by, None);
+    }
+
+    #[tokio::test]
     async fn release_requires_current_claimant() {
         let (_temp, store) = test_store().await;
         let item = create_item(
@@ -1650,9 +2225,16 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let err = release_item(&store, "demo", item.id, "agent-b", None)
-            .await
-            .unwrap_err();
+        let err = release_item(
+            &store,
+            "demo",
+            item.id,
+            "agent-b",
+            None,
+            ReleaseAutomationDisposition::Blocked,
+        )
+        .await
+        .unwrap_err();
 
         assert!(err.to_string().contains("claimed by agent-a"));
     }

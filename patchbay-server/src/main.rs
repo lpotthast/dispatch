@@ -22,8 +22,9 @@ use crate::{
         ui,
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentRunOutputPiece, AgentToolName, AuthorType, AutomationMode,
-        DEFAULT_STATE_LABEL, TriggerKind, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentReasoningEffort, AgentRunOutputPiece, AgentToolName, AuthorType, AutomationActivation,
+        AutomationEffect, AutomationMode, DEFAULT_STATE_LABEL, WorkItemView, WorkspaceMode,
+        WorktreeCleanupPolicy,
     },
 };
 
@@ -150,6 +151,7 @@ enum AgentToolsCommand {
 enum AutomationTriggerCommand {
     List(AutomationProjectArgs),
     Create(AutomationTriggerCreateArgs),
+    Schedule(AutomationTriggerScheduleArgs),
     Delete(AutomationTriggerDeleteArgs),
     RunDue(JsonArgs),
 }
@@ -555,17 +557,26 @@ struct AutomationTriggerCreateArgs {
     #[arg(long)]
     name: String,
 
-    #[arg(long)]
-    kind: TriggerKind,
+    #[arg(long, alias = "kind")]
+    activation: AutomationActivation,
 
     #[arg(long)]
-    schedule: Option<String>,
+    effect: AutomationEffect,
+
+    #[arg(long)]
+    schedule: String,
 
     #[arg(long)]
     mode: Option<AutomationMode>,
 
     #[arg(long)]
     tool: Option<AgentToolName>,
+
+    #[arg(long)]
+    work_item_selector: Option<String>,
+
+    #[arg(long, default_value_t = 0)]
+    priority: i64,
 
     #[arg(long)]
     disabled: bool,
@@ -579,6 +590,17 @@ struct AutomationTriggerCreateArgs {
 
 #[derive(Debug, Args)]
 struct AutomationTriggerDeleteArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+
+    trigger_id: i64,
+
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AutomationTriggerScheduleArgs {
     #[command(flatten)]
     project: ProjectArg,
 
@@ -957,6 +979,7 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
                 args.item_id,
                 &args.agent,
                 args.comment,
+                items::ReleaseAutomationDisposition::Blocked,
             )
             .await?;
             output(args.json, &item, || {
@@ -1066,6 +1089,7 @@ async fn run_automation(store: &Store, command: AutomationCommand) -> Result<()>
                     mode: args.mode,
                     tool: args.tool,
                     work_item_id: args.item_id,
+                    work_item_selector: None,
                     extra_prompt: args.prompt,
                     trigger: None,
                 },
@@ -1160,37 +1184,57 @@ async fn run_automation(store: &Store, command: AutomationCommand) -> Result<()>
                 output(args.json, &triggers, || {
                     for trigger in &triggers {
                         println!(
-                            "#{}\t{}\t{}\t{}",
+                            "#{}\t{}\t{}\t{}\t{}\t{}\tqueued={}\tevaluated={}",
                             trigger.id,
                             trigger.name,
-                            trigger.trigger_kind,
+                            trigger.activation,
+                            trigger.effect,
+                            trigger.schedule,
                             if trigger.enabled {
                                 "enabled"
                             } else {
                                 "disabled"
-                            }
+                            },
+                            trigger.pending_evaluation_count,
+                            trigger.evaluation_count
                         );
                     }
                 })
             }
             AutomationTriggerCommand::Create(args) => {
+                let work_item_selector =
+                    automation_triggers::selector_from_storage(args.work_item_selector.as_deref())?;
                 let trigger = automation_triggers::create_trigger(
                     store,
                     &args.project.project,
                     CreateAutomationTrigger {
                         name: args.name,
                         enabled: !args.disabled,
-                        trigger_kind: args.kind,
+                        activation: args.activation,
+                        effect: args.effect,
                         schedule: args.schedule,
                         mode: args.mode,
                         tool_name: args.tool,
                         prompt: args.prompt,
+                        work_item_selector,
+                        priority: args.priority,
                     },
                 )
                 .await?;
                 output(args.json, &trigger, || {
+                    println!("Created automation #{}: {}", trigger.id, trigger.name);
+                })
+            }
+            AutomationTriggerCommand::Schedule(args) => {
+                let trigger = automation_triggers::schedule_trigger_evaluation(
+                    store,
+                    &args.project.project,
+                    args.trigger_id,
+                )
+                .await?;
+                output(args.json, &trigger, || {
                     println!(
-                        "Created automation trigger #{}: {}",
+                        "Queued evaluation for automation #{}: {}",
                         trigger.id, trigger.name
                     );
                 })
@@ -1204,14 +1248,14 @@ async fn run_automation(store: &Store, command: AutomationCommand) -> Result<()>
                         serde_json::json!({ "deleted": true, "id": args.trigger_id })
                     );
                 } else {
-                    println!("Deleted automation trigger #{}", args.trigger_id);
+                    println!("Deleted automation #{}", args.trigger_id);
                 }
                 Ok(())
             }
             AutomationTriggerCommand::RunDue(args) => {
                 let outcomes = automation_triggers::run_due_triggers(store).await?;
                 output(args.json, &outcomes, || {
-                    println!("Evaluated triggers; {} run attempt(s)", outcomes.len());
+                    println!("Evaluated automation; {} run attempt(s)", outcomes.len());
                 })
             }
         },

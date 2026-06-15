@@ -3940,6 +3940,7 @@ dependencies = [
 name = "patchbay-types"
 version = "0.1.0"
 dependencies = [
+ "crudkit-core",
  "serde",
  "serde_json",
 ]

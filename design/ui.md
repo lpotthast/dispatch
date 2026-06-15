@@ -9,7 +9,7 @@ Primary UI routes include:
 ```text
 /                                      current workflow surface
 /projects                              project administration
-/triggers                              automation trigger administration
+/automation                            automation rule administration
 /api/docs                              local API reference
 /projects/:project/items/:item_id      item detail
 /projects/:project/automation/runs/:run_id/log
@@ -29,6 +29,7 @@ The main workflow surface should make these states easy to inspect:
 - automation status;
 - stale or blocked work;
 - run logs and run outcomes.
+- Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, and `patchbay:automation-blocked`.
 
 Board and item-detail interactions call server actions or custom API endpoints so workflow rules remain centralized.
 
@@ -42,7 +43,7 @@ CrudKit is appropriate for ordinary resource administration:
 - comments;
 - agent tools;
 - agent runs;
-- automation triggers.
+- automation rules.
 
 Patchbay-specific actions such as claim, release, finish, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
 

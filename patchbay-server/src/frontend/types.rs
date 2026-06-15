@@ -9,11 +9,14 @@ pub mod automation_trigger {
         pub id: i64,
         pub name: String,
         pub enabled: bool,
-        pub trigger_kind: String,
-        pub schedule: Option<String>,
+        pub activation: String,
+        pub effect: String,
+        pub schedule: String,
         pub mode: String,
         pub tool_name: String,
         pub prompt: String,
+        pub work_item_selector: Option<String>,
+        pub priority: i64,
     }
 
     #[derive(Clone, PartialEq, Eq, Debug, CkField, Serialize, Deserialize)]
@@ -22,11 +25,14 @@ pub mod automation_trigger {
         pub project_id: i64,
         pub name: String,
         pub enabled: bool,
-        pub trigger_kind: String,
-        pub schedule: Option<String>,
+        pub activation: String,
+        pub effect: String,
+        pub schedule: String,
         pub mode: String,
         pub tool_name: String,
         pub prompt: String,
+        pub work_item_selector: Option<String>,
+        pub priority: i64,
     }
 
     impl Default for CreateAutomationTrigger {
@@ -35,11 +41,17 @@ pub mod automation_trigger {
                 project_id: 0,
                 name: String::new(),
                 enabled: true,
-                trigger_kind: "work_item_created".to_owned(),
-                schedule: None,
-                mode: "refine".to_owned(),
+                activation: "work_item".to_owned(),
+                effect: "consume_work".to_owned(),
+                schedule: "@every 15s".to_owned(),
+                mode: "execute".to_owned(),
                 tool_name: "codex".to_owned(),
                 prompt: String::new(),
+                work_item_selector: Some(
+                    r#"{"All":[{"column_name":"state","operator":"=","value":{"String":"open"}}]}"#
+                        .to_owned(),
+                ),
+                priority: 0,
             }
         }
     }
@@ -51,13 +63,19 @@ pub mod automation_trigger {
         pub project_id: i64,
         pub name: String,
         pub enabled: bool,
-        pub trigger_kind: String,
-        pub schedule: Option<String>,
+        pub activation: String,
+        pub effect: String,
+        pub schedule: String,
         pub mode: String,
         pub tool_name: String,
         pub prompt: String,
-        pub last_run_at: Option<String>,
-        pub next_run_at: Option<String>,
+        pub work_item_selector: Option<String>,
+        pub priority: i64,
+        pub evaluation_count: i64,
+        pub pending_evaluation_count: i64,
+        pub last_evaluation_queued_at: Option<String>,
+        pub last_evaluated_at: Option<String>,
+        pub next_evaluation_at: Option<String>,
         pub last_event_id: Option<i64>,
         pub created_at: String,
         pub updated_at: String,
@@ -69,11 +87,14 @@ pub mod automation_trigger {
                 id: read.id,
                 name: read.name,
                 enabled: read.enabled,
-                trigger_kind: read.trigger_kind,
+                activation: read.activation,
+                effect: read.effect,
                 schedule: read.schedule,
                 mode: read.mode,
                 tool_name: read.tool_name,
                 prompt: read.prompt,
+                work_item_selector: read.work_item_selector,
+                priority: read.priority,
             }
         }
     }

@@ -1130,6 +1130,48 @@ button.link-danger {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+
+  &.blocked {
+    border-color: rgba($danger, 0.30);
+    background: $danger-soft;
+    color: $danger;
+  }
+}
+
+.patchbay-labels {
+  .panel-heading {
+    margin-bottom: 10px;
+  }
+}
+
+.system-label-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+
+  article {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid $border;
+    border-radius: 8px;
+    background: $surface-raised;
+  }
+
+  code {
+    overflow: hidden;
+    color: $ink;
+    font-size: 12px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    color: $muted;
+    font-size: 12px;
+  }
 }
 
 .item-labels {
@@ -1984,7 +2026,8 @@ dd {
   .run-session-shell,
   .project-management,
   .codex-status-grid,
-  .codex-status-columns {
+  .codex-status-columns,
+  .system-label-grid {
     grid-template-columns: 1fr;
   }
 }

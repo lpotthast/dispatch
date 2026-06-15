@@ -13,10 +13,10 @@ Patchbay coordinates software work across a local project, a server-owned work i
 ## Document Map
 
 - [architecture.md](architecture.md): process boundaries, crate layout, storage ownership, and CrudKit usage.
-- [data-model.md](data-model.md): projects, work items, comments, runs, triggers, events, and settings.
+- [data-model.md](data-model.md): projects, work items, comments, runs, automation rules, events, and settings.
 - [api.md](api.md): custom JSON endpoints, UI form endpoints, streaming endpoints, and CrudKit boundaries.
 - [cli.md](cli.md): standalone CLI contract, context resolution, commands, and development shim.
-- [workflows.md](workflows.md): claim, progress, finish, release, automation launch, triggers, stale claims, and run logs.
+- [workflows.md](workflows.md): claim, progress, finish, release, automation launch, automation rules, stale claims, and run logs.
 - [ui.md](ui.md): Leptos routes, admin surfaces, live workflow visibility, and browser coverage.
 
 ## Repository Shape
@@ -43,5 +43,4 @@ The absence of a root workspace keeps the Patchbay crates independent from the `
 
 ## Design Boundary
 
-CrudKit accelerates ordinary admin and CRUD surfaces such as projects, work items, comments, agent tools, agent runs, and automation triggers. Patchbay-specific workflow behavior remains custom: claim, progress, finish, release, stale-claim recovery, automation launch, run logs, live events, and board-oriented workflow views.
-
+CrudKit accelerates ordinary admin and CRUD surfaces such as projects, work items, comments, agent tools, agent runs, and automation rules. Patchbay-specific workflow behavior remains custom: claim, progress, finish, release, stale-claim recovery, automation launch, run logs, live events, and board-oriented workflow views.

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{
+        automation_triggers,
         entities::{
             project::{self, Project, ProjectActiveModel, ProjectModel},
             work_item_event,
@@ -206,6 +207,12 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         .await
         .context("failed to create project")?;
     swim_lanes::ensure_default_swim_lanes_in_conn(&txn, project.id).await?;
+    automation_triggers::ensure_default_project_automations_in_conn(
+        &txn,
+        project.id,
+        &project.default_agent_tool,
+    )
+    .await?;
     if !project.memory.trim().is_empty() {
         record_memory_changed_event_in_tx(&txn, &project, "initial", &MemoryChangeSource::System)
             .await?;

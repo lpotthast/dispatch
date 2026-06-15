@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use tokio::{
@@ -7,18 +7,9 @@ use tokio::{
 };
 
 use crate::{
-    backend::{
-        automation::{self, StartAutomation},
-        events, items,
-        process_sessions::ProcessSessionRegistry,
-        projects,
-        storage::Store,
-    },
-    shared::view_models::{AgentRunStatus, AutomationMode, DEFAULT_STATE_LABEL, UiEventKind},
+    backend::{events, process_sessions::ProcessSessionRegistry, projects, storage::Store},
+    shared::view_models::UiEventKind,
 };
-
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Default)]
 pub struct AutomationController {
@@ -125,82 +116,29 @@ impl AutomationController {
 }
 
 async fn run_project_automation(
-    store: Store,
-    project_name: String,
-    sessions: ProcessSessionRegistry,
+    _store: Store,
+    _project_name: String,
+    _sessions: ProcessSessionRegistry,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    loop {
-        if *shutdown.borrow() {
+    while !*shutdown.borrow() {
+        if shutdown.changed().await.is_err() {
             break;
         }
-
-        match items::has_unclaimed_item_in_state(&store, &project_name, DEFAULT_STATE_LABEL).await {
-            Ok(true) => {}
-            Ok(false) => {
-                if wait_or_shutdown(IDLE_POLL_INTERVAL, &mut shutdown).await {
-                    break;
-                }
-                continue;
-            }
-            Err(err) => {
-                eprintln!("project automation poll failed for {project_name}: {err:#}");
-                if wait_or_shutdown(FAILURE_BACKOFF, &mut shutdown).await {
-                    break;
-                }
-                continue;
-            }
-        }
-
-        let result = automation::start_automation_with_sessions_until(
-            &store,
-            &project_name,
-            StartAutomation {
-                mode: AutomationMode::Execute,
-                tool: None,
-                work_item_id: None,
-                extra_prompt: None,
-                trigger: None,
-            },
-            Some(sessions.clone()),
-            Some(shutdown.clone()),
-        )
-        .await;
-
-        match result {
-            Ok(run) if run.status == AgentRunStatus::Failed => {
-                if wait_or_shutdown(FAILURE_BACKOFF, &mut shutdown).await {
-                    break;
-                }
-            }
-            Ok(run) if run.status == AgentRunStatus::Cancelled => break,
-            Ok(_) => {}
-            Err(err) => {
-                if *shutdown.borrow() {
-                    break;
-                }
-                eprintln!("project automation run failed for {project_name}: {err:#}");
-                if wait_or_shutdown(FAILURE_BACKOFF, &mut shutdown).await {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-async fn wait_or_shutdown(duration: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
-    tokio::select! {
-        _ = tokio::time::sleep(duration) => *shutdown.borrow(),
-        changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::TempDir;
 
     use super::*;
-    use crate::backend::projects::{CreateProject, create_project};
+    use crate::backend::{
+        automation,
+        projects::{CreateProject, create_project},
+    };
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();

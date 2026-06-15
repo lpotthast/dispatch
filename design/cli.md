@@ -100,6 +100,9 @@ Automation commands:
 ```text
 patchbay automation runs [--limit <n>] [--json]
 patchbay automation log <run-id> [--json]
+patchbay automation triggers list [--json]
+patchbay automation triggers create --name "..." --activation manual|work_item|cron|work_item_created --effect produce_work|consume_work --schedule "@every 15s" [--work-item-selector <json>] [--prompt "..."] [--json]
+patchbay automation triggers schedule <trigger-id> [--json]
 ```
 
 Global flags:

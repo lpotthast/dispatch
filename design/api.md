@@ -87,7 +87,7 @@ CrudKit-generated routes are mounted under `/api` for ordinary admin resources:
 - comments;
 - agent tools;
 - agent runs;
-- automation triggers.
+- automation rules.
 
 CrudKit is not used for custom workflow authority. Admin CRUD can inspect and maintain records, but workflow transitions should use the custom endpoints so server services apply Patchbay rules consistently.
 
@@ -100,7 +100,7 @@ The Leptos UI uses server form handlers for operator actions such as:
 - creating, updating, moving, deleting, and commenting on work items;
 - starting, stopping, and recovering automation;
 - cleaning up worktrees;
-- creating, updating, and deleting triggers;
+- creating, updating, deleting, and queueing evaluations for automation rules;
 - discovering agent tools;
 - picking folders on the local system.
 

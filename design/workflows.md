@@ -12,7 +12,7 @@ Inputs include:
 - agent id;
 - desired source state, usually `open`.
 
-The server chooses an unclaimed item from the requested state, marks it `in_progress`, records claim ownership and timestamps, increments version, and emits workflow events. Automation requests the `open` state; `idea` items are not picked up automatically. `item claim` never defaults to `PATCHBAY_CLAIMED_ITEM_ID`.
+The server chooses an unclaimed item from the requested state, skips items with `patchbay:automation-blocked`, records the source state in `patchbay:claimed-from-state`, marks the item `in_progress`, records claim ownership and timestamps, increments version, and emits workflow events. Default automation requests the `open` state; user-defined automation selectors can target other labels but the blocked-label exclusion is implicit. `item claim` never defaults to `PATCHBAY_CLAIMED_ITEM_ID`.
 
 If no eligible item exists, the API reports that condition without creating implicit work.
 
@@ -50,7 +50,7 @@ For the claimed item, launched agents normally run:
 patchbay item release --comment "Blocked by missing credentials."
 ```
 
-The server validates claim ownership, appends the optional release comment, clears active claim ownership, returns the item to an available state, increments version, and emits events.
+The server validates claim ownership, appends the optional release comment, clears active claim ownership, restores the `state` label to the value captured in `patchbay:claimed-from-state`, increments version, and emits events. Agent-facing releases also add `patchbay:automation-blocked` so the item is not picked up again until a user or agent intentionally removes that label. Stale-claim recovery and cancellation restore the source state without newly blocking automation.
 
 ## Item Updates
 
@@ -82,7 +82,9 @@ For the claimed item, omit project, agent, and item id arguments unless intentio
 
 ## Automation Modes
 
-Patchbay supports automation modes for code-editing and review-style work. Execute and refinement modes claim work. Review-style runs can inspect and report without taking the same claim path.
+Patchbay supports automation modes for code-editing and refinement work. Automation rules either produce work items or consume work items. Work-consuming automation uses execute or refinement modes so every agent launched by a rule has an item to claim, comment on, finish, or release.
+
+Review-style work that should not run automatically is modeled as work-producing automation: a manual evaluation creates a review item with the expensive prompt, and a work-consuming automation can later run an agent against that item.
 
 Mode-specific launch details are server policy. Agents should rely on the prepared prompt and environment, not infer policy from local files.
 

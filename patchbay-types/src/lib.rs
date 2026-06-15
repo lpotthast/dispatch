@@ -1,5 +1,8 @@
 use std::{error::Error, fmt, str::FromStr};
 
+use crudkit_core::condition::{
+    Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -427,6 +430,16 @@ pub const STATE_LABEL_KEY: &str = "state";
 pub const DEFAULT_STATE_LABEL: &str = "open";
 pub const CLAIMED_STATE_LABEL: &str = "in_progress";
 pub const FINISHED_STATE_LABEL: &str = "done";
+pub const CLAIMED_FROM_STATE_LABEL_KEY: &str = "patchbay:claimed-from-state";
+pub const AUTOMATION_BLOCKED_LABEL_KEY: &str = "patchbay:automation-blocked";
+
+pub fn default_automation_work_item_selector() -> Condition {
+    Condition::All(vec![ConditionElement::Clause(ConditionClause {
+        column_name: STATE_LABEL_KEY.to_owned(),
+        operator: Operator::Equal,
+        value: ConditionClauseValue::String(DEFAULT_STATE_LABEL.to_owned()),
+    })])
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkItemView {
@@ -740,35 +753,77 @@ pub struct AutomationStatusView {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TriggerKind {
+pub enum AutomationActivation {
+    Manual,
+    WorkItem,
     Cron,
     WorkItemCreated,
 }
 
-impl TriggerKind {
+impl AutomationActivation {
     pub fn as_storage(self) -> &'static str {
         match self {
+            Self::Manual => "manual",
+            Self::WorkItem => "work_item",
             Self::Cron => "cron",
             Self::WorkItemCreated => "work_item_created",
         }
     }
 }
 
-impl fmt::Display for TriggerKind {
+impl fmt::Display for AutomationActivation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_storage())
     }
 }
 
-impl FromStr for TriggerKind {
+impl FromStr for AutomationActivation {
     type Err = ParseEnumError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_lowercase().replace('-', "_").as_str() {
+            "manual" => Ok(Self::Manual),
+            "work_item" | "started" | "start" => Ok(Self::WorkItem),
             "cron" => Ok(Self::Cron),
             "work_item_created" => Ok(Self::WorkItemCreated),
             _ => Err(ParseEnumError(
-                "trigger kind must be one of: cron, work_item_created",
+                "automation activation must be one of: manual, work_item, cron, work_item_created",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationEffect {
+    ProduceWork,
+    ConsumeWork,
+}
+
+impl AutomationEffect {
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::ProduceWork => "produce_work",
+            Self::ConsumeWork => "consume_work",
+        }
+    }
+}
+
+impl fmt::Display for AutomationEffect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_storage())
+    }
+}
+
+impl FromStr for AutomationEffect {
+    type Err = ParseEnumError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().replace('-', "_").as_str() {
+            "produce_work" | "produce" | "producer" => Ok(Self::ProduceWork),
+            "consume_work" | "consume" | "consumer" => Ok(Self::ConsumeWork),
+            _ => Err(ParseEnumError(
+                "automation effect must be one of: produce_work, consume_work",
             )),
         }
     }
@@ -780,13 +835,20 @@ pub struct AutomationTriggerView {
     pub project_id: i64,
     pub name: String,
     pub enabled: bool,
-    pub trigger_kind: TriggerKind,
-    pub schedule: Option<String>,
+    #[serde(alias = "trigger_kind")]
+    pub activation: AutomationActivation,
+    pub effect: AutomationEffect,
+    pub schedule: String,
     pub mode: AutomationMode,
     pub tool_name: AgentToolName,
     pub prompt: String,
-    pub last_run_at: Option<String>,
-    pub next_run_at: Option<String>,
+    pub work_item_selector: Option<Condition>,
+    pub priority: i64,
+    pub evaluation_count: i64,
+    pub pending_evaluation_count: i64,
+    pub last_evaluation_queued_at: Option<String>,
+    pub last_evaluated_at: Option<String>,
+    pub next_evaluation_at: Option<String>,
     pub last_event_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -797,6 +859,7 @@ pub struct TriggerRunOutcome {
     pub trigger_id: i64,
     pub trigger_name: String,
     pub work_item_id: Option<i64>,
+    pub work_item: Option<WorkItemView>,
     pub run: Option<AgentRunView>,
     pub error: Option<String>,
 }

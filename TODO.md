@@ -28,7 +28,7 @@ Allowing for labels like: "bug", "severity=high", "easy", "env=prod", ...
 
 Labels can be edited by human operators and agents. Agents can add and remove labels while working on an item.
 
-Triggers can be configured to only act when certain label rules are met.
+Automations can be configured to only act when certain label rules are met.
 
 Special system-prompt extensions can be passed to agents based on item labels.
 
@@ -49,14 +49,14 @@ needs-feedback" label.
 
 Commenting a "needs-feedback" labeled item removes that label automatically.
 
-With the `Main automation is also a "trigger"` feature described below, users could set all of this up themselves, by
-telling the main automation (maybe we should rename "Triggers" -> "Automations") to ignore "needs-feedback" entries.
+With the `Main automation is also configurable automation` feature described below, users could set all of this up themselves, by
+telling the main automation to ignore "needs-feedback" entries.
 
-### Main automation is also a "trigger"
+### Main automation is configurable automation
 
 Currently, pressing "Start" starts the automatic pickup of "open" work items. But that automatic pickup is not user
-configurable. It would be a benefit if that would be a simple "when=always" kind-of trigger entry, having no special
-rules for when to run.
+configurable. It would be a benefit if that would be a manual automation entry that only runs while the user-started
+automation loop is active.
 
 ### Related-to-other
 

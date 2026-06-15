@@ -21,8 +21,8 @@ use crate::{
         swim_lanes,
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentToolName, DEFAULT_STATE_LABEL, STATE_LABEL_KEY, TriggerKind,
-        UiEventKind, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentReasoningEffort, AgentToolName, AutomationActivation, AutomationEffect,
+        DEFAULT_STATE_LABEL, STATE_LABEL_KEY, UiEventKind, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -142,6 +142,14 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
             .await
             .map_err(|err| ProjectHookError(err.to_string()))
             .map_err(HookError::Internal)?;
+        automation_triggers::ensure_default_project_automations(
+            &context.store,
+            model.id,
+            &model.default_agent_tool,
+        )
+        .await
+        .map_err(|err| ProjectHookError(err.to_string()))
+        .map_err(HookError::Internal)?;
         if !model.memory.trim().is_empty() {
             projects::snapshot_current_memory_event(
                 &context.store,
@@ -798,7 +806,7 @@ impl CrudResourceContext for AutomationTriggerResourceContext {}
 
 #[derive(Debug, Clone, Default)]
 pub struct AutomationTriggerHookData {
-    next_run_at: Option<String>,
+    next_evaluation_at: Option<String>,
     last_event_id: Option<i64>,
 }
 
@@ -844,23 +852,35 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         _request: RequestContext<NoAuth>,
         _data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
-        create_model.schedule = normalize_optional(create_model.schedule.take());
-        let trigger_kind = parse_trigger_kind(&create_model.trigger_kind)?;
-        validate_trigger_fields(
-            &create_model.name,
-            trigger_kind,
-            create_model.schedule.as_deref(),
-        )?;
-        create_model.mode = automation_triggers::default_mode_for_kind(trigger_kind)
+        create_model.schedule =
+            normalize_required_schedule(std::mem::take(&mut create_model.schedule))?;
+        let activation = parse_activation(&create_model.activation)?;
+        let effect = parse_effect(&create_model.effect)?;
+        create_model.mode = automation_triggers::default_mode_for_activation(activation)
             .as_storage()
             .to_owned();
+        create_model.work_item_selector =
+            normalize_selector_storage(activation, create_model.work_item_selector.take())?;
+        let selector = parse_work_item_selector(create_model.work_item_selector.as_deref())?;
+        validate_trigger_configuration(
+            &create_model.name,
+            activation,
+            effect,
+            &create_model.schedule,
+            create_model
+                .mode
+                .parse::<crate::shared::view_models::AutomationMode>()
+                .map_err(|err| trigger_unprocessable_error(err.to_string()))?,
+            selector.as_ref(),
+            &create_model.prompt,
+        )?;
         create_model.tool_name =
             default_tool_name_for_project(context, create_model.project_id).await?;
         trigger_hook_data(
             &context.store,
             create_model.project_id,
-            trigger_kind,
-            create_model.schedule.as_deref(),
+            activation,
+            &create_model.schedule,
             None,
         )
         .await
@@ -891,25 +911,37 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         _request: RequestContext<NoAuth>,
         _data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
-        update_model.schedule = normalize_optional(update_model.schedule.take());
-        let previous_kind = parse_trigger_kind(&existing.trigger_kind)?;
-        let trigger_kind = parse_trigger_kind(&update_model.trigger_kind)?;
-        validate_trigger_fields(
-            &update_model.name,
-            trigger_kind,
-            update_model.schedule.as_deref(),
-        )?;
-        update_model.mode = automation_triggers::default_mode_for_kind(trigger_kind)
+        update_model.schedule =
+            normalize_required_schedule(std::mem::take(&mut update_model.schedule))?;
+        let previous_activation = parse_activation(&existing.activation)?;
+        let activation = parse_activation(&update_model.activation)?;
+        let effect = parse_effect(&update_model.effect)?;
+        update_model.mode = automation_triggers::default_mode_for_activation(activation)
             .as_storage()
             .to_owned();
+        update_model.work_item_selector =
+            normalize_selector_storage(activation, update_model.work_item_selector.take())?;
+        let selector = parse_work_item_selector(update_model.work_item_selector.as_deref())?;
+        validate_trigger_configuration(
+            &update_model.name,
+            activation,
+            effect,
+            &update_model.schedule,
+            update_model
+                .mode
+                .parse::<crate::shared::view_models::AutomationMode>()
+                .map_err(|err| trigger_unprocessable_error(err.to_string()))?,
+            selector.as_ref(),
+            &update_model.prompt,
+        )?;
         update_model.tool_name =
             default_tool_name_for_project(context, existing.project_id).await?;
         trigger_hook_data(
             &context.store,
             existing.project_id,
-            trigger_kind,
-            update_model.schedule.as_deref(),
-            Some((previous_kind, existing.last_event_id)),
+            activation,
+            &update_model.schedule,
+            Some((previous_activation, existing.last_event_id)),
         )
         .await
     }
@@ -970,6 +1002,20 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
     })
 }
 
+fn normalize_required_schedule(
+    value: String,
+) -> Result<String, HookError<AutomationTriggerHookError>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(trigger_unprocessable_error(
+            "automation schedule is required".to_owned(),
+        ));
+    }
+    automation_triggers::next_evaluation_at(trimmed)
+        .map_err(|err| trigger_unprocessable_error(err.to_string()))?;
+    Ok(trimmed.to_owned())
+}
+
 async fn publish_project_id_event(store: &Store, project_id: i64, kind: UiEventKind) {
     match projects::project_name_by_id(store, project_id).await {
         Ok(project_name) => events::publish_project(kind, &project_name),
@@ -979,18 +1025,65 @@ async fn publish_project_id_event(store: &Store, project_id: i64, kind: UiEventK
     }
 }
 
-fn parse_trigger_kind(value: &str) -> Result<TriggerKind, HookError<AutomationTriggerHookError>> {
+fn parse_activation(
+    value: &str,
+) -> Result<AutomationActivation, HookError<AutomationTriggerHookError>> {
     value
-        .parse::<TriggerKind>()
+        .parse::<AutomationActivation>()
         .map_err(|err| trigger_unprocessable_error(err.to_string()))
 }
 
-fn validate_trigger_fields(
+fn parse_effect(value: &str) -> Result<AutomationEffect, HookError<AutomationTriggerHookError>> {
+    value
+        .parse::<AutomationEffect>()
+        .map_err(|err| trigger_unprocessable_error(err.to_string()))
+}
+
+fn validate_trigger_configuration(
     name: &str,
-    trigger_kind: TriggerKind,
-    schedule: Option<&str>,
+    activation: AutomationActivation,
+    effect: AutomationEffect,
+    schedule: &str,
+    mode: crate::shared::view_models::AutomationMode,
+    work_item_selector: Option<&crudkit_core::condition::Condition>,
+    prompt: &str,
 ) -> Result<(), HookError<AutomationTriggerHookError>> {
-    automation_triggers::validate_trigger_fields(name, trigger_kind, schedule)
+    automation_triggers::validate_trigger_configuration(
+        name,
+        activation,
+        effect,
+        schedule,
+        mode,
+        work_item_selector,
+        prompt,
+    )
+    .map_err(|err| trigger_unprocessable_error(err.to_string()))
+}
+
+fn normalize_selector_storage(
+    activation: AutomationActivation,
+    selector: Option<String>,
+) -> Result<Option<String>, HookError<AutomationTriggerHookError>> {
+    let selector = normalize_optional(selector);
+    match (activation, selector) {
+        (AutomationActivation::WorkItem, None) => {
+            automation_triggers::default_work_item_selector_storage()
+                .map(Some)
+                .map_err(|err| trigger_internal_error(err.to_string()))
+        }
+        (_, selector) => {
+            let condition = automation_triggers::selector_from_storage(selector.as_deref())
+                .map_err(|err| trigger_unprocessable_error(err.to_string()))?;
+            automation_triggers::selector_to_storage(condition.as_ref())
+                .map_err(|err| trigger_unprocessable_error(err.to_string()))
+        }
+    }
+}
+
+fn parse_work_item_selector(
+    selector: Option<&str>,
+) -> Result<Option<crudkit_core::condition::Condition>, HookError<AutomationTriggerHookError>> {
+    automation_triggers::selector_from_storage(selector)
         .map_err(|err| trigger_unprocessable_error(err.to_string()))
 }
 
@@ -1011,32 +1104,39 @@ async fn default_tool_name_for_project(
 async fn trigger_hook_data(
     store: &Store,
     project_id: i64,
-    trigger_kind: TriggerKind,
-    schedule: Option<&str>,
-    previous: Option<(TriggerKind, Option<i64>)>,
+    activation: AutomationActivation,
+    schedule: &str,
+    previous: Option<(AutomationActivation, Option<i64>)>,
 ) -> Result<AutomationTriggerHookData, HookError<AutomationTriggerHookError>> {
-    let next_run_at = match trigger_kind {
-        TriggerKind::Cron => Some(
-            automation_triggers::next_run_at(schedule.unwrap_or_default())
+    let next_evaluation_at = match activation {
+        AutomationActivation::Manual => None,
+        AutomationActivation::WorkItem => None,
+        AutomationActivation::Cron => Some(
+            automation_triggers::next_evaluation_at(schedule)
                 .map_err(|err| trigger_unprocessable_error(err.to_string()))?,
         ),
-        TriggerKind::WorkItemCreated => None,
+        AutomationActivation::WorkItemCreated => None,
     };
-    let last_event_id = match (previous, trigger_kind) {
+    let last_event_id = match (previous, activation) {
         (
-            Some((TriggerKind::WorkItemCreated, existing_last_event_id)),
-            TriggerKind::WorkItemCreated,
+            Some((AutomationActivation::WorkItemCreated, existing_last_event_id)),
+            AutomationActivation::WorkItemCreated,
         ) => existing_last_event_id,
-        (_, TriggerKind::WorkItemCreated) => {
+        (_, AutomationActivation::WorkItemCreated) => {
             automation_triggers::latest_item_created_event_id(store, project_id)
                 .await
                 .map_err(trigger_internal_error)?
         }
-        (_, TriggerKind::Cron) => None,
+        (
+            _,
+            AutomationActivation::Manual
+            | AutomationActivation::WorkItem
+            | AutomationActivation::Cron,
+        ) => None,
     };
 
     Ok(AutomationTriggerHookData {
-        next_run_at,
+        next_evaluation_at,
         last_event_id,
     })
 }
@@ -1047,7 +1147,7 @@ async fn apply_trigger_hook_data(
     data: AutomationTriggerHookData,
 ) -> Result<(), HookError<AutomationTriggerHookError>> {
     let mut active: automation_trigger::ActiveModel = model.clone().into();
-    active.next_run_at = Set(data.next_run_at);
+    active.next_evaluation_at = Set(data.next_evaluation_at);
     active.last_event_id = Set(data.last_event_id);
     active.updated_at = Set(utc_now());
     active

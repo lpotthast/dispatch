@@ -4,7 +4,7 @@ Patchbay stores project-scoped work coordination data. The database schema lives
 
 ## Projects
 
-A project is the root scope for work items, automation settings, triggers, comments, runs, and events.
+A project is the root scope for work items, automation settings, automation rules, comments, runs, and events.
 
 Project data includes:
 
@@ -37,7 +37,9 @@ Core fields include:
 
 Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook: swim-lanes show items whose `state=<swim-lane-identifier>` label matches the lane.
 
-Swim-lanes are project-scoped records with an identifier, display name, and position. New projects start with `idea`, `open`, `in_progress`, and `done` lanes, but users can add, rename, reorder, or remove lanes for their project. Automation defaults to the `open` state label unless configured otherwise.
+Patchbay also uses hardcoded workflow labels. `patchbay:claimed-from-state=<state-label>` is transient claim bookkeeping so release can restore the lane an item came from. `patchbay:automation-blocked` marks released, non-operable work that automation should skip until the label is removed.
+
+Swim-lanes are project-scoped records with an identifier, display name, and position. New projects start with `idea`, `open`, `in_progress`, and `done` lanes, but users can add, rename, reorder, or remove lanes for their project. New projects also get an editable work-consuming automation that checks for the first unclaimed item matching `state=open`.
 
 The version field supports optimistic safety for updates and workflow transitions. Claim ownership is enforced server-side.
 
@@ -82,16 +84,25 @@ Run data includes:
 
 Run logs are read through server endpoints. The log file path is an implementation detail and should not be handed to agents as the primary interface.
 
-## Automation Triggers
+## Automation
 
-Automation triggers allow Patchbay to start work from configured events.
+Automation rules allow Patchbay to evaluate configured activation conditions. Evaluation is cheap. The result is either a new work item or an agent run scheduled against an existing work item.
 
-Supported trigger kinds include:
+Automation records have an `activation` and an `effect`.
 
-- cron schedules;
-- work-item-created triggers.
+Supported activations include:
 
-Trigger records include enabled state, mode, tool, prompt, schedule, last and next run metadata, and the last consumed event id when applicable.
+- `manual`: evaluated only when a user queues an evaluation;
+- `work_item`: polls for unclaimed work matching the selector on the configured schedule while project automation is running;
+- `cron`: evaluates on the configured schedule;
+- `work_item_created`: evaluates for newly created work items.
+
+Supported effects are:
+
+- `produce_work`: creates a work item from the automation prompt and does not launch an agent;
+- `consume_work`: schedules an agent run for a matching work item.
+
+Automation records include enabled state, mode, tool, prompt, required schedule, priority, evaluation count, queued evaluation count, last and next evaluation metadata, and the last consumed event id when applicable. Work-consuming automation can include a CrudKit `Condition`-shaped work-item selector. Selector clauses use label keys as `column_name` values, so nested `All` and `Any` groups can model rules such as `state=open AND (bug OR severity=high)`. Patchbay implicitly excludes `patchbay:automation-blocked` from automation claims.
 
 ## Settings
 

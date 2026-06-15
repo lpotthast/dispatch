@@ -29,7 +29,7 @@ The operator CLI in this crate may accept `--database` because it is part of the
 
 ### `patchbay-types`
 
-This crate defines shared transport types for the API client and server. Examples include project views, work item views, comments, agent runs, automation triggers, workflow request payloads, and shared enum values.
+This crate defines shared transport types for the API client and server. Examples include project views, work item views, comments, agent runs, automation rules, workflow request payloads, and shared enum values.
 
 Types in this crate describe the wire contract. Server-only persistence details stay in `patchbay-server`.
 
@@ -73,4 +73,3 @@ just browser-test
 ```
 
 `just serve` runs the server with the repository-local database and default bind address. `dev-bin/patchbay` is the tracked development shim that runs `patchbay-cli` before the binary is installed globally.
-

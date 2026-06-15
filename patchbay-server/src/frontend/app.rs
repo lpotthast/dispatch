@@ -28,8 +28,9 @@ use crate::{
         },
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece, AgentRunStatus,
-        AgentRunView, AutomationStatusView, CodexAgentModel, CodexAppServerStatusView,
+        AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AgentRunOutputKind,
+        AgentRunOutputPiece, AgentRunStatus, AgentRunView, AutomationStatusView,
+        CLAIMED_FROM_STATE_LABEL_KEY, CodexAgentModel, CodexAppServerStatusView,
         CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
         DEFAULT_STATE_LABEL, ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView,
         ProjectSettingsView, ProjectView, RunLogView, STATE_LABEL_KEY, SwimLaneView, UiEvent,
@@ -351,7 +352,7 @@ pub fn PageTriggers() -> impl IntoView {
     });
 
     view! {
-        <Title text="Triggers"/>
+        <Title text="Automation"/>
         {move || page_view(page.get(), triggers_content)}
     }
 }
@@ -844,6 +845,7 @@ fn board_content(page: BoardPage) -> AnyView {
                         {project_workspace}
                     </section>
                     {board}
+                    {patchbay_labels_panel()}
                     {create_item}
                     <WorkItemsPanel api_base_url=work_items_api_base_url project_id=admin_project_id/>
                     <SwimLanesPanel api_base_url=swim_lanes_api_base_url project_id=admin_project_id/>
@@ -927,11 +929,11 @@ fn triggers_content(page: TriggersPage) -> AnyView {
                 {topbar}
                 <main class="page-shell triggers-page">
                     <section class="page-heading">
-                        <h1>"Triggers"</h1>
+                        <h1>"Automation"</h1>
                     </section>
                     <section class="automation-triggers panel">
                         <div class="panel-heading">
-                            <h2>"Automation triggers"</h2>
+                            <h2>"Automation rules"</h2>
                         </div>
                         <div class="crudkit-automation-triggers" data-crudkit-leptos="automation-triggers">
                             {triggers}
@@ -1639,10 +1641,11 @@ fn item_label_row(
     let value = label.value.clone().unwrap_or_default();
     let rendered = format_label(&label.key, label.value.as_deref());
     let can_delete = label.key != STATE_LABEL_KEY;
+    let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
 
     view! {
         <article class="label-row">
-            <span class="label-chip">{rendered}</span>
+            <span class="label-chip" class:blocked=blocked>{rendered}</span>
             <form method="post" action=update_action>
                 <input type="hidden" name="version" value=item.version.to_string()/>
                 <input name="key" value=label.key required/>
@@ -1678,6 +1681,30 @@ fn state_suggestion_options(suggestions: &[ProjectLabelView]) -> Vec<impl IntoVi
         .filter_map(|label| label.value.clone())
         .map(|value| view! { <option value=value></option> })
         .collect()
+}
+
+fn patchbay_labels_panel() -> impl IntoView {
+    view! {
+        <section class="patchbay-labels panel">
+            <div class="panel-heading">
+                <h2>"Patchbay labels"</h2>
+            </div>
+            <div class="system-label-grid">
+                <article>
+                    <code>{STATE_LABEL_KEY}</code>
+                    <span>"Swim-lane state."</span>
+                </article>
+                <article>
+                    <code>{CLAIMED_FROM_STATE_LABEL_KEY}</code>
+                    <span>"Temporary claim origin."</span>
+                </article>
+                <article>
+                    <code>{AUTOMATION_BLOCKED_LABEL_KEY}</code>
+                    <span>"Excluded from automation pickup."</span>
+                </article>
+            </div>
+        </section>
+    }
 }
 
 fn automation_runs_view(project: &str, runs: Vec<AgentRunView>) -> AnyView {
@@ -2678,9 +2705,16 @@ fn automation_triggers_crudkit_config(api_base_url: String, project_id: i64) -> 
                 },
             ),
             Header::showing(
-                ReadAutomationTriggerField::TriggerKind,
+                ReadAutomationTriggerField::Activation,
                 HeaderOptions {
-                    display_name: "Kind".into(),
+                    display_name: "Activation".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadAutomationTriggerField::Effect,
+                HeaderOptions {
+                    display_name: "Effect".into(),
                     ..Default::default()
                 },
             ),
@@ -2700,9 +2734,33 @@ fn automation_triggers_crudkit_config(api_base_url: String, project_id: i64) -> 
                 },
             ),
             Header::showing(
-                ReadAutomationTriggerField::NextRunAt,
+                ReadAutomationTriggerField::Priority,
                 HeaderOptions {
-                    display_name: "Next run".into(),
+                    display_name: "Priority".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadAutomationTriggerField::EvaluationCount,
+                HeaderOptions {
+                    display_name: "Evaluations".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadAutomationTriggerField::PendingEvaluationCount,
+                HeaderOptions {
+                    display_name: "Queued".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadAutomationTriggerField::NextEvaluationAt,
+                HeaderOptions {
+                    display_name: "Next evaluation".into(),
                     ..Default::default()
                 },
             ),
@@ -2718,9 +2776,16 @@ fn automation_triggers_crudkit_config(api_base_url: String, project_id: i64) -> 
                     },
                 ),
                 Elem::create_field(
-                    CreateAutomationTriggerField::TriggerKind,
+                    CreateAutomationTriggerField::Activation,
                     FieldOptions {
-                        label: Some(Label::new("Kind")),
+                        label: Some(Label::new("Activation")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateAutomationTriggerField::Effect,
+                    FieldOptions {
+                        label: Some(Label::new("Effect")),
                         ..Default::default()
                     },
                 ),
@@ -2735,6 +2800,20 @@ fn automation_triggers_crudkit_config(api_base_url: String, project_id: i64) -> 
                     CreateAutomationTriggerField::Enabled,
                     FieldOptions {
                         label: Some(Label::new("Enabled")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateAutomationTriggerField::Priority,
+                    FieldOptions {
+                        label: Some(Label::new("Priority")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateAutomationTriggerField::WorkItemSelector,
+                    FieldOptions {
+                        label: Some(Label::new("Work item selector")),
                         ..Default::default()
                     },
                 ),
@@ -2766,9 +2845,16 @@ fn automation_triggers_crudkit_config(api_base_url: String, project_id: i64) -> 
                     },
                 ),
                 Elem::field(
-                    AutomationTriggerField::TriggerKind,
+                    AutomationTriggerField::Activation,
                     FieldOptions {
-                        label: Some(Label::new("Kind")),
+                        label: Some(Label::new("Activation")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    AutomationTriggerField::Effect,
+                    FieldOptions {
+                        label: Some(Label::new("Effect")),
                         ..Default::default()
                     },
                 ),
@@ -2783,6 +2869,20 @@ fn automation_triggers_crudkit_config(api_base_url: String, project_id: i64) -> 
                     AutomationTriggerField::Enabled,
                     FieldOptions {
                         label: Some(Label::new("Enabled")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    AutomationTriggerField::Priority,
+                    FieldOptions {
+                        label: Some(Label::new("Priority")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    AutomationTriggerField::WorkItemSelector,
+                    FieldOptions {
+                        label: Some(Label::new("Work item selector")),
                         ..Default::default()
                     },
                 ),
@@ -2809,14 +2909,22 @@ fn automation_triggers_crudkit_config(api_base_url: String, project_id: i64) -> 
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(
-                CreateAutomationTriggerField::TriggerKind,
-                trigger_kind_field_renderer::<DynCreateField>(),
+                CreateAutomationTriggerField::Activation,
+                activation_field_renderer::<DynCreateField>(),
+            )
+            .register(
+                CreateAutomationTriggerField::Effect,
+                effect_field_renderer::<DynCreateField>(),
             )
             .build(),
         update_field_renderer: FieldRendererRegistry::builder()
             .register(
-                AutomationTriggerField::TriggerKind,
-                trigger_kind_field_renderer::<DynUpdateField>(),
+                AutomationTriggerField::Activation,
+                activation_field_renderer::<DynUpdateField>(),
+            )
+            .register(
+                AutomationTriggerField::Effect,
+                effect_field_renderer::<DynUpdateField>(),
             )
             .build(),
     }
@@ -3022,7 +3130,7 @@ fn agent_model_class(value: &str) -> &'static str {
     }
 }
 
-fn trigger_kind_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+fn activation_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
     FieldRenderer::new(
         move |_signals, _field: F, field_mode, field_options, value, value_changed| {
             let selected = Signal::derive(move || {
@@ -3031,7 +3139,7 @@ fn trigger_kind_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
                     .get()
                     .as_string()
                     .cloned()
-                    .unwrap_or_else(|| "work_item_created".to_owned())
+                    .unwrap_or_else(|| "work_item".to_owned())
             });
 
             match field_mode {
@@ -3048,6 +3156,8 @@ fn trigger_kind_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
                                 value_changed.run(Ok(Value::String(event_target_value(&event))));
                             }
                         >
+                            <option value="manual">"manual"</option>
+                            <option value="work_item">"work_item"</option>
                             <option value="work_item_created">"work_item_created"</option>
                             <option value="cron">"cron"</option>
                         </select>
@@ -3056,6 +3166,16 @@ fn trigger_kind_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
                 }
             }
         },
+    )
+}
+
+fn effect_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+    select_field_renderer(
+        &[
+            ("consume_work", "consume_work"),
+            ("produce_work", "produce_work"),
+        ],
+        false,
     )
 }
 
@@ -3570,20 +3690,43 @@ fn trigger_runs_panel(
 
     view! {
         {move || match trigger_runs.get() {
-            Some(Ok(Some(run_sessions))) => run_sessions_panel(
-                project_for_view.clone(),
-                "Runs for selected trigger",
-                None,
-                run_sessions,
-                "No runs for this trigger yet.",
-            ).into_any(),
+            Some(Ok(Some(run_sessions))) => {
+                let schedule_action = selected_trigger_id.get().map(|trigger_id| {
+                    format!(
+                        "/projects/{}/automation/triggers/{}/schedule-evaluation",
+                        encode_path(&project_for_view),
+                        trigger_id
+                    )
+                });
+                view! {
+                    {schedule_action.map(|action| {
+                        view! {
+                            <section class="automation trigger-actions panel">
+                                <div class="panel-heading">
+                                    <h2>"Selected automation"</h2>
+                                </div>
+                                <form method="post" action=action>
+                                    <button type="submit">"Queue evaluation"</button>
+                                </form>
+                            </section>
+                        }
+                    })}
+                    {run_sessions_panel(
+                        project_for_view.clone(),
+                        "Runs for selected automation",
+                        None,
+                        run_sessions,
+                        "No runs for this automation yet.",
+                    )}
+                }.into_any()
+            },
             Some(Ok(None)) => view! {
                 <section class="automation trigger-runs">
                     <div class="panel-heading">
                         <h2>"Runs"</h2>
-                        <p class="muted">"Edit or inspect a trigger to filter this panel."</p>
+                        <p class="muted">"Edit or inspect an automation to filter this panel."</p>
                     </div>
-                    <p class="muted">"No trigger selected."</p>
+                    <p class="muted">"No automation selected."</p>
                 </section>
             }.into_any(),
             Some(Err(err)) => view! {
@@ -4142,8 +4285,9 @@ fn item_card(project: &str, item: WorkItemView) -> impl IntoView + 'static {
         .labels
         .iter()
         .map(|label| {
+            let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
             let label = format_label(&label.key, label.value.as_deref());
-            view! { <span class="label-chip">{label}</span> }
+            view! { <span class="label-chip" class:blocked=blocked>{label}</span> }
         })
         .collect::<Vec<_>>();
     let claim = item.claimed_by.clone().map(|agent| {
@@ -4196,7 +4340,7 @@ fn top_bar(
     } else {
         format!("/{selected_query}")
     };
-    let triggers_href = format!("/triggers{selected_query}");
+    let triggers_href = format!("/automation{selected_query}");
     let codex_href = format!("/codex{selected_query}");
     let projects_href = format!("/projects{selected_query}");
     let api_href = format!("/api/docs{selected_query}");
@@ -4264,7 +4408,7 @@ fn top_bar(
             <a class="brand" href=board_href.clone()>"Patchbay"</a>
             <nav class="top-nav" aria-label="Primary">
                 <a class=board_class href=board_href>"Board"</a>
-                <a class=triggers_class href=triggers_href>"Triggers"</a>
+                <a class=triggers_class href=triggers_href>"Automation"</a>
                 <a class=projects_class href=projects_href>"Projects"</a>
                 <a class=api_class href=api_href>"API"</a>
             </nav>

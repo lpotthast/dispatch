@@ -41,9 +41,12 @@ pub struct Model {
 
     pub enabled: bool,
 
-    pub trigger_kind: String,
+    #[serde(alias = "trigger_kind")]
+    pub activation: String,
 
-    pub schedule: Option<String>,
+    pub effect: String,
+
+    pub schedule: String,
 
     pub mode: String,
 
@@ -51,13 +54,29 @@ pub struct Model {
 
     pub prompt: String,
 
-    #[ck_create_model(exclude)]
-    #[ck_update_model(exclude)]
-    pub last_run_at: Option<String>,
+    pub work_item_selector: Option<String>,
+
+    pub priority: i64,
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
-    pub next_run_at: Option<String>,
+    pub evaluation_count: i64,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub pending_evaluation_count: i64,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub last_evaluation_queued_at: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub last_evaluated_at: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub next_evaluation_at: Option<String>,
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]

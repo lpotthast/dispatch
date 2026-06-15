@@ -115,4 +115,38 @@ mod tests {
 
         assert_eq!(count as usize, Migrator::migrations().len());
     }
+
+    #[test]
+    fn migration_history_names_all_current_migrations() {
+        let migrations = Migrator::migrations();
+        let names = migrations
+            .iter()
+            .map(|migration| migration.name())
+            .collect::<Vec<_>>();
+        let expected = [
+            "migrations",
+            "m20260612_000002_add_phase_two_coordination",
+            "m20260612_000003_add_project_context",
+            "m20260612_000004_add_phase_three_automation",
+            "m20260612_000005_add_phase_three_workspace_policy",
+            "m20260612_000006_add_phase_four_hardening",
+            "m20260612_000007_add_project_default_agent_tool",
+            "m20260613_000008_move_run_settings_into_projects",
+            "m20260613_000009_drop_claude_code_support",
+            "m20260613_000010_rename_project_repo_path",
+            "m20260613_000011_add_project_path_status",
+            "m20260613_000012_add_automation_run_configuration",
+            "m20260614_000013_remove_automation_trigger_dry_run",
+            "m20260614_000014_add_automation_run_trigger_origin",
+            "m20260614_000015_add_project_memory_events",
+            "m20260615_000016_remove_work_item_automation_claimable",
+            "m20260615_000017_add_labels_and_swim_lanes",
+            "m20260615_000018_add_automation_work_item_selectors",
+            "m20260615_000018_rename_automation_activation_require_schedule",
+            "m20260615_000019_add_automation_work_item_selectors",
+            "m20260615_000020_rename_automation_activation_require_schedule",
+        ];
+
+        assert_eq!(names.as_slice(), expected.as_slice());
+    }
 }

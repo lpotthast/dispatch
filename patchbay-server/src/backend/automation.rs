@@ -13,6 +13,7 @@ use codex_app_server_sdk::{
     ApprovalMode, ModelReasoningEffort as CodexReasoningEffort, ReviewModeItem, SandboxMode,
     ThreadEvent, ThreadItem, ThreadOptions, TurnOptions,
 };
+use crudkit_core::condition::Condition;
 use git2::{
     Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions, build::CheckoutBuilder,
 };
@@ -32,11 +33,11 @@ use crate::{
         storage::{Store, utc_now},
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece,
-        AgentRunStatus, AgentRunView, AgentToolName, AutomationMode, AutomationStatusView,
-        DEFAULT_STATE_LABEL, FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView,
-        RecoveredClaimView, RunLogView, UiEventKind, WorkItemView, WorkspaceMode,
-        WorktreeCleanupPolicy,
+        AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog,
+        AgentRunOutputPiece, AgentRunStatus, AgentRunView, AgentToolName, AutomationMode,
+        AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
+        FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView,
+        RunLogView, UiEventKind, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -57,6 +58,7 @@ pub struct StartAutomation {
     pub mode: AutomationMode,
     pub tool: Option<AgentToolName>,
     pub work_item_id: Option<i64>,
+    pub work_item_selector: Option<Condition>,
     pub extra_prompt: Option<String>,
     pub trigger: Option<AutomationTriggerOrigin>,
 }
@@ -130,6 +132,16 @@ enum ClaimReleaseReason {
     Completed,
     Failed,
     Cancelled,
+}
+
+struct ClaimReleaseContext<'a> {
+    project_name: &'a str,
+    run_id: i64,
+    claimed_item: Option<&'a WorkItemView>,
+    agent_id: &'a str,
+    reason: ClaimReleaseReason,
+    detail: Option<&'a str>,
+    automation_disposition: items::ReleaseAutomationDisposition,
 }
 
 #[derive(Debug)]
@@ -421,6 +433,20 @@ async fn complete_started_automation_run(
                     .await;
                 }
             }
+        } else if let Some(condition) = start.work_item_selector.as_ref() {
+            match items::claim_item_matching_condition(store, &project_name, &agent_id, condition)
+                .await
+            {
+                Ok(claimed) => claimed,
+                Err(err) => {
+                    return fail_run(
+                        store,
+                        run,
+                        format!("Failed to claim work item matching automation selector: {err:#}"),
+                    )
+                    .await;
+                }
+            }
         } else {
             match items::claim_item(store, &project_name, &agent_id, DEFAULT_STATE_LABEL).await {
                 Ok(claimed) => claimed,
@@ -440,7 +466,7 @@ async fn complete_started_automation_run(
                 run,
                 AgentRunStatus::Completed,
                 None,
-                "No matching open work item was available".to_owned(),
+                "No matching work item was available".to_owned(),
             )
             .await?;
             return model_to_view(run);
@@ -491,12 +517,15 @@ async fn complete_started_automation_run(
             let result_summary = format!("Failed to prepare workspace: {err}");
             release_claim_if_needed(
                 store,
-                &project_name,
-                run.id,
-                claimed_item.as_ref(),
-                &agent_id,
-                ClaimReleaseReason::Failed,
-                Some(&result_summary),
+                ClaimReleaseContext {
+                    project_name: &project_name,
+                    run_id: run.id,
+                    claimed_item: claimed_item.as_ref(),
+                    agent_id: &agent_id,
+                    reason: ClaimReleaseReason::Failed,
+                    detail: Some(&result_summary),
+                    automation_disposition: items::ReleaseAutomationDisposition::Claimable,
+                },
             )
             .await?;
             run = finish_run(store, run, AgentRunStatus::Failed, None, result_summary).await?;
@@ -647,16 +676,19 @@ async fn complete_started_automation_run(
             }
             release_claim_if_needed(
                 store,
-                &project_name,
-                run.id,
-                claimed_item.as_ref(),
-                &agent_id,
-                if success {
-                    ClaimReleaseReason::Completed
-                } else {
-                    ClaimReleaseReason::Failed
+                ClaimReleaseContext {
+                    project_name: &project_name,
+                    run_id: run.id,
+                    claimed_item: claimed_item.as_ref(),
+                    agent_id: &agent_id,
+                    reason: if success {
+                        ClaimReleaseReason::Completed
+                    } else {
+                        ClaimReleaseReason::Failed
+                    },
+                    detail: Some(&result_summary),
+                    automation_disposition: items::ReleaseAutomationDisposition::Blocked,
                 },
-                Some(&result_summary),
             )
             .await?;
             run = finish_run(
@@ -696,16 +728,23 @@ async fn complete_started_automation_run(
             })?;
             release_claim_if_needed(
                 store,
-                &project_name,
-                run.id,
-                claimed_item.as_ref(),
-                &agent_id,
-                if cancelled {
-                    ClaimReleaseReason::Cancelled
-                } else {
-                    ClaimReleaseReason::Failed
+                ClaimReleaseContext {
+                    project_name: &project_name,
+                    run_id: run.id,
+                    claimed_item: claimed_item.as_ref(),
+                    agent_id: &agent_id,
+                    reason: if cancelled {
+                        ClaimReleaseReason::Cancelled
+                    } else {
+                        ClaimReleaseReason::Failed
+                    },
+                    detail: Some(&message),
+                    automation_disposition: if cancelled {
+                        items::ReleaseAutomationDisposition::Claimable
+                    } else {
+                        items::ReleaseAutomationDisposition::Blocked
+                    },
                 },
-                Some(&message),
             )
             .await?;
             run = finish_run(
@@ -753,12 +792,15 @@ async fn fail_run_after_claim(
 ) -> Result<AgentRunView> {
     release_claim_if_needed(
         store,
-        project_name,
-        run.id,
-        claimed_item,
-        agent_id,
-        ClaimReleaseReason::Failed,
-        Some(&result_summary),
+        ClaimReleaseContext {
+            project_name,
+            run_id: run.id,
+            claimed_item,
+            agent_id,
+            reason: ClaimReleaseReason::Failed,
+            detail: Some(&result_summary),
+            automation_disposition: items::ReleaseAutomationDisposition::Claimable,
+        },
     )
     .await?;
     fail_run(store, run, result_summary).await
@@ -774,12 +816,15 @@ async fn cancel_run_after_claim(
 ) -> Result<AgentRunView> {
     release_claim_if_needed(
         store,
-        project_name,
-        run.id,
-        claimed_item,
-        agent_id,
-        ClaimReleaseReason::Cancelled,
-        Some(&result_summary),
+        ClaimReleaseContext {
+            project_name,
+            run_id: run.id,
+            claimed_item,
+            agent_id,
+            reason: ClaimReleaseReason::Cancelled,
+            detail: Some(&result_summary),
+            automation_disposition: items::ReleaseAutomationDisposition::Claimable,
+        },
     )
     .await?;
     cancel_run(store, run, result_summary).await
@@ -805,12 +850,15 @@ pub async fn stop_automation(store: &Store, project_name: &str) -> Result<Vec<Ag
         let result_summary = "Marked cancelled by automation stop".to_owned();
         release_claim_if_needed(
             store,
-            project_name,
-            run_id,
-            claimed_item.as_ref(),
-            &agent_id,
-            ClaimReleaseReason::Cancelled,
-            Some(&result_summary),
+            ClaimReleaseContext {
+                project_name,
+                run_id,
+                claimed_item: claimed_item.as_ref(),
+                agent_id: &agent_id,
+                reason: ClaimReleaseReason::Cancelled,
+                detail: Some(&result_summary),
+                automation_disposition: items::ReleaseAutomationDisposition::Claimable,
+            },
         )
         .await?;
         let updated =
@@ -1028,6 +1076,13 @@ async fn enforce_concurrency(
     Ok(())
 }
 
+pub async fn can_start_automation_run(store: &Store, project_name: &str) -> Result<bool> {
+    let settings = projects::get_settings(store, project_name).await?;
+    let allowed = projects::allowed_code_edit_agents(&settings);
+    let running = running_run_count(store, project_name).await?;
+    Ok(running < allowed)
+}
+
 async fn running_run_count(store: &Store, project_name: &str) -> Result<i64> {
     let project_id = projects::project_id(store, project_name).await?;
     let count = AgentRun::find()
@@ -1231,15 +1286,16 @@ fn prepare_workspace(
     }
 }
 
-async fn release_claim_if_needed(
-    store: &Store,
-    project_name: &str,
-    run_id: i64,
-    claimed_item: Option<&WorkItemView>,
-    agent_id: &str,
-    reason: ClaimReleaseReason,
-    detail: Option<&str>,
-) -> Result<()> {
+async fn release_claim_if_needed(store: &Store, context: ClaimReleaseContext<'_>) -> Result<()> {
+    let ClaimReleaseContext {
+        project_name,
+        run_id,
+        claimed_item,
+        agent_id,
+        reason,
+        detail,
+        automation_disposition,
+    } = context;
     let Some(claimed_item) = claimed_item else {
         return Ok(());
     };
@@ -1268,6 +1324,7 @@ async fn release_claim_if_needed(
         claimed_item.id,
         agent_id,
         Some(comment),
+        automation_disposition,
     )
     .await?;
     Ok(())
@@ -1761,6 +1818,7 @@ fn build_prompt(context: PromptContext<'_>) -> String {
     if let Some(item) = context.item {
         prompt.push_str("## Claimed Work Item\n\n");
         let state = item.state.as_deref().unwrap_or("(none)");
+        let claimed_from_state = claimed_from_state_label(item).unwrap_or(state);
         let labels = item
             .labels
             .iter()
@@ -1771,10 +1829,12 @@ fn build_prompt(context: PromptContext<'_>) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         prompt.push_str(&format!(
-            "Item: #{}\nTitle: {}\nState label: {}\nLabels: {}\nVersion: {}\n\n{}\n\n",
+            "Item: #{}\nTitle: {}\nState label: {}\nClaimed from state label: {}\nRelease behavior: `patchbay item release` restores the claimed-from state and adds `{}` so automation will not pick the item again until that label is removed.\nLabels: {}\nVersion: {}\n\n{}\n\n",
             item.id,
             item.title,
             state,
+            claimed_from_state,
+            AUTOMATION_BLOCKED_LABEL_KEY,
             if labels.is_empty() { "(none)" } else { &labels },
             item.version,
             item.description
@@ -1795,6 +1855,13 @@ fn build_prompt(context: PromptContext<'_>) -> String {
         );
     }
     prompt
+}
+
+fn claimed_from_state_label(item: &WorkItemView) -> Option<&str> {
+    item.labels
+        .iter()
+        .find(|label| label.key == CLAIMED_FROM_STATE_LABEL_KEY)
+        .and_then(|label| label.value.as_deref())
 }
 
 fn automation_log_dir() -> PathBuf {
@@ -2424,15 +2491,26 @@ mod tests {
             title: "Implement API relay".to_owned(),
             description: "Switch agent-facing CLI calls through HTTP.".to_owned(),
             state: Some("in_progress".to_owned()),
-            labels: vec![patchbay_types::WorkItemLabelView {
-                id: 1,
-                project_id: 1,
-                work_item_id: 42,
-                key: "state".to_owned(),
-                value: Some("in_progress".to_owned()),
-                created_at: "2026-06-14T00:00:00Z".to_owned(),
-                updated_at: "2026-06-14T00:00:00Z".to_owned(),
-            }],
+            labels: vec![
+                patchbay_types::WorkItemLabelView {
+                    id: 1,
+                    project_id: 1,
+                    work_item_id: 42,
+                    key: "state".to_owned(),
+                    value: Some("in_progress".to_owned()),
+                    created_at: "2026-06-14T00:00:00Z".to_owned(),
+                    updated_at: "2026-06-14T00:00:00Z".to_owned(),
+                },
+                patchbay_types::WorkItemLabelView {
+                    id: 2,
+                    project_id: 1,
+                    work_item_id: 42,
+                    key: CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
+                    value: Some("ready".to_owned()),
+                    created_at: "2026-06-14T00:00:00Z".to_owned(),
+                    updated_at: "2026-06-14T00:00:00Z".to_owned(),
+                },
+            ],
             version: 3,
             claimed_by: Some("patchbay-run-1".to_owned()),
             claimed_at: None,
@@ -2473,7 +2551,10 @@ mod tests {
         assert!(prompt.contains("--state <state-label>"));
         assert!(prompt.contains("patchbay label add [item-id]"));
         assert!(prompt.contains("State label: in_progress"));
-        assert!(prompt.contains("Labels: state=in_progress"));
+        assert!(prompt.contains("Claimed from state label: ready"));
+        assert!(prompt.contains("Release behavior: `patchbay item release` restores"));
+        assert!(prompt.contains(AUTOMATION_BLOCKED_LABEL_KEY));
+        assert!(prompt.contains("Labels: state=in_progress, patchbay:claimed-from-state=ready"));
         assert!(prompt.contains("--clear-agent-reasoning-effort"));
         assert!(prompt.contains("patchbay comment add [item-id]"));
         assert!(prompt.contains("patchbay automation runs [--limit N]"));
@@ -2540,7 +2621,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_automation_releases_claimed_work_back_to_open() {
+    async fn stop_automation_releases_claimed_work_back_to_source_state() {
         let (temp, store) = test_store().await;
         let item = create_item(
             &store,
@@ -2548,7 +2629,7 @@ mod tests {
             CreateWorkItem {
                 title: "Cancel me".to_owned(),
                 description: "Exercise cancellation release".to_owned(),
-                state: "open".to_owned(),
+                state: "ready".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -2566,7 +2647,7 @@ mod tests {
         .await
         .unwrap();
         let agent_id = format!("patchbay-run-{}", run.id);
-        claim_item(&store, "demo", &agent_id, "open")
+        claim_item(&store, "demo", &agent_id, "ready")
             .await
             .unwrap()
             .unwrap();
@@ -2597,7 +2678,12 @@ mod tests {
 
         assert_eq!(cancelled.len(), 1);
         assert_eq!(cancelled[0].status, AgentRunStatus::Cancelled);
-        assert_eq!(item.state.as_deref(), Some("open"));
+        assert_eq!(item.state.as_deref(), Some("ready"));
         assert_eq!(item.claimed_by, None);
+        assert!(
+            item.labels
+                .iter()
+                .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
+        );
     }
 }

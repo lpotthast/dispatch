@@ -198,11 +198,11 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             .await?;
 
         driver
-            .goto(app.url("/triggers?project=demo"))
+            .goto(app.url("/automation?project=demo"))
             .await
-            .context("failed to open Patchbay triggers page")?;
+            .context("failed to open Patchbay automation page")?;
         assert_that!(driver.title().await.context("failed to read page title")?)
-            .is_equal_to("Triggers");
+            .is_equal_to("Automation");
         find(
             driver,
             By::Css("[data-crudkit-leptos='automation-triggers'] .crud-nav"),
@@ -210,16 +210,16 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         .await?;
         find(driver, By::Css(".trigger-runs")).await?;
         assert_source_contains(driver, "data-crudkit-leptos=\"automation-triggers\"").await?;
-        assert_source_contains(driver, "Automation triggers").await?;
-        assert_source_contains(driver, "No trigger selected").await?;
+        assert_source_contains(driver, "Automation rules").await?;
+        assert_source_contains(driver, "No automation selected").await?;
         assert_source_does_not_contain(driver, "Create trigger").await?;
         assert_source_does_not_contain(driver, "trigger-edit-form").await?;
 
         create_trigger(driver).await?;
         driver
-            .goto(app.url("/triggers?project=demo"))
+            .goto(app.url("/automation?project=demo"))
             .await
-            .context("failed to reload Patchbay triggers page after trigger creation")?;
+            .context("failed to reload Patchbay automation page after automation creation")?;
         find(
             driver,
             By::Css("[data-crudkit-leptos='automation-triggers'] .crud-nav"),
@@ -231,6 +231,8 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             .goto(app.url("/?project=demo"))
             .await
             .context("failed to reopen Patchbay board page")?;
+        find(driver, By::Css("section.patchbay-labels")).await?;
+        assert_source_contains(driver, "patchbay:automation-blocked").await?;
         open_new_item_modal(driver).await?;
         find(driver, By::Css("#new-item-modal select[name='state']")).await?;
         find(
@@ -473,11 +475,14 @@ async fn create_trigger(driver: &WebDriver) -> Result<(), Report> {
                         project_id: 1,
                         name: 'refine-new',
                         enabled: true,
-                        trigger_kind: 'work_item_created',
-                        schedule: null,
+                        activation: 'work_item_created',
+                        effect: 'consume_work',
+                        schedule: '@every 15s',
                         mode: 'refine',
                         tool_name: 'codex',
-                        prompt: 'Refine new work items.'
+                        prompt: 'Refine new work items.',
+                        work_item_selector: null,
+                        priority: 0
                     }
                 }),
             }).then(async response => {

@@ -159,13 +159,19 @@ enum AutomationTriggers {
     ProjectId,
     Name,
     Enabled,
-    TriggerKind,
+    Activation,
+    Effect,
     Schedule,
     Mode,
     ToolName,
     Prompt,
-    LastRunAt,
-    NextRunAt,
+    WorkItemSelector,
+    Priority,
+    EvaluationCount,
+    PendingEvaluationCount,
+    LastEvaluationQueuedAt,
+    LastEvaluatedAt,
+    NextEvaluationAt,
     LastEventId,
     CreatedAt,
     UpdatedAt,
@@ -194,6 +200,10 @@ impl MigratorTrait for Migrator {
             Box::new(AddProjectMemoryEvents),
             Box::new(RemoveWorkItemAutomationClaimable),
             Box::new(AddLabelsAndSwimLanes),
+            Box::new(AddAutomationWorkItemSelectors),
+            Box::new(RenameAutomationActivationAndRequireScheduleTransientName),
+            Box::new(AddAutomationWorkItemSelectorsTransientName),
+            Box::new(RenameAutomationActivationAndRequireSchedule),
         ]
     }
 }
@@ -879,11 +889,22 @@ async fn create_automation_triggers(manager: &SchemaManager<'_>) -> Result<(), D
                         .default(true),
                 )
                 .col(
-                    ColumnDef::new(AutomationTriggers::TriggerKind)
+                    ColumnDef::new(AutomationTriggers::Activation)
                         .string()
                         .not_null(),
                 )
-                .col(ColumnDef::new(AutomationTriggers::Schedule).string().null())
+                .col(
+                    ColumnDef::new(AutomationTriggers::Effect)
+                        .string()
+                        .not_null()
+                        .default("consume_work"),
+                )
+                .col(
+                    ColumnDef::new(AutomationTriggers::Schedule)
+                        .string()
+                        .not_null()
+                        .default("@every 15s"),
+                )
                 .col(ColumnDef::new(AutomationTriggers::Mode).string().not_null())
                 .col(
                     ColumnDef::new(AutomationTriggers::ToolName)
@@ -897,12 +918,40 @@ async fn create_automation_triggers(manager: &SchemaManager<'_>) -> Result<(), D
                         .default(""),
                 )
                 .col(
-                    ColumnDef::new(AutomationTriggers::LastRunAt)
+                    ColumnDef::new(AutomationTriggers::WorkItemSelector)
+                        .text()
+                        .null(),
+                )
+                .col(
+                    ColumnDef::new(AutomationTriggers::Priority)
+                        .big_integer()
+                        .not_null()
+                        .default(0),
+                )
+                .col(
+                    ColumnDef::new(AutomationTriggers::EvaluationCount)
+                        .big_integer()
+                        .not_null()
+                        .default(0),
+                )
+                .col(
+                    ColumnDef::new(AutomationTriggers::PendingEvaluationCount)
+                        .big_integer()
+                        .not_null()
+                        .default(0),
+                )
+                .col(
+                    ColumnDef::new(AutomationTriggers::LastEvaluationQueuedAt)
                         .string()
                         .null(),
                 )
                 .col(
-                    ColumnDef::new(AutomationTriggers::NextRunAt)
+                    ColumnDef::new(AutomationTriggers::LastEvaluatedAt)
+                        .string()
+                        .null(),
+                )
+                .col(
+                    ColumnDef::new(AutomationTriggers::NextEvaluationAt)
                         .string()
                         .null(),
                 )
@@ -937,10 +986,10 @@ async fn create_automation_triggers(manager: &SchemaManager<'_>) -> Result<(), D
     manager
         .create_index(
             Index::create()
-                .name("idx_automation_triggers_project_kind")
+                .name("idx_automation_triggers_project_activation")
                 .table(AutomationTriggers::Table)
                 .col(AutomationTriggers::ProjectId)
-                .col(AutomationTriggers::TriggerKind)
+                .col(AutomationTriggers::Activation)
                 .if_not_exists()
                 .to_owned(),
         )
@@ -1507,6 +1556,338 @@ impl MigrationTrait for AddLabelsAndSwimLanes {
     }
 }
 
+struct AddAutomationWorkItemSelectors;
+
+impl MigrationName for AddAutomationWorkItemSelectors {
+    fn name(&self) -> &str {
+        "m20260615_000018_add_automation_work_item_selectors"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddAutomationWorkItemSelectors {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "automation_triggers_read_view").await?;
+        add_column_if_missing(manager, "automation_triggers", "work_item_selector", "TEXT").await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "priority",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "evaluation_count",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "effect",
+            "TEXT NOT NULL DEFAULT 'consume_work'",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "pending_evaluation_count",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "last_evaluation_queued_at",
+            "TEXT",
+        )
+        .await?;
+        seed_default_work_item_automations(manager).await?;
+        create_read_view(
+            manager,
+            "automation_triggers",
+            "automation_triggers_read_view",
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "automation_triggers_read_view").await?;
+        drop_column_if_present(manager, "automation_triggers", "last_evaluation_queued_at").await?;
+        drop_column_if_present(manager, "automation_triggers", "pending_evaluation_count").await?;
+        drop_column_if_present(manager, "automation_triggers", "effect").await?;
+        drop_column_if_present(manager, "automation_triggers", "evaluation_count").await?;
+        drop_column_if_present(manager, "automation_triggers", "priority").await?;
+        drop_column_if_present(manager, "automation_triggers", "work_item_selector").await?;
+        create_read_view(
+            manager,
+            "automation_triggers",
+            "automation_triggers_read_view",
+        )
+        .await
+    }
+}
+
+struct RenameAutomationActivationAndRequireScheduleTransientName;
+
+impl MigrationName for RenameAutomationActivationAndRequireScheduleTransientName {
+    fn name(&self) -> &str {
+        "m20260615_000018_rename_automation_activation_require_schedule"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for RenameAutomationActivationAndRequireScheduleTransientName {
+    async fn up(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        Ok(())
+    }
+
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        Ok(())
+    }
+}
+
+struct AddAutomationWorkItemSelectorsTransientName;
+
+impl MigrationName for AddAutomationWorkItemSelectorsTransientName {
+    fn name(&self) -> &str {
+        "m20260615_000019_add_automation_work_item_selectors"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddAutomationWorkItemSelectorsTransientName {
+    async fn up(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        Ok(())
+    }
+
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        Ok(())
+    }
+}
+
+struct RenameAutomationActivationAndRequireSchedule;
+
+impl MigrationName for RenameAutomationActivationAndRequireSchedule {
+    fn name(&self) -> &str {
+        "m20260615_000020_rename_automation_activation_require_schedule"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for RenameAutomationActivationAndRequireSchedule {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "automation_triggers_read_view").await?;
+        rename_column_if_present(manager, "automation_triggers", "trigger_kind", "activation")
+            .await?;
+        rename_column_if_present(
+            manager,
+            "automation_triggers",
+            "run_count",
+            "evaluation_count",
+        )
+        .await?;
+        rename_column_if_present(
+            manager,
+            "automation_triggers",
+            "scheduled_run_count",
+            "pending_evaluation_count",
+        )
+        .await?;
+        rename_column_if_present(
+            manager,
+            "automation_triggers",
+            "last_scheduled_run_at",
+            "last_evaluation_queued_at",
+        )
+        .await?;
+        rename_column_if_present(
+            manager,
+            "automation_triggers",
+            "last_run_at",
+            "last_evaluated_at",
+        )
+        .await?;
+        rename_column_if_present(
+            manager,
+            "automation_triggers",
+            "next_run_at",
+            "next_evaluation_at",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "activation",
+            "TEXT NOT NULL DEFAULT 'work_item'",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "effect",
+            "TEXT NOT NULL DEFAULT 'consume_work'",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "schedule",
+            "TEXT NOT NULL DEFAULT '@every 15s'",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "evaluation_count",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "pending_evaluation_count",
+            "BIGINT NOT NULL DEFAULT 0",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "automation_triggers",
+            "last_evaluation_queued_at",
+            "TEXT",
+        )
+        .await?;
+        add_column_if_missing(manager, "automation_triggers", "last_evaluated_at", "TEXT").await?;
+        add_column_if_missing(manager, "automation_triggers", "next_evaluation_at", "TEXT").await?;
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                r#"
+                UPDATE "automation_triggers"
+                SET
+                    "activation" = CASE
+                        WHEN "activation" = 'manual' THEN 'work_item'
+                        ELSE COALESCE(NULLIF("activation", ''), 'work_item')
+                    END,
+                    "effect" = COALESCE(NULLIF("effect", ''), 'consume_work'),
+                    "schedule" = COALESCE(NULLIF("schedule", ''), '@every 15s'),
+                    "evaluation_count" = COALESCE("evaluation_count", 0),
+                    "pending_evaluation_count" = COALESCE("pending_evaluation_count", 0);
+                "#,
+            ))
+            .await?;
+        drop_index_if_present(manager, "idx_automation_triggers_project_kind").await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_automation_triggers_project_activation")
+                    .table(AutomationTriggers::Table)
+                    .col(AutomationTriggers::ProjectId)
+                    .col(AutomationTriggers::Activation)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        create_read_view(
+            manager,
+            "automation_triggers",
+            "automation_triggers_read_view",
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "automation_triggers_read_view").await?;
+        drop_index_if_present(manager, "idx_automation_triggers_project_activation").await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_automation_triggers_project_kind")
+                    .table(AutomationTriggers::Table)
+                    .col(AutomationTriggers::ProjectId)
+                    .col(AutomationTriggers::Activation)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        drop_column_if_present(manager, "automation_triggers", "last_evaluation_queued_at").await?;
+        drop_column_if_present(manager, "automation_triggers", "pending_evaluation_count").await?;
+        drop_column_if_present(manager, "automation_triggers", "effect").await?;
+        rename_column_if_present(manager, "automation_triggers", "activation", "trigger_kind")
+            .await?;
+        create_read_view(
+            manager,
+            "automation_triggers",
+            "automation_triggers_read_view",
+        )
+        .await
+    }
+}
+
+async fn seed_default_work_item_automations(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    manager
+        .get_connection()
+        .execute(Statement::from_string(
+            manager.get_database_backend(),
+            r#"
+            INSERT INTO "automation_triggers"
+                (
+                    "project_id",
+                    "name",
+                    "enabled",
+                    "activation",
+                    "effect",
+                    "schedule",
+                    "mode",
+                    "tool_name",
+                    "prompt",
+                    "work_item_selector",
+                    "priority",
+                    "evaluation_count",
+                    "pending_evaluation_count",
+                    "last_evaluation_queued_at",
+                    "last_evaluated_at",
+                    "next_evaluation_at",
+                    "last_event_id",
+                    "created_at",
+                    "updated_at"
+                )
+            SELECT
+                "projects"."id",
+                'Claim open work',
+                1,
+                'work_item',
+                'consume_work',
+                '@every 15s',
+                'execute',
+                COALESCE(NULLIF("projects"."default_agent_tool", ''), 'codex'),
+                '',
+                '{"All":[{"column_name":"state","operator":"=","value":{"String":"open"}}]}',
+                0,
+                0,
+                0,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            FROM "projects"
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM "automation_triggers"
+                WHERE "automation_triggers"."project_id" = "projects"."id"
+                  AND "automation_triggers"."activation" IN ('work_item', 'manual')
+            );
+            "#,
+        ))
+        .await
+        .map(|_| ())
+}
+
 async fn create_work_item_labels(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     manager
         .create_table(
@@ -1901,6 +2282,29 @@ async fn drop_column_if_present(
         .execute(Statement::from_string(
             manager.get_database_backend(),
             format!(r#"ALTER TABLE "{table_name}" DROP COLUMN "{column_name}";"#),
+        ))
+        .await
+        .map(|_| ())
+}
+
+async fn rename_column_if_present(
+    manager: &SchemaManager<'_>,
+    table_name: &str,
+    from: &str,
+    to: &str,
+) -> Result<(), DbErr> {
+    if column_exists(manager, table_name, to).await? {
+        return Ok(());
+    }
+    if !column_exists(manager, table_name, from).await? {
+        return Ok(());
+    }
+
+    manager
+        .get_connection()
+        .execute(Statement::from_string(
+            manager.get_database_backend(),
+            format!(r#"ALTER TABLE "{table_name}" RENAME COLUMN "{from}" TO "{to}";"#),
         ))
         .await
         .map(|_| ())

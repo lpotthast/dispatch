@@ -12,8 +12,8 @@ pub mod routes {
         #[route("/projects", view = "PageProjects")]
         pub mod projects {}
 
-        #[route("/triggers", view = "PageTriggers")]
-        pub mod triggers {}
+        #[route("/automation", view = "PageTriggers")]
+        pub mod automation {}
 
         #[route("/codex", view = "PageCodex")]
         pub mod codex {}

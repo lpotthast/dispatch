@@ -24,7 +24,7 @@ patchbay item list [--state <state-label>] [--json]
 patchbay item show [item-id] [--json]
 patchbay item create --title "..." --description "..." [--state <state-label>] [--agent-model MODEL] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--json]
 patchbay item update [item-id] [--title "..."] [--description "..."] [--state <state-label>] [--agent-model MODEL] [--clear-agent-model] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--clear-agent-reasoning-effort] [--expect-version N] [--json]
-patchbay item claim [--state open] [--json]
+patchbay item claim [--state <current-state-label>] [--json]
 patchbay item progress [item-id] --body "..." [--json]
 patchbay item finish [item-id] --report "..." [--json]
 patchbay item release [item-id] [--comment "..."] [--json]
@@ -72,6 +72,7 @@ patchbay item release --comment "Why work is being stopped or handed back."
 - Re-read the item and comments before finishing because humans may edit work while you run.
 - You may add, update, and delete work item labels yourself when doing so clarifies status, routing, priority, environment, or follow-up needs.
 - Work item swim-lanes are driven by the `state=<state-label>` label. Use `patchbay item update --state <state-label>` to move an item.
+- Patchbay records the state label value that was active before claim. `patchbay item release` restores that value and adds `patchbay:automation-blocked`; leave that label in place when the item needs human triage before another automated attempt.
 - Keep progress comments concise and specific.
 - Do not finish unless the requested work is complete or the final report explains why no code change was needed.
 - If verification could not be run, say so in the finish report or release comment.
