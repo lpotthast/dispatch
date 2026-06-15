@@ -154,6 +154,8 @@ pub mod agent_tool {
 }
 
 pub mod project {
+    use crate::shared::view_models::{AgentReasoningEffort, CodexAgentModel};
+
     use crudkit_leptos::prelude::*;
     use serde::{Deserialize, Serialize};
 
@@ -176,14 +178,30 @@ pub mod project {
         pub default_agent_reasoning_effort: Option<String>,
     }
 
-    #[derive(Clone, PartialEq, Eq, Debug, Default, CkField, Serialize, Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Debug, CkField, Serialize, Deserialize)]
     #[ck_field(model = ModelType::Create)]
     pub struct CreateProject {
         pub name: String,
         pub display_name: String,
         pub path: String,
         pub default_agent_model: Option<String>,
+        pub default_agent_reasoning_effort: Option<String>,
         pub memory: String,
+    }
+
+    impl Default for CreateProject {
+        fn default() -> Self {
+            Self {
+                name: String::new(),
+                display_name: String::new(),
+                path: String::new(),
+                default_agent_model: Some(CodexAgentModel::newest().as_storage().to_owned()),
+                default_agent_reasoning_effort: Some(
+                    AgentReasoningEffort::highest().as_storage().to_owned(),
+                ),
+                memory: String::new(),
+            }
+        }
     }
 
     #[derive(Clone, PartialEq, Eq, Debug, CkId, CkField, Serialize, Deserialize)]

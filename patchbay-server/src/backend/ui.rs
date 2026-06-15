@@ -549,6 +549,7 @@ struct CreateProjectForm {
     display_name: Option<String>,
     path: String,
     default_agent_model: Option<String>,
+    default_agent_reasoning_effort: Option<String>,
     system_prompt: Option<String>,
     memory: Option<String>,
 }
@@ -561,6 +562,11 @@ async fn create_project(
     let path = PathBuf::from(form.path);
     let system_prompt = form.system_prompt.filter(|value| !value.trim().is_empty());
     let memory = form.memory.filter(|value| !value.trim().is_empty());
+    let default_agent_reasoning_effort =
+        match parse_optional_reasoning_effort(form.default_agent_reasoning_effort) {
+            Ok(value) => value,
+            Err(err) => return error_response(err).await,
+        };
     match projects::create_project(
         &state.store,
         projects::CreateProject {
@@ -568,6 +574,7 @@ async fn create_project(
             display_name,
             path,
             default_agent_model: form.default_agent_model,
+            default_agent_reasoning_effort,
             system_prompt,
             memory,
         },

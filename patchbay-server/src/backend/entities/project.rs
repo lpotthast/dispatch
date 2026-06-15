@@ -78,7 +78,6 @@ pub struct Model {
 
     pub default_agent_model: Option<String>,
 
-    #[ck_create_model(exclude)]
     pub default_agent_reasoning_effort: Option<String>,
 
     #[ck_create_model(exclude)]

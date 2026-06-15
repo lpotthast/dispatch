@@ -432,6 +432,7 @@ mod tests {
                 display_name: None,
                 path: temp.path().to_path_buf(),
                 default_agent_model: None,
+                default_agent_reasoning_effort: None,
                 system_prompt: None,
                 memory: None,
             },

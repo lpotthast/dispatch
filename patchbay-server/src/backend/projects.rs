@@ -39,6 +39,7 @@ pub struct CreateProject {
     pub display_name: Option<String>,
     pub path: PathBuf,
     pub default_agent_model: Option<String>,
+    pub default_agent_reasoning_effort: Option<AgentReasoningEffort>,
     pub system_prompt: Option<String>,
     pub memory: Option<String>,
 }
@@ -170,8 +171,12 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
     }
     let path = normalize_project_path(create.path)?;
     let path_exists = project_path_exists(Some(&path));
-    let default_agent_model = normalize_optional(create.default_agent_model);
+    let default_agent_model = normalize_optional(create.default_agent_model)
+        .or_else(|| Some(CodexAgentModel::newest().as_storage().to_owned()));
     validate_agent_model(default_agent_model.as_deref())?;
+    let default_agent_reasoning_effort = create
+        .default_agent_reasoning_effort
+        .unwrap_or_else(AgentReasoningEffort::highest);
     let memory = create.memory.unwrap_or_default();
 
     let now = utc_now();
@@ -191,7 +196,9 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         worktree_cleanup_policy: Set(WorktreeCleanupPolicy::Manual.as_storage().to_owned()),
         default_agent_tool: Set(AgentToolName::Codex.as_storage().to_owned()),
         default_agent_model: Set(default_agent_model),
-        default_agent_reasoning_effort: Set(None),
+        default_agent_reasoning_effort: Set(Some(
+            default_agent_reasoning_effort.as_storage().to_owned(),
+        )),
         created_at: Set(now.clone()),
         updated_at: Set(now),
         ..Default::default()
@@ -878,6 +885,7 @@ mod tests {
                 display_name: None,
                 path,
                 default_agent_model: None,
+                default_agent_reasoning_effort: None,
                 system_prompt: None,
                 memory: None,
             },
@@ -906,6 +914,7 @@ mod tests {
                 display_name: None,
                 path: PathBuf::new(),
                 default_agent_model: None,
+                default_agent_reasoning_effort: None,
                 system_prompt: None,
                 memory: None,
             },
@@ -940,6 +949,7 @@ mod tests {
                 display_name: None,
                 path: demo_path.clone(),
                 default_agent_model: None,
+                default_agent_reasoning_effort: None,
                 system_prompt: Some("Prefer small changes.".to_owned()),
                 memory: Some("Initial memory.".to_owned()),
             },
@@ -984,6 +994,7 @@ mod tests {
                 display_name: None,
                 path: demo_path.clone(),
                 default_agent_model: None,
+                default_agent_reasoning_effort: None,
                 system_prompt: None,
                 memory: None,
             },
@@ -1031,7 +1042,14 @@ mod tests {
             WorktreeCleanupPolicy::Manual
         );
         assert_eq!(settings.default_agent_tool, AgentToolName::Codex);
-        assert_eq!(settings.default_agent_model, None);
+        assert_eq!(
+            settings.default_agent_model.as_deref(),
+            Some(CodexAgentModel::newest().as_storage())
+        );
+        assert_eq!(
+            settings.default_agent_reasoning_effort,
+            Some(AgentReasoningEffort::highest())
+        );
     }
 
     #[tokio::test]
@@ -1045,6 +1063,7 @@ mod tests {
                 display_name: None,
                 path: project_path(&temp, "demo"),
                 default_agent_model: Some("gpt-5.4-mini".to_owned()),
+                default_agent_reasoning_effort: None,
                 system_prompt: None,
                 memory: None,
             },
@@ -1053,6 +1072,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(project.default_agent_model.as_deref(), Some("gpt-5.4-mini"));
+    }
+
+    #[tokio::test]
+    async fn project_create_accepts_default_agent_reasoning_effort() {
+        let (temp, store) = test_store().await;
+
+        let project = create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: project_path(&temp, "demo"),
+                default_agent_model: None,
+                default_agent_reasoning_effort: Some(AgentReasoningEffort::High),
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            project.default_agent_reasoning_effort,
+            Some(AgentReasoningEffort::High)
+        );
     }
 
     #[tokio::test]

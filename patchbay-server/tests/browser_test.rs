@@ -129,8 +129,21 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             By::Css("[data-crudkit-leptos='projects'] select.agent-model-select"),
         )
         .await?;
-        assert_source_contains(driver, "Codex default").await?;
-        assert_source_contains(driver, "gpt-5.5").await?;
+        find(
+            driver,
+            By::Css("[data-crudkit-leptos='projects'] select.agent-reasoning-select"),
+        )
+        .await?;
+        find(
+            driver,
+            By::Css("[data-crudkit-leptos='projects'] option[value='gpt-5.5']"),
+        )
+        .await?;
+        find(
+            driver,
+            By::Css("[data-crudkit-leptos='projects'] option[value='xhigh']"),
+        )
+        .await?;
         driver
             .goto(app.url("/projects"))
             .await
@@ -238,9 +251,10 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         find(driver, By::Css("#new-item-modal select[name='state']")).await?;
         find(
             driver,
-            By::Css("#new-item-modal input[name='agent_model_override']"),
+            By::Css("#new-item-modal select[name='agent_model_override']"),
         )
         .await?;
+        assert_source_contains(driver, "Project default").await?;
         send_keys(
             driver,
             By::Css("#new-item-modal input[name='title']"),

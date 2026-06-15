@@ -192,6 +192,9 @@ struct ProjectCreateArgs {
     default_agent_model: Option<String>,
 
     #[arg(long)]
+    default_agent_reasoning_effort: Option<AgentReasoningEffort>,
+
+    #[arg(long)]
     json: bool,
 }
 
@@ -678,6 +681,7 @@ async fn run_project(store: &Store, command: ProjectCommand) -> Result<()> {
                     display_name: args.display_name,
                     path: args.path,
                     default_agent_model: args.default_agent_model,
+                    default_agent_reasoning_effort: args.default_agent_reasoning_effort,
                     system_prompt: args.system_prompt,
                     memory: args.memory,
                 },

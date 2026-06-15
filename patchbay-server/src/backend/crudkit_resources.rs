@@ -22,7 +22,8 @@ use crate::{
     },
     shared::view_models::{
         AgentReasoningEffort, AgentToolName, AutomationActivation, AutomationEffect,
-        DEFAULT_STATE_LABEL, STATE_LABEL_KEY, WorkspaceMode, WorktreeCleanupPolicy,
+        CodexAgentModel, DEFAULT_STATE_LABEL, STATE_LABEL_KEY, WorkspaceMode,
+        WorktreeCleanupPolicy,
     },
 };
 
@@ -124,9 +125,22 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
         create_model.path = Some(normalize_crud_project_path(create_model.path.take())?);
         create_model.default_agent_model =
-            projects::normalize_optional(create_model.default_agent_model.take());
+            projects::normalize_optional(create_model.default_agent_model.take())
+                .or_else(|| Some(CodexAgentModel::newest().as_storage().to_owned()));
         projects::validate_agent_model(create_model.default_agent_model.as_deref())
             .map_err(|err| project_unprocessable_error(err.to_string()))?;
+        create_model.default_agent_reasoning_effort = create_model
+            .default_agent_reasoning_effort
+            .take()
+            .and_then(|effort| projects::normalize_optional(Some(effort)))
+            .map(|effort| {
+                effort
+                    .parse::<AgentReasoningEffort>()
+                    .map(|effort| effort.as_storage().to_owned())
+                    .map_err(|err| project_unprocessable_error(err.to_string()))
+            })
+            .transpose()?
+            .or_else(|| Some(AgentReasoningEffort::highest().as_storage().to_owned()));
         Ok(data)
     }
 

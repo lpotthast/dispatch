@@ -199,6 +199,10 @@ impl CodexAgentModel {
         ]
     }
 
+    pub fn newest() -> Self {
+        Self::Gpt55
+    }
+
     pub fn is_available_model(value: &str) -> bool {
         value.parse::<Self>().is_ok()
     }
@@ -436,6 +440,10 @@ impl AgentReasoningEffort {
             Self::High,
             Self::XHigh,
         ]
+    }
+
+    pub fn highest() -> Self {
+        Self::XHigh
     }
 }
 

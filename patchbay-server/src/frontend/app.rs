@@ -1523,8 +1523,10 @@ fn item_content(page: ItemPage) -> AnyView {
     let header_title = item.title.clone();
     let header_description = item.description.clone();
     let item_state_display = state_label(&item).to_owned();
-    let model_override_value = item.agent_model_override.clone().unwrap_or_default();
-    let reasoning_override_options = agent_reasoning_options(item.agent_reasoning_effort_override);
+    let model_override_options =
+        agent_model_options(item.agent_model_override.clone(), "Project default");
+    let reasoning_override_options =
+        agent_reasoning_options(item.agent_reasoning_effort_override, "Project default");
     let state_action = format!("/projects/{}/items/{}/move", encode_path(&project), item.id);
     let current_state = item.state.clone().unwrap_or_default();
     let claim = item.claimed_by.clone().map(|agent| {
@@ -1580,11 +1582,9 @@ fn item_content(page: ItemPage) -> AnyView {
                         </label>
                         <label>
                             <span>"Agent model override"</span>
-                            <input
-                                name="agent_model_override"
-                                value=model_override_value
-                                placeholder="Project default"
-                            />
+                            <select name="agent_model_override">
+                                {model_override_options}
+                            </select>
                         </label>
                         <label>
                             <span>"Reasoning override"</span>
@@ -2094,6 +2094,13 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
                     },
                 ),
                 Elem::create_field(
+                    CreateProjectField::DefaultAgentReasoningEffort,
+                    FieldOptions {
+                        label: Some(Label::new("Default reasoning")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
                     CreateProjectField::Memory,
                     FieldOptions {
                         label: Some(Label::new("Memory")),
@@ -2217,7 +2224,7 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             )
             .register(
                 ReadProjectField::DefaultAgentModel,
-                agent_model_field_renderer::<DynReadField>(),
+                agent_model_field_renderer::<DynReadField>(Some("Codex default")),
             )
             .build(),
         create_field_renderer: FieldRendererRegistry::builder()
@@ -2227,7 +2234,11 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             )
             .register(
                 CreateProjectField::DefaultAgentModel,
-                agent_model_field_renderer::<DynCreateField>(),
+                agent_model_field_renderer::<DynCreateField>(None),
+            )
+            .register(
+                CreateProjectField::DefaultAgentReasoningEffort,
+                agent_reasoning_field_renderer::<DynCreateField>(None),
             )
             .build(),
         update_field_renderer: FieldRendererRegistry::builder()
@@ -2259,21 +2270,11 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             )
             .register(
                 ProjectField::DefaultAgentModel,
-                agent_model_field_renderer::<DynUpdateField>(),
+                agent_model_field_renderer::<DynUpdateField>(Some("Codex default")),
             )
             .register(
                 ProjectField::DefaultAgentReasoningEffort,
-                select_field_renderer::<DynUpdateField>(
-                    &[
-                        ("none", "none"),
-                        ("minimal", "minimal"),
-                        ("low", "low"),
-                        ("medium", "medium"),
-                        ("high", "high"),
-                        ("xhigh", "xhigh"),
-                    ],
-                    true,
-                ),
+                agent_reasoning_field_renderer::<DynUpdateField>(Some("Codex default")),
             )
             .build(),
     }
@@ -2448,49 +2449,27 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
         read_field_renderer: FieldRendererRegistry::builder()
             .register(
                 ReadWorkItemField::AgentModelOverride,
-                agent_model_field_renderer::<DynReadField>(),
+                agent_model_field_renderer::<DynReadField>(Some("Project default")),
             )
             .build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(
                 CreateWorkItemField::AgentModelOverride,
-                agent_model_field_renderer::<DynCreateField>(),
+                agent_model_field_renderer::<DynCreateField>(Some("Project default")),
             )
             .register(
                 CreateWorkItemField::AgentReasoningEffortOverride,
-                select_field_renderer::<DynCreateField>(
-                    &[
-                        ("", "Project default"),
-                        ("none", "none"),
-                        ("minimal", "minimal"),
-                        ("low", "low"),
-                        ("medium", "medium"),
-                        ("high", "high"),
-                        ("xhigh", "xhigh"),
-                    ],
-                    true,
-                ),
+                agent_reasoning_field_renderer::<DynCreateField>(Some("Project default")),
             )
             .build(),
         update_field_renderer: FieldRendererRegistry::builder()
             .register(
                 WorkItemField::AgentModelOverride,
-                agent_model_field_renderer::<DynUpdateField>(),
+                agent_model_field_renderer::<DynUpdateField>(Some("Project default")),
             )
             .register(
                 WorkItemField::AgentReasoningEffortOverride,
-                select_field_renderer::<DynUpdateField>(
-                    &[
-                        ("", "Project default"),
-                        ("none", "none"),
-                        ("minimal", "minimal"),
-                        ("low", "low"),
-                        ("medium", "medium"),
-                        ("high", "high"),
-                        ("xhigh", "xhigh"),
-                    ],
-                    true,
-                ),
+                agent_reasoning_field_renderer::<DynUpdateField>(Some("Project default")),
             )
             .build(),
     }
@@ -3169,7 +3148,9 @@ fn project_path_status_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
     )
 }
 
-fn agent_model_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+fn agent_model_field_renderer<F: TypeErasedField>(
+    empty_label: Option<&'static str>,
+) -> FieldRenderer<F> {
     FieldRenderer::new(
         move |_signals, _field: F, field_mode, field_options, value, value_changed| {
             let current =
@@ -3178,7 +3159,7 @@ fn agent_model_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
             match field_mode {
                 FieldMode::Display => view! {
                     <span class=move || agent_model_class(&current.get())>
-                        {move || agent_model_label(&current.get())}
+                        {move || agent_model_label(&current.get(), empty_label.unwrap_or("default"))}
                     </span>
                 }
                 .into_any(),
@@ -3212,6 +3193,9 @@ fn agent_model_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
                                 }
                             })
                     };
+                    let empty_option = empty_label.map(|empty_label| {
+                        view! { <option value="">{empty_label}</option> }
+                    });
                     view! {
                         {render_label(field_options.label.clone())}
                         <select
@@ -3227,7 +3211,7 @@ fn agent_model_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
                                 }
                             }
                         >
-                            <option value="">"Codex default"</option>
+                            {empty_option}
                             {stale_option}
                             {options}
                         </select>
@@ -3240,9 +3224,9 @@ fn agent_model_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
     )
 }
 
-fn agent_model_label(value: &str) -> String {
+fn agent_model_label(value: &str, empty_label: &str) -> String {
     if value.is_empty() {
-        "Codex default".to_owned()
+        empty_label.to_owned()
     } else if CodexAgentModel::is_available_model(value) {
         value.to_owned()
     } else {
@@ -3258,6 +3242,66 @@ fn agent_model_class(value: &str) -> &'static str {
     } else {
         "agent-model-value agent-model-stale"
     }
+}
+
+fn agent_reasoning_field_renderer<F: TypeErasedField>(
+    empty_label: Option<&'static str>,
+) -> FieldRenderer<F> {
+    FieldRenderer::new(
+        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+            let current =
+                Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
+
+            match field_mode {
+                FieldMode::Display => view! {
+                    {move || {
+                        let current = current.get();
+                        if current.is_empty() {
+                            empty_label.unwrap_or("default").to_owned()
+                        } else {
+                            current
+                        }
+                    }}
+                }
+                .into_any(),
+                FieldMode::Readable | FieldMode::Editable => {
+                    let disabled = field_mode != FieldMode::Editable || field_options.disabled;
+                    let options = AgentReasoningEffort::all()
+                        .into_iter()
+                        .map(|effort| {
+                            let value = effort.as_storage();
+                            view! {
+                                <option value=value>{effort.to_string()}</option>
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let empty_option = empty_label.map(|empty_label| {
+                        view! { <option value="">{empty_label}</option> }
+                    });
+                    view! {
+                        {render_label(field_options.label.clone())}
+                        <select
+                            class="crud-input-field agent-reasoning-select"
+                            prop:value=move || current.get()
+                            disabled=disabled
+                            on:change=move |event| {
+                                let selected = event_target_value(&event);
+                                if selected.trim().is_empty() {
+                                    value_changed.run(Ok(Value::Null));
+                                } else {
+                                    value_changed.run(Ok(Value::String(selected)));
+                                }
+                            }
+                        >
+                            {empty_option}
+                            {options}
+                        </select>
+                    }
+                    .into_any()
+                }
+            }
+        },
+    )
 }
 
 fn activation_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
@@ -4425,12 +4469,14 @@ fn create_item_modal(
                     </label>
                     <label>
                         <span>"Agent model override"</span>
-                        <input name="agent_model_override" placeholder="Project default"/>
+                        <select name="agent_model_override">
+                            {agent_model_options(None, "Project default")}
+                        </select>
                     </label>
                     <label>
                         <span>"Reasoning override"</span>
                         <select name="agent_reasoning_effort_override">
-                            {agent_reasoning_options(None)}
+                            {agent_reasoning_options(None, "Project default")}
                         </select>
                     </label>
                 </ModalBody>
@@ -4449,10 +4495,48 @@ fn create_item_modal(
     }
 }
 
-fn agent_reasoning_options(selected: Option<AgentReasoningEffort>) -> Vec<impl IntoView> {
+fn agent_model_options(selected: Option<String>, empty_label: &'static str) -> Vec<AnyView> {
+    let selected = selected
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
     let mut options = vec![
         view! {
-            <option value="" selected=selected.is_none()>"Project default"</option>
+            <option value="" selected=selected.is_none()>{empty_label}</option>
+        }
+        .into_any(),
+    ];
+    if let Some(value) = selected
+        .as_ref()
+        .filter(|value| !CodexAgentModel::is_available_model(value))
+    {
+        let option_value = value.clone();
+        let label = format!("{value} (unavailable)");
+        options.push(
+            view! {
+                <option value=option_value selected=true>{label}</option>
+            }
+            .into_any(),
+        );
+    }
+    options.extend(CodexAgentModel::all().into_iter().map(|model| {
+        let value = model.as_storage();
+        view! {
+            <option value=value selected=selected.as_deref() == Some(value)>
+                {value}
+            </option>
+        }
+        .into_any()
+    }));
+    options
+}
+
+fn agent_reasoning_options(
+    selected: Option<AgentReasoningEffort>,
+    empty_label: &'static str,
+) -> Vec<AnyView> {
+    let mut options = vec![
+        view! {
+            <option value="" selected=selected.is_none()>{empty_label}</option>
         }
         .into_any(),
     ];
