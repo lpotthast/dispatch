@@ -601,9 +601,18 @@ fn board_content(page: BoardPage) -> AnyView {
         let project_workspace =
             project_workspace_panel(&project, &project_view, board_return_to.clone());
         let (show_create_item_modal, set_show_create_item_modal) = signal(false);
-        let board = board_view(&project, items, set_show_create_item_modal);
-        let create_item =
-            create_item_modal(&project, show_create_item_modal, set_show_create_item_modal);
+        let (create_item_state, set_create_item_state) = signal(WorkState::Idea);
+        let open_create_item = Callback::new(move |state: WorkState| {
+            set_create_item_state.set(state);
+            set_show_create_item_modal.set(true);
+        });
+        let board = board_view(&project, items, open_create_item);
+        let create_item = create_item_modal(
+            &project,
+            show_create_item_modal,
+            set_show_create_item_modal,
+            create_item_state,
+        );
         let project_settings =
             project_settings_view(&project, project_view, settings, memory_events);
         let automation_view = automation_view(&project, automation_status, run_sessions);
@@ -620,7 +629,7 @@ fn board_content(page: BoardPage) -> AnyView {
                         </div>
                         <button
                             type="button"
-                            on:click=move |_| set_show_create_item_modal.set(true)
+                            on:click=move |_| open_create_item.run(WorkState::Idea)
                         >
                             "New item"
                         </button>
@@ -1244,7 +1253,6 @@ fn item_content(page: ItemPage) -> AnyView {
     );
     let update_title = item.title.clone();
     let update_description = item.description.clone();
-    let claimable_checked = item.automation_claimable;
     let model_override_value = item.agent_model_override.clone().unwrap_or_default();
     let reasoning_override_options = agent_reasoning_options(item.agent_reasoning_effort_override);
     let state_actions = WorkState::all()
@@ -1295,14 +1303,11 @@ fn item_content(page: ItemPage) -> AnyView {
                 <section class="item-meta">
                     <span>{item.state.label()}</span>
                     <span>"v" {item.version}</span>
-                    <span>
-                        {if item.automation_claimable { "automation claimable" } else { "manual only" }}
-                    </span>
                     {claim}
                     {finished}
                 </section>
                 <section class="item-settings panel">
-                    <h2>"Item automation"</h2>
+                    <h2>"Item details"</h2>
                     <form method="post" action=update_action>
                         <input type="hidden" name="version" value=item.version.to_string()/>
                         <label>
@@ -1312,15 +1317,6 @@ fn item_content(page: ItemPage) -> AnyView {
                         <label>
                             <span>"Description"</span>
                             <textarea name="description" required>{update_description}</textarea>
-                        </label>
-                        <label>
-                            <input
-                                type="checkbox"
-                                name="automation_claimable"
-                                value="true"
-                                checked=claimable_checked
-                            />
-                            " automation can claim this item"
                         </label>
                         <label>
                             <span>"Agent model override"</span>
@@ -3323,6 +3319,7 @@ fn create_item_modal(
     project: &str,
     show_when: ReadSignal<bool>,
     set_show_when: WriteSignal<bool>,
+    selected_state: ReadSignal<WorkState>,
 ) -> impl IntoView + 'static {
     let action = StoredValue::new(format!("/projects/{}/items", encode_path(project)));
     view! {
@@ -3354,8 +3351,10 @@ fn create_item_modal(
                         <textarea name="description" placeholder="Description" required></textarea>
                     </label>
                     <label>
-                        <input type="checkbox" name="automation_claimable" value="true" checked=true/>
-                        " automation can claim this item"
+                        <span>"Lane"</span>
+                        <select name="state">
+                            {move || create_item_state_options(selected_state.get())}
+                        </select>
                     </label>
                     <label>
                         <span>"Agent model override"</span>
@@ -3383,6 +3382,19 @@ fn create_item_modal(
     }
 }
 
+fn create_item_state_options(selected: WorkState) -> Vec<impl IntoView> {
+    [WorkState::Idea, WorkState::Open]
+        .into_iter()
+        .map(|state| {
+            view! {
+                <option value=state.as_storage() selected=selected == state>
+                    {state.label()}
+                </option>
+            }
+        })
+        .collect()
+}
+
 fn agent_reasoning_options(selected: Option<AgentReasoningEffort>) -> Vec<impl IntoView> {
     let mut options = vec![
         view! {
@@ -3404,7 +3416,7 @@ fn agent_reasoning_options(selected: Option<AgentReasoningEffort>) -> Vec<impl I
 fn board_view(
     project: &str,
     items: Vec<WorkItemView>,
-    set_show_create_item_modal: WriteSignal<bool>,
+    open_create_item: Callback<WorkState>,
 ) -> impl IntoView + 'static {
     let lanes = WorkState::all()
         .into_iter()
@@ -3417,12 +3429,12 @@ fn board_view(
                 .map(|item| item_card(project, item))
                 .collect::<Vec<_>>();
             let count = cards.len();
-            let lane_add = (state == WorkState::Open).then(|| {
+            let lane_add = matches!(state, WorkState::Idea | WorkState::Open).then(|| {
                 view! {
                     <button
                         type="button"
                         class="lane-add"
-                        on:click=move |_| set_show_create_item_modal.set(true)
+                        on:click=move |_| open_create_item.run(state)
                     >
                         "+ Add"
                     </button>

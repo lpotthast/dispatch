@@ -959,7 +959,7 @@ button.link-danger {
 
 .board {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
   margin-bottom: 22px;
 }
@@ -974,12 +974,17 @@ button.link-danger {
   border-top: 4px solid $accent;
   border-radius: 8px;
   box-shadow: $shadow-sm;
+  border-top-color: $muted;
 
   &:nth-child(2) {
-    border-top-color: $amber;
+    border-top-color: $accent;
   }
 
   &:nth-child(3) {
+    border-top-color: $amber;
+  }
+
+  &:nth-child(4) {
     border-top-color: $green;
   }
 }

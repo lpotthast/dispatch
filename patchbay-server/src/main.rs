@@ -297,7 +297,7 @@ struct ItemCreateArgs {
     description: String,
 
     #[arg(long)]
-    unclaimable: bool,
+    state: Option<WorkState>,
 
     #[arg(long)]
     agent_model: Option<String>,
@@ -321,9 +321,6 @@ struct ItemUpdateArgs {
 
     #[arg(long)]
     description: Option<String>,
-
-    #[arg(long)]
-    automation_claimable: Option<bool>,
 
     #[arg(long)]
     agent_model: Option<String>,
@@ -864,7 +861,7 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
                 CreateWorkItem {
                     title: args.title,
                     description: args.description,
-                    automation_claimable: !args.unclaimable,
+                    state: args.state.unwrap_or(WorkState::Open),
                     agent_model_override: args.agent_model,
                     agent_reasoning_effort_override: args.agent_reasoning_effort,
                 },
@@ -882,7 +879,6 @@ async fn run_item(store: &Store, command: ItemCommand) -> Result<()> {
                 UpdateWorkItem {
                     title: args.title,
                     description: args.description,
-                    automation_claimable: args.automation_claimable,
                     agent_model_override: optional_override(
                         args.agent_model,
                         args.clear_agent_model,

@@ -1085,7 +1085,7 @@ fn codex_return_target(return_to: Option<String>, project: Option<String>) -> St
 struct CreateItemForm {
     title: String,
     description: String,
-    automation_claimable: Option<String>,
+    state: Option<String>,
     agent_model_override: Option<String>,
     agent_reasoning_effort_override: Option<String>,
 }
@@ -1095,13 +1095,17 @@ async fn create_item(
     Path(project): Path<String>,
     Form(form): Form<CreateItemForm>,
 ) -> Response {
+    let item_state = match parse_optional_work_state(form.state, WorkState::Open) {
+        Ok(state) => state,
+        Err(err) => return error_response(err).await,
+    };
     match items::create_item(
         &state.store,
         &project,
         CreateWorkItem {
             title: form.title,
             description: form.description,
-            automation_claimable: form.automation_claimable.is_some(),
+            state: item_state,
             agent_model_override: form
                 .agent_model_override
                 .filter(|value| !value.trim().is_empty()),
@@ -1122,6 +1126,13 @@ async fn create_item(
     }
 }
 
+fn parse_optional_work_state(value: Option<String>, default: WorkState) -> Result<WorkState> {
+    match value.filter(|value| !value.trim().is_empty()) {
+        Some(value) => Ok(value.parse::<WorkState>()?),
+        None => Ok(default),
+    }
+}
+
 fn parse_optional_reasoning_effort(value: Option<String>) -> Result<Option<AgentReasoningEffort>> {
     match value.filter(|value| !value.trim().is_empty()) {
         Some(value) => Ok(Some(value.parse::<AgentReasoningEffort>()?)),
@@ -1134,7 +1145,6 @@ struct UpdateItemForm {
     title: String,
     description: String,
     version: i64,
-    automation_claimable: Option<String>,
     agent_model_override: Option<String>,
     agent_reasoning_effort_override: Option<String>,
 }
@@ -1156,7 +1166,6 @@ async fn update_item(
         UpdateWorkItem {
             title: Some(form.title),
             description: Some(form.description),
-            automation_claimable: Some(form.automation_claimable.is_some()),
             agent_model_override: Some(
                 form.agent_model_override
                     .filter(|value| !value.trim().is_empty()),

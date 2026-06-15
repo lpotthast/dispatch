@@ -20,10 +20,10 @@ When `PATCHBAY_CLAIMED_ITEM_ID` is set, commands taking an `[item-id]` default t
 Work item and comment commands:
 
 ```text
-patchbay item list [--state open|in_progress|done] [--json]
+patchbay item list [--state idea|open|in_progress|done] [--json]
 patchbay item show [item-id] [--json]
-patchbay item create --title "..." --description "..." [--unclaimable] [--agent-model MODEL] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--json]
-patchbay item update [item-id] [--title "..."] [--description "..."] [--state open|in_progress|done] [--automation-claimable true|false] [--agent-model MODEL] [--clear-agent-model] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--clear-agent-reasoning-effort] [--expect-version N] [--json]
+patchbay item create --title "..." --description "..." [--state idea|open] [--agent-model MODEL] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--json]
+patchbay item update [item-id] [--title "..."] [--description "..."] [--state idea|open|in_progress|done] [--agent-model MODEL] [--clear-agent-model] [--agent-reasoning-effort none|minimal|low|medium|high|xhigh] [--clear-agent-reasoning-effort] [--expect-version N] [--json]
 patchbay item claim [--state open] [--json]
 patchbay item progress [item-id] --body "..." [--json]
 patchbay item finish [item-id] --report "..." [--json]

@@ -114,6 +114,7 @@ mod tests {
         items::{CreateWorkItem, create_item},
         projects::{CreateProject, create_project},
     };
+    use crate::shared::view_models::WorkState;
 
     async fn test_store() -> (TempDir, Store, i64) {
         let temp = TempDir::new().unwrap();
@@ -139,7 +140,7 @@ mod tests {
             CreateWorkItem {
                 title: "Comment target".to_owned(),
                 description: "Collect comments".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },

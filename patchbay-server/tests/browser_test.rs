@@ -227,11 +227,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             .await
             .context("failed to reopen Patchbay board page")?;
         open_new_item_modal(driver).await?;
-        find(
-            driver,
-            By::Css("#new-item-modal input[name='automation_claimable']"),
-        )
-        .await?;
+        find(driver, By::Css("#new-item-modal select[name='state']")).await?;
         find(
             driver,
             By::Css("#new-item-modal input[name='agent_model_override']"),
@@ -253,13 +249,13 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
 
         find(driver, By::LinkText("Browser item")).await?;
         assert_source_contains(driver, "Created through browser-test").await?;
-        assert_source_contains(driver, "open").await?;
+        assert_source_contains(driver, "idea").await?;
 
         click(driver, By::LinkText("Browser item")).await?;
         find(driver, By::Css("section.item-settings")).await?;
         find(driver, By::Css("section.comments")).await?;
-        assert_source_contains(driver, "Item automation").await?;
-        assert_source_contains(driver, "automation can claim this item").await?;
+        assert_source_contains(driver, "Item details").await?;
+        assert_source_does_not_contain(driver, "automation can claim this item").await?;
         assert_source_contains(driver, "Start agent").await?;
         assert_source_contains(driver, "Comments").await?;
 

@@ -129,7 +129,7 @@ async fn run_project_automation(
             break;
         }
 
-        match items::has_claimable_item(&store, &project_name, WorkState::Open).await {
+        match items::has_unclaimed_item_in_state(&store, &project_name, WorkState::Open).await {
             Ok(true) => {}
             Ok(false) => {
                 if wait_or_shutdown(IDLE_POLL_INTERVAL, &mut shutdown).await {

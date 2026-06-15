@@ -61,8 +61,6 @@ pub struct Model {
     #[ck_update_model(exclude)]
     pub finished_at: Option<String>,
 
-    pub automation_claimable: bool,
-
     pub agent_model_override: Option<String>,
 
     pub agent_reasoning_effort_override: Option<String>,

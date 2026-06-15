@@ -2359,7 +2359,7 @@ mod tests {
             CreateWorkItem {
                 title: "Configured item".to_owned(),
                 description: "Exercise item overrides".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: Some("gpt-5-codex".to_owned()),
                 agent_reasoning_effort_override: Some(AgentReasoningEffort::Medium),
             },
@@ -2390,7 +2390,6 @@ mod tests {
             claimed_at: None,
             claim_expires_at: None,
             finished_at: None,
-            automation_claimable: true,
             agent_model_override: None,
             agent_reasoning_effort_override: None,
             created_at: "2026-06-14T00:00:00Z".to_owned(),
@@ -2421,7 +2420,7 @@ mod tests {
         );
         assert!(prompt.contains("patchbay item show [item-id] [--json]"));
         assert!(prompt.contains("patchbay item update [item-id]"));
-        assert!(prompt.contains("--automation-claimable true|false"));
+        assert!(prompt.contains("--state idea|open|in_progress|done"));
         assert!(prompt.contains("--clear-agent-reasoning-effort"));
         assert!(prompt.contains("patchbay comment add [item-id]"));
         assert!(prompt.contains("patchbay automation runs [--limit N]"));
@@ -2496,7 +2495,7 @@ mod tests {
             CreateWorkItem {
                 title: "Cancel me".to_owned(),
                 description: "Exercise cancellation release".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },

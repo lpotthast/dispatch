@@ -27,7 +27,7 @@ use crate::{
 pub struct CreateWorkItem {
     pub title: String,
     pub description: String,
-    pub automation_claimable: bool,
+    pub state: WorkState,
     pub agent_model_override: Option<String>,
     pub agent_reasoning_effort_override: Option<AgentReasoningEffort>,
 }
@@ -36,7 +36,6 @@ pub struct CreateWorkItem {
 pub struct UpdateWorkItem {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub automation_claimable: Option<bool>,
     pub agent_model_override: Option<Option<String>>,
     pub agent_reasoning_effort_override: Option<Option<AgentReasoningEffort>>,
     pub expect_version: Option<i64>,
@@ -72,7 +71,7 @@ pub async fn list_items(
     models_to_views(store, items).await
 }
 
-pub async fn has_claimable_item(
+pub async fn has_unclaimed_item_in_state(
     store: &Store,
     project_name: &str,
     state: WorkState,
@@ -82,10 +81,9 @@ pub async fn has_claimable_item(
         .filter(work_item::Column::ProjectId.eq(project_id))
         .filter(work_item::Column::State.eq(state.as_storage()))
         .filter(work_item::Column::ClaimedBy.is_null())
-        .filter(work_item::Column::AutomationClaimable.eq(true))
         .count(store.db().as_ref())
         .await
-        .context("failed to count claimable work items")?;
+        .context("failed to count unclaimed work items")?;
     Ok(count > 0)
 }
 
@@ -101,6 +99,7 @@ pub async fn create_item(
     create: CreateWorkItem,
 ) -> Result<WorkItemView> {
     validate_item_text(&create.title, &create.description)?;
+    validate_create_state(create.state)?;
     let agent_model_override = projects::normalize_optional(create.agent_model_override);
 
     let project_id = projects::project_id(store, project_name).await?;
@@ -115,8 +114,7 @@ pub async fn create_item(
         project_id: Set(project_id),
         title: Set(create.title),
         description: Set(create.description),
-        state: Set(WorkState::Open.as_storage().to_owned()),
-        automation_claimable: Set(create.automation_claimable),
+        state: Set(create.state.as_storage().to_owned()),
         agent_model_override: Set(agent_model_override),
         agent_reasoning_effort_override: Set(create
             .agent_reasoning_effort_override
@@ -151,7 +149,6 @@ pub async fn update_item(
 ) -> Result<WorkItemView> {
     if update.title.is_none()
         && update.description.is_none()
-        && update.automation_claimable.is_none()
         && update.agent_model_override.is_none()
         && update.agent_reasoning_effort_override.is_none()
     {
@@ -177,9 +174,6 @@ pub async fn update_item(
     let mut active: WorkItemActiveModel = existing.into();
     active.title = Set(title);
     active.description = Set(description);
-    if let Some(automation_claimable) = update.automation_claimable {
-        active.automation_claimable = Set(automation_claimable);
-    }
     if let Some(agent_model_override) = update.agent_model_override {
         active.agent_model_override = Set(projects::normalize_optional(agent_model_override));
     }
@@ -274,7 +268,6 @@ pub async fn claim_item(
                 WHERE project_id = ?1
                   AND state = ?4
                   AND claimed_by IS NULL
-                  AND automation_claimable = 1
                 ORDER BY updated_at ASC, id ASC
                 LIMIT 1
             )
@@ -353,7 +346,6 @@ pub async fn claim_specific_item(
               AND project_id = ?1
               AND state = 'open'
               AND claimed_by IS NULL
-              AND automation_claimable = 1
             RETURNING id
             "#,
             vec![
@@ -811,7 +803,6 @@ async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemVie
         claimed_at: item.claimed_at,
         claim_expires_at: item.claim_expires_at,
         finished_at: item.finished_at,
-        automation_claimable: item.automation_claimable,
         agent_model_override: projects::normalize_optional(item.agent_model_override),
         agent_reasoning_effort_override: item
             .agent_reasoning_effort_override
@@ -832,6 +823,14 @@ fn validate_item_text(title: &str, description: &str) -> Result<()> {
         bail!("item description cannot be empty");
     }
     Ok(())
+}
+
+fn validate_create_state(state: WorkState) -> Result<()> {
+    if matches!(state, WorkState::Idea | WorkState::Open) {
+        Ok(())
+    } else {
+        bail!("new items must start in idea or open");
+    }
 }
 
 fn validate_agent_id(agent_id: &str) -> Result<()> {
@@ -928,7 +927,7 @@ mod tests {
             CreateWorkItem {
                 title: "Demo item".to_owned(),
                 description: "Build the demo item".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -941,7 +940,7 @@ mod tests {
             CreateWorkItem {
                 title: "Other item".to_owned(),
                 description: "Build the other item".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -970,7 +969,7 @@ mod tests {
             CreateWorkItem {
                 title: "Move me".to_owned(),
                 description: "Move through states".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1001,7 +1000,7 @@ mod tests {
             CreateWorkItem {
                 title: "Update me".to_owned(),
                 description: "Expect conflict".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1016,7 +1015,6 @@ mod tests {
             UpdateWorkItem {
                 title: Some("Changed".to_owned()),
                 description: None,
-                automation_claimable: None,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
                 expect_version: Some(item.version + 1),
@@ -1037,7 +1035,7 @@ mod tests {
             CreateWorkItem {
                 title: "Delete me".to_owned(),
                 description: "Hide after deletion".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1060,7 +1058,7 @@ mod tests {
             CreateWorkItem {
                 title: "Claim me".to_owned(),
                 description: "Available work".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1103,7 +1101,7 @@ mod tests {
             CreateWorkItem {
                 title: "Race item".to_owned(),
                 description: "Only one agent can own this".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1137,7 +1135,7 @@ mod tests {
             CreateWorkItem {
                 title: "Other item".to_owned(),
                 description: "Should not be claimed from demo".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1153,7 +1151,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unclaimable_item_is_skipped_until_enabled() {
+    async fn idea_item_is_skipped_until_moved_open() {
         let (_temp, store) = test_store().await;
         let item = create_item(
             &store,
@@ -1161,7 +1159,7 @@ mod tests {
             CreateWorkItem {
                 title: "Draft item".to_owned(),
                 description: "Hold this back from automation".to_owned(),
-                automation_claimable: false,
+                state: WorkState::Idea,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1174,27 +1172,15 @@ mod tests {
             .unwrap();
         assert!(skipped.is_none());
 
-        let enabled = update_item(
-            &store,
-            "demo",
-            item.id,
-            UpdateWorkItem {
-                title: None,
-                description: None,
-                automation_claimable: Some(true),
-                agent_model_override: None,
-                agent_reasoning_effort_override: None,
-                expect_version: Some(item.version),
-            },
-        )
-        .await
-        .unwrap();
+        let opened = move_item(&store, "demo", item.id, WorkState::Open, Some(item.version))
+            .await
+            .unwrap();
         let claimed = claim_item(&store, "demo", "agent-a", WorkState::Open)
             .await
             .unwrap()
             .unwrap();
 
-        assert!(enabled.automation_claimable);
+        assert_eq!(opened.state, WorkState::Open);
         assert_eq!(claimed.id, item.id);
         assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
     }
@@ -1208,7 +1194,7 @@ mod tests {
             CreateWorkItem {
                 title: "Owned item".to_owned(),
                 description: "Only the claimant can release it".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1236,7 +1222,7 @@ mod tests {
             CreateWorkItem {
                 title: "Finish item".to_owned(),
                 description: "Complete with report".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
@@ -1280,7 +1266,7 @@ mod tests {
             CreateWorkItem {
                 title: "Stale item".to_owned(),
                 description: "Claim should be recovered".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },

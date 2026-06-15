@@ -12,7 +12,7 @@ Inputs include:
 - agent id;
 - desired source state, usually `open`.
 
-The server chooses a claimable item, marks it `in_progress`, records claim ownership and timestamps, increments version, and emits workflow events. `item claim` never defaults to `PATCHBAY_CLAIMED_ITEM_ID`.
+The server chooses an unclaimed item from the requested state, marks it `in_progress`, records claim ownership and timestamps, increments version, and emits workflow events. Automation requests the `open` state; `idea` items are not picked up automatically. `item claim` never defaults to `PATCHBAY_CLAIMED_ITEM_ID`.
 
 If no eligible item exists, the API reports that condition without creating implicit work.
 
@@ -54,7 +54,7 @@ The server validates claim ownership, appends the optional release comment, clea
 
 ## Item Updates
 
-General item edits use the item update endpoint, not workflow endpoints. Updates can change title, description, state, automation eligibility, and per-item agent overrides.
+General item edits use the item update endpoint, not workflow endpoints. Updates can change title, description, state, and per-item agent overrides.
 
 Version checks protect against overwriting newer item state. Workflow transitions still use dedicated operations because they contain additional business rules.
 
@@ -111,4 +111,3 @@ Automation output is captured by the server and exposed through run-log endpoint
 When project settings request pull request creation, successful automation can run the configured GitHub CLI flow from the prepared workspace and record the resulting PR URL on the run.
 
 Pull request creation is a server-side post-run operation. Failure to create a PR should be recorded on the run without rewriting the completed item state unless server policy requires it.
-

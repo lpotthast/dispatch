@@ -137,9 +137,9 @@ struct ItemCreateArgs {
     #[arg(long)]
     description: String,
 
-    /// Exclude the item from automation claims.
+    /// Initial item state; defaults to open.
     #[arg(long)]
-    unclaimable: bool,
+    state: Option<WorkState>,
 
     /// Agent model override for this item.
     #[arg(long)]
@@ -170,10 +170,6 @@ struct ItemUpdateArgs {
     /// Move the item to a new state.
     #[arg(long)]
     state: Option<WorkState>,
-
-    /// Set whether automation may claim the item.
-    #[arg(long)]
-    automation_claimable: Option<bool>,
 
     /// Set the item-specific agent model.
     #[arg(long)]
@@ -416,7 +412,7 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                     &CreateWorkItemRequest {
                         title: args.title,
                         description: args.description,
-                        automation_claimable: !args.unclaimable,
+                        state: args.state,
                         agent_model_override: args.agent_model,
                         agent_reasoning_effort_override: args.agent_reasoning_effort,
                     },
@@ -432,7 +428,6 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                 title: args.title,
                 description: args.description,
                 state: args.state,
-                automation_claimable: args.automation_claimable,
                 agent_model_override: optional_override(args.agent_model, args.clear_agent_model),
                 agent_reasoning_effort_override: optional_override(
                     args.agent_reasoning_effort,
@@ -964,13 +959,13 @@ mod tests {
         let create = help_output(&["patchbay", "item", "create", "--help"]);
         assert!(create.contains("Title for the new item"));
         assert!(create.contains("Full task description"));
-        assert!(create.contains("Exclude the item from automation claims"));
+        assert!(create.contains("Initial item state"));
         assert!(create.contains("Reasoning effort override for this item"));
         assert!(create.contains("Print JSON instead of text"));
 
         let update = help_output(&["patchbay", "item", "update", "--help"]);
         assert!(update.contains("Item id; defaults to the claimed item"));
-        assert!(update.contains("Set whether automation may claim the item"));
+        assert!(update.contains("Move the item to a new state"));
         assert!(update.contains("Clear the item-specific agent model"));
         assert!(update.contains("Require the current item version"));
 

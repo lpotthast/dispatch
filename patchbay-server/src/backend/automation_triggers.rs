@@ -548,6 +548,7 @@ mod tests {
         items::{CreateWorkItem, create_item, get_item},
         projects::{CreateProject, create_project},
     };
+    use crate::shared::view_models::WorkState;
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
@@ -604,7 +605,7 @@ mod tests {
             CreateWorkItem {
                 title: "New item".to_owned(),
                 description: "Trigger should target this item".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },

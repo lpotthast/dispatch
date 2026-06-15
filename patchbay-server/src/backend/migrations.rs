@@ -51,7 +51,6 @@ enum WorkItems {
     ClaimedAt,
     ClaimExpiresAt,
     FinishedAt,
-    AutomationClaimable,
     AgentModelOverride,
     AgentReasoningEffortOverride,
     Version,
@@ -169,6 +168,7 @@ impl MigratorTrait for Migrator {
             Box::new(RemoveAutomationTriggerDryRun),
             Box::new(AddAutomationRunTriggerOrigin),
             Box::new(AddProjectMemoryEvents),
+            Box::new(RemoveWorkItemAutomationClaimable),
         ]
     }
 }
@@ -411,12 +411,6 @@ async fn create_work_items(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                 .col(ColumnDef::new(WorkItems::ClaimedAt).string().null())
                 .col(ColumnDef::new(WorkItems::ClaimExpiresAt).string().null())
                 .col(ColumnDef::new(WorkItems::FinishedAt).string().null())
-                .col(
-                    ColumnDef::new(WorkItems::AutomationClaimable)
-                        .boolean()
-                        .not_null()
-                        .default(true),
-                )
                 .col(
                     ColumnDef::new(WorkItems::AgentModelOverride)
                         .string()
@@ -1354,6 +1348,62 @@ impl MigrationTrait for AddProjectMemoryEvents {
         drop_column_if_present(manager, "work_item_events", "actor_id").await?;
         drop_column_if_present(manager, "work_item_events", "actor_type").await?;
         create_read_view(manager, "agent_runs", "agent_runs_read_view").await
+    }
+}
+
+struct RemoveWorkItemAutomationClaimable;
+
+impl MigrationName for RemoveWorkItemAutomationClaimable {
+    fn name(&self) -> &str {
+        "m20260615_000016_remove_work_item_automation_claimable"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for RemoveWorkItemAutomationClaimable {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "work_items_read_view").await?;
+        if column_exists(manager, "work_items", "automation_claimable").await? {
+            manager
+                .get_connection()
+                .execute(Statement::from_string(
+                    manager.get_database_backend(),
+                    r#"
+                    UPDATE "work_items"
+                    SET "state" = 'idea'
+                    WHERE "state" = 'open'
+                      AND "automation_claimable" = 0;
+                    "#,
+                ))
+                .await?;
+        }
+        drop_column_if_present(manager, "work_items", "automation_claimable").await?;
+        create_read_view(manager, "work_items", "work_items_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "work_items_read_view").await?;
+        add_column_if_missing(
+            manager,
+            "work_items",
+            "automation_claimable",
+            "BOOLEAN NOT NULL DEFAULT 1",
+        )
+        .await?;
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                r#"
+                UPDATE "work_items"
+                SET
+                    "automation_claimable" = 0,
+                    "state" = 'open'
+                WHERE "state" = 'idea';
+                "#,
+            ))
+            .await?;
+        create_read_view(manager, "work_items", "work_items_read_view").await
     }
 }
 

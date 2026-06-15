@@ -28,14 +28,15 @@ Work items are the primary coordination unit.
 Core fields include:
 
 - title and description;
-- state: `open`, `in_progress`, or `done`;
+- state: `idea`, `open`, `in_progress`, or `done`;
 - monotonically increasing version;
 - current claimant and claim timestamps;
 - claim expiration timestamp;
 - finish timestamp;
-- automation eligibility;
 - optional agent model and reasoning effort overrides;
 - comment count and timestamps.
+
+`idea` items are not eligible for automatic pickup. `open` items are the executable queue for automation.
 
 The version field supports optimistic safety for updates and workflow transitions. Claim ownership is enforced server-side.
 

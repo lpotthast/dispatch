@@ -400,6 +400,7 @@ impl FromStr for AgentReasoningEffort {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkState {
+    Idea,
     Open,
     InProgress,
     Done,
@@ -408,6 +409,7 @@ pub enum WorkState {
 impl WorkState {
     pub fn as_storage(self) -> &'static str {
         match self {
+            Self::Idea => "idea",
             Self::Open => "open",
             Self::InProgress => "in_progress",
             Self::Done => "done",
@@ -416,14 +418,15 @@ impl WorkState {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Idea => "idea",
             Self::Open => "open",
             Self::InProgress => "in progress",
             Self::Done => "done",
         }
     }
 
-    pub fn all() -> [Self; 3] {
-        [Self::Open, Self::InProgress, Self::Done]
+    pub fn all() -> [Self; 4] {
+        [Self::Idea, Self::Open, Self::InProgress, Self::Done]
     }
 }
 
@@ -438,11 +441,12 @@ impl FromStr for WorkState {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_lowercase().replace('-', "_").as_str() {
+            "idea" => Ok(Self::Idea),
             "open" => Ok(Self::Open),
             "in progress" | "in_progress" => Ok(Self::InProgress),
             "done" => Ok(Self::Done),
             _ => Err(ParseEnumError(
-                "state must be one of: open, in progress, done",
+                "state must be one of: idea, open, in progress, done",
             )),
         }
     }
@@ -460,7 +464,6 @@ pub struct WorkItemView {
     pub claimed_at: Option<String>,
     pub claim_expires_at: Option<String>,
     pub finished_at: Option<String>,
-    pub automation_claimable: bool,
     pub agent_model_override: Option<String>,
     pub agent_reasoning_effort_override: Option<AgentReasoningEffort>,
     pub created_at: String,
@@ -813,7 +816,7 @@ pub struct ApiError {
 pub struct CreateWorkItemRequest {
     pub title: String,
     pub description: String,
-    pub automation_claimable: bool,
+    pub state: Option<WorkState>,
     pub agent_model_override: Option<String>,
     pub agent_reasoning_effort_override: Option<AgentReasoningEffort>,
 }
@@ -823,7 +826,6 @@ pub struct UpdateWorkItemRequest {
     pub title: Option<String>,
     pub description: Option<String>,
     pub state: Option<WorkState>,
-    pub automation_claimable: Option<bool>,
     pub agent_model_override: Option<Option<String>>,
     pub agent_reasoning_effort_override: Option<Option<AgentReasoningEffort>>,
     pub expect_version: Option<i64>,

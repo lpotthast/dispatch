@@ -124,7 +124,7 @@ pub(crate) async fn create_item(
             CreateWorkItem {
                 title: request.title,
                 description: request.description,
-                automation_claimable: request.automation_claimable,
+                state: request.state.unwrap_or(WorkState::Open),
                 agent_model_override: request.agent_model_override,
                 agent_reasoning_effort_override: request.agent_reasoning_effort_override,
             },
@@ -261,7 +261,6 @@ async fn update_item_inner(
 ) -> Result<patchbay_types::WorkItemView> {
     let has_item_update = request.title.is_some()
         || request.description.is_some()
-        || request.automation_claimable.is_some()
         || request.agent_model_override.is_some()
         || request.agent_reasoning_effort_override.is_some();
 
@@ -279,7 +278,6 @@ async fn update_item_inner(
                 UpdateWorkItem {
                     title: request.title,
                     description: request.description,
-                    automation_claimable: request.automation_claimable,
                     agent_model_override: request.agent_model_override,
                     agent_reasoning_effort_override: request.agent_reasoning_effort_override,
                     expect_version: request.expect_version,
@@ -367,7 +365,7 @@ mod tests {
             CreateWorkItem {
                 title: "Endpoint work".to_owned(),
                 description: "Exercise workflow API endpoints".to_owned(),
-                automation_claimable: true,
+                state: WorkState::Open,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
             },
