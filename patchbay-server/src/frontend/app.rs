@@ -901,7 +901,6 @@ fn board_content(page: BoardPage) -> AnyView {
                         {project_workspace}
                     </section>
                     {board}
-                    {patchbay_labels_panel()}
                     {create_item}
                     <WorkItemsPanel
                         api_base_url=work_items_api_base_url
@@ -1945,6 +1944,7 @@ fn api_docs_content(page: ApiDocsPage) -> AnyView {
                 <section class="page-heading">
                     <h1>"Patchbay API"</h1>
                 </section>
+                {patchbay_labels_panel()}
                 <section class="panel">
                     <h2>"Custom endpoints"</h2>
                     <ul class="compact-list">{custom_endpoints}</ul>

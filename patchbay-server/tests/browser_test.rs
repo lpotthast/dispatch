@@ -54,7 +54,7 @@ impl PatchbayTestApp {
         let app = LeptosTestAppConfig::new(env!("CARGO_MANIFEST_DIR"))
             .with_app_name("patchbay browser test")
             .with_forward_logs(false)
-            .with_startup_line("Serving Patchbay at")
+            .with_startup_line("Serving Patchbay")
             .with_env("PATCHBAY_DATABASE", database.as_os_str())
             .start()
             .await
@@ -245,8 +245,17 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             .goto(app.url("/?project=demo"))
             .await
             .context("failed to reopen Patchbay board page")?;
+        assert_source_does_not_contain(driver, "Patchbay labels").await?;
+        driver
+            .goto(app.url("/api/docs?project=demo"))
+            .await
+            .context("failed to open Patchbay API page")?;
         find(driver, By::Css("section.patchbay-labels")).await?;
         assert_source_contains(driver, "patchbay:automation-blocked").await?;
+        driver
+            .goto(app.url("/?project=demo"))
+            .await
+            .context("failed to reopen Patchbay board page after API check")?;
         open_new_item_modal(driver).await?;
         find(driver, By::Css("#new-item-modal select[name='state']")).await?;
         find(

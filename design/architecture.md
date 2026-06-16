@@ -73,3 +73,5 @@ just browser-test
 ```
 
 `just serve` runs the server with the repository-local database and default bind address. `dev-bin/patchbay` is the tracked development shim that runs `patchbay-cli` before the binary is installed globally.
+
+Server tracing writes pretty logs to stderr. The default target filter is `info,tokio=warn,runtime=warn,sqlx=warn`, which hides SQLx query noise while keeping warnings visible. Set `PATCHBAY_SQLX_LOG=info` to opt SQLx query logs back in, or set `PATCHBAY_LOG` to a full `tracing_subscriber::filter::Targets` directive list such as `debug,sqlx=warn`.
