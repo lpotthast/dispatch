@@ -9,15 +9,14 @@ use crate::{
         work_item_states,
     },
     frontend::{
-        ApiDocsPage, BoardAutomationSection, BoardItemsSection, BoardPage, BoardRunSessionView,
-        CodexStatusPage, ItemPage, ProjectsPage, RunLogPage, RuntimeConfigView, TriggersPage,
+        ApiDocsPage, BoardItemsSection, BoardPage, BoardRunSessionView, CodexStatusPage, ItemPage,
+        ProjectsPage, RunLogPage, RunsPage, RunsSection, RuntimeConfigView, TriggersPage,
     },
     shared::view_models::{AgentRunView, CodexAppServerStatusView, ProcessSessionView},
 };
 
 pub(crate) async fn board_page_data(
     store: &Store,
-    sessions: &ProcessSessionRegistry,
     automation_controller: &AutomationController,
     codex_status: CodexAppServerStatusView,
     selected_project: Option<&str>,
@@ -38,7 +37,6 @@ pub(crate) async fn board_page_data(
     let mut memory_events = Vec::new();
     let mut automation_status = None;
     let mut automation_running = false;
-    let mut run_sessions = Vec::new();
     let mut project_items = Vec::new();
     let mut project_swim_lanes = Vec::new();
     let mut project_work_item_states = Vec::new();
@@ -51,9 +49,6 @@ pub(crate) async fn board_page_data(
         memory_events = projects::list_memory_events(store, project).await?;
         let status = automation::automation_status(store, project).await?;
         automation_running = automation_controller.is_project_running(project).await;
-        let active_sessions = sessions.list_for_project(project).await;
-        run_sessions =
-            board_run_sessions(store, project, status.recent_runs.clone(), active_sessions).await?;
         automation_status = Some(status);
         project_items = items::list_items(store, project, None).await?;
         project_swim_lanes = swim_lanes::list_swim_lanes(store, project).await?;
@@ -71,7 +66,6 @@ pub(crate) async fn board_page_data(
         memory_events,
         automation_status,
         automation_running,
-        run_sessions,
         items: project_items,
         swim_lanes: project_swim_lanes,
         work_item_states: project_work_item_states,
@@ -92,12 +86,53 @@ pub(crate) async fn board_items_section(store: &Store, project: &str) -> Result<
     })
 }
 
-pub(crate) async fn board_automation_section(
+pub(crate) async fn runs_page_data(
+    store: &Store,
+    sessions: &ProcessSessionRegistry,
+    automation_controller: &AutomationController,
+    codex_status: CodexAppServerStatusView,
+    selected_project: Option<&str>,
+) -> Result<RunsPage> {
+    let projects = projects::list_projects(store).await?;
+    let active_project_names = active_project_names(store, automation_controller).await?;
+    let selected_project = selected_project
+        .or_else(|| projects.first().map(|project| project.name.as_str()))
+        .map(ToOwned::to_owned);
+    let selected_project_view = selected_project
+        .as_deref()
+        .and_then(|project| projects.iter().find(|candidate| candidate.name == project))
+        .cloned();
+
+    let mut automation_status = None;
+    let mut automation_running = false;
+    let mut run_sessions = Vec::new();
+    if let Some(project) = selected_project_view
+        .as_ref()
+        .map(|project| project.name.as_str())
+    {
+        let section = runs_section(store, sessions, automation_controller, project).await?;
+        automation_running = section.automation_running;
+        run_sessions = section.run_sessions;
+        automation_status = Some(section.automation_status);
+    }
+
+    Ok(RunsPage {
+        projects,
+        active_project_names,
+        selected_project,
+        automation_status,
+        automation_running,
+        run_sessions,
+        codex_status,
+    })
+}
+
+pub(crate) async fn runs_section(
     store: &Store,
     sessions: &ProcessSessionRegistry,
     automation_controller: &AutomationController,
     project: &str,
-) -> Result<BoardAutomationSection> {
+) -> Result<RunsSection> {
     let automation_status = automation::automation_status(store, project).await?;
     let automation_running = automation_controller.is_project_running(project).await;
     let active_sessions = sessions.list_for_project(project).await;
@@ -109,7 +144,7 @@ pub(crate) async fn board_automation_section(
     )
     .await?;
 
-    Ok(BoardAutomationSection {
+    Ok(RunsSection {
         automation_status,
         automation_running,
         run_sessions,

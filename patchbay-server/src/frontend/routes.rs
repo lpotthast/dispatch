@@ -4,7 +4,7 @@ use leptos_routes::routes;
 pub mod routes {
     use crate::frontend::{
         MainLayout, PageApiDocs, PageBoard, PageCodex, PageErr404, PageError, PageItem,
-        PageProjects, PageRunLog, PageTriggers,
+        PageProjects, PageRunLog, PageRuns, PageTriggers,
     };
 
     #[route("/", layout = "MainLayout", fallback = "PageBoard")]
@@ -14,6 +14,9 @@ pub mod routes {
 
         #[route("/automation", view = "PageTriggers")]
         pub mod automation {}
+
+        #[route("/runs", view = "PageRuns")]
+        pub mod runs {}
 
         #[route("/codex", view = "PageCodex")]
         pub mod codex {}

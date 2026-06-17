@@ -114,7 +114,6 @@ pub struct BoardPage {
     pub memory_events: Vec<ProjectMemoryEventView>,
     pub automation_status: Option<AutomationStatusView>,
     pub automation_running: bool,
-    pub run_sessions: Vec<BoardRunSessionView>,
     pub items: Vec<WorkItemView>,
     pub swim_lanes: Vec<SwimLaneView>,
     pub work_item_states: Vec<WorkItemStateView>,
@@ -133,7 +132,18 @@ pub struct BoardItemsSection {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct BoardAutomationSection {
+pub struct RunsPage {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub selected_project: Option<String>,
+    pub automation_status: Option<AutomationStatusView>,
+    pub automation_running: bool,
+    pub run_sessions: Vec<BoardRunSessionView>,
+    pub codex_status: CodexAppServerStatusView,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RunsSection {
     pub automation_status: AutomationStatusView,
     pub automation_running: bool,
     pub run_sessions: Vec<BoardRunSessionView>,
@@ -216,6 +226,7 @@ pub struct ApiDocsPage {
 enum ActivePage {
     Board,
     Triggers,
+    Runs,
     Codex,
     Projects,
     Api,
@@ -337,7 +348,6 @@ async fn load_board_page(
     let codex_status = state.codex_status.read().await.clone();
     page_data::board_page_data(
         &state.store,
-        &state.sessions,
         &state.automation_controller,
         codex_status,
         selected_project.as_deref(),
@@ -353,21 +363,6 @@ async fn load_board_items_section(project: String) -> Result<BoardItemsSection, 
     page_data::board_items_section(&state.store, &project)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
-}
-
-#[server(prefix = "/leptos")]
-async fn load_board_automation_section(
-    project: String,
-) -> Result<BoardAutomationSection, ServerFnError> {
-    let state = app_state::app_state();
-    page_data::board_automation_section(
-        &state.store,
-        &state.sessions,
-        &state.automation_controller,
-        &project,
-    )
-    .await
-    .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[component]
@@ -447,6 +442,46 @@ async fn load_trigger_run_sessions(
     page_data::trigger_run_sessions(&state.store, &state.sessions, &project, trigger_id)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[component]
+pub fn PageRuns() -> impl IntoView {
+    let selected_project = selected_project_signal();
+    let page = LocalResource::new(move || load_runs_page(selected_project.get()));
+    refetch_on_live_event(page, runs_page_event_matches);
+
+    view! {
+        <Title text="Runs"/>
+        {resilient_page_view(page, runs_content)}
+    }
+}
+
+#[server(prefix = "/leptos")]
+async fn load_runs_page(selected_project: Option<String>) -> Result<RunsPage, ServerFnError> {
+    let state = app_state::app_state();
+    let codex_status = state.codex_status.read().await.clone();
+    page_data::runs_page_data(
+        &state.store,
+        &state.sessions,
+        &state.automation_controller,
+        codex_status,
+        selected_project.as_deref(),
+    )
+    .await
+    .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server(prefix = "/leptos")]
+async fn load_runs_section(project: String) -> Result<RunsSection, ServerFnError> {
+    let state = app_state::app_state();
+    page_data::runs_section(
+        &state.store,
+        &state.sessions,
+        &state.automation_controller,
+        &project,
+    )
+    .await
+    .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[component]
@@ -669,6 +704,17 @@ fn api_docs_event_matches(event: &UiEvent) -> bool {
         event,
         UiEvent::ProjectListChanged { .. }
             | UiEvent::ProjectChanged { .. }
+            | UiEvent::CodexStatusChanged { .. }
+    )
+}
+
+fn runs_page_event_matches(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::ProjectListChanged { .. }
+            | UiEvent::ProjectChanged { .. }
+            | UiEvent::AutomationChanged { .. }
+            | UiEvent::AgentRunChanged { .. }
             | UiEvent::CodexStatusChanged { .. }
     )
 }
@@ -918,7 +964,6 @@ fn board_content(page: BoardPage) -> AnyView {
         memory_events,
         automation_status,
         automation_running,
-        run_sessions,
         items,
         swim_lanes,
         work_item_states,
@@ -1003,14 +1048,6 @@ fn board_content(page: BoardPage) -> AnyView {
             auto_commit,
             set_auto_commit,
         );
-        let automation_view = view! {
-            <LiveBoardAutomation
-                project=project.clone()
-                initial_status=automation_status
-                initial_running=automation_running
-                initial_run_sessions=run_sessions
-            />
-        };
         let maintenance = maintenance_view(&project);
         let runtime = runtime_panel(runtime, format!("/?project={}", encode_path(&project)));
 
@@ -1046,7 +1083,6 @@ fn board_content(page: BoardPage) -> AnyView {
                         project_id=admin_project_id
                     />
                     {project_settings}
-                    {automation_view}
                     {runtime}
                     {maintenance}
                 </main>
@@ -1069,6 +1105,57 @@ fn board_content(page: BoardPage) -> AnyView {
                     <h1>"Choose a project"</h1>
                     <a class="button-link" href="/projects">"Projects"</a>
                     {runtime_panel(runtime, "/".to_owned())}
+                </main>
+            </div>
+        }
+        .into_any()
+    }
+}
+
+fn runs_content(page: RunsPage) -> AnyView {
+    let RunsPage {
+        projects,
+        active_project_names,
+        selected_project,
+        automation_status,
+        automation_running,
+        run_sessions,
+        codex_status,
+    } = page;
+    let topbar = top_bar(
+        projects,
+        active_project_names,
+        selected_project.clone(),
+        ActivePage::Runs,
+        None,
+        codex_status,
+    );
+
+    if let (Some(project), Some(automation_status)) = (selected_project, automation_status) {
+        view! {
+            <div>
+                {topbar}
+                <main class="page-shell runs-page">
+                    <section class="page-heading">
+                        <h1>"Runs"</h1>
+                    </section>
+                    <LiveRunsSection
+                        project=project
+                        initial_status=automation_status
+                        initial_running=automation_running
+                        initial_run_sessions=run_sessions
+                    />
+                </main>
+            </div>
+        }
+        .into_any()
+    } else {
+        view! {
+            <div>
+                {topbar}
+                <main class="empty-state">
+                    <h1>"Choose a project"</h1>
+                    <a class="button-link" href="/projects">"Projects"</a>
                 </main>
             </div>
         }
@@ -4401,7 +4488,7 @@ fn LiveBoardItems(
 }
 
 #[component]
-fn LiveBoardAutomation(
+fn LiveRunsSection(
     project: String,
     initial_status: AutomationStatusView,
     initial_running: bool,
@@ -4411,8 +4498,7 @@ fn LiveBoardAutomation(
     let (automation_running, set_automation_running) = signal(initial_running);
     let (run_sessions, set_run_sessions) = signal(initial_run_sessions);
     let project_for_loader = project.clone();
-    let section =
-        LocalResource::new(move || load_board_automation_section(project_for_loader.clone()));
+    let section = LocalResource::new(move || load_runs_section(project_for_loader.clone()));
     notify_resource_errors(section, || true);
     let project_for_events = project.clone();
     refetch_on_live_event(section, move |event| {
@@ -5684,11 +5770,13 @@ fn top_bar(
         format!("/{selected_query}")
     };
     let triggers_href = format!("/automation{selected_query}");
+    let runs_href = format!("/runs{selected_query}");
     let codex_href = format!("/codex{selected_query}");
     let projects_href = format!("/projects{selected_query}");
     let api_href = format!("/api/docs{selected_query}");
     let board_class = active_class(active, ActivePage::Board);
     let triggers_class = active_class(active, ActivePage::Triggers);
+    let runs_class = active_class(active, ActivePage::Runs);
     let projects_class = active_class(active, ActivePage::Projects);
     let api_class = active_class(active, ActivePage::Api);
 
@@ -5752,6 +5840,7 @@ fn top_bar(
             <nav class="top-nav" aria-label="Primary">
                 <a class=board_class href=board_href>"Board"</a>
                 <a class=triggers_class href=triggers_href>"Automation"</a>
+                <a class=runs_class href=runs_href>"Runs"</a>
                 <a class=projects_class href=projects_href>"Projects"</a>
                 <a class=api_class href=api_href>"API"</a>
             </nav>

@@ -10,6 +10,7 @@ Primary UI routes include:
 /                                      current workflow surface
 /projects                              project administration
 /automation                            automation rule administration
+/runs                                  automation run visibility
 /api/docs                              local API reference
 /projects/:project/items/:item_id      item detail
 /projects/:project/automation/runs/:run_id/log

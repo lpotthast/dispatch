@@ -224,8 +224,9 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         find(driver, By::Css("textarea.project-memory-text")).await?;
         assert_memory_history_selector_behaviour(driver).await?;
         assert_source_does_not_contain(driver, "Run settings").await?;
-        assert_source_contains(driver, "Runs").await?;
-        assert_source_contains(driver, "No runs yet").await?;
+        assert_top_nav_order(driver).await?;
+        find(driver, By::Css(".top-nav a[href='/runs?project=demo']")).await?;
+        assert_source_does_not_contain(driver, "No runs yet").await?;
         assert_source_does_not_contain(driver, "CrudKit resources").await?;
         find(driver, By::Css(".topbar-codex")).await?;
         assert_source_does_not_contain(driver, "codex-status-panel").await?;
@@ -268,6 +269,22 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         .await?;
         assert_source_contains(driver, "data-crudkit-leptos=\"work-item-states\"").await?;
         assert_source_contains(driver, "data-crudkit-leptos=\"swim-lanes\"").await?;
+
+        driver
+            .goto(app.url("/runs?project=demo"))
+            .await
+            .context("failed to open Patchbay runs page")?;
+        assert_that!(driver.title().await.context("failed to read page title")?)
+            .is_equal_to("Runs");
+        find(driver, By::Css(".runs-page .automation")).await?;
+        find(
+            driver,
+            By::Css(".top-nav a.active[href='/runs?project=demo']"),
+        )
+        .await?;
+        assert_source_contains(driver, "No runs yet").await?;
+        assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
+            .await?;
 
         driver
             .goto(app.url("/automation?project=demo"))
@@ -1003,6 +1020,24 @@ async fn assert_source_contains(driver: &WebDriver, expected: &str) -> Result<()
         .await
         .context("failed to read page source")?;
     assert_that!(source).contains(expected);
+    Ok(())
+}
+
+async fn assert_top_nav_order(driver: &WebDriver) -> Result<(), Report> {
+    let labels = driver
+        .execute(
+            r#"
+            return Array.from(document.querySelectorAll('.top-nav a'))
+                .map((link) => link.textContent.trim())
+                .join('|');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect top navigation")?
+        .convert::<String>()
+        .context("failed to read top navigation labels")?;
+    assert_that!(labels).is_equal_to("Board|Automation|Runs|Projects|API".to_owned());
     Ok(())
 }
 
