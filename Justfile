@@ -76,9 +76,6 @@ serve:
 serve-release:
     PATCHBAY_CLI_PATH="{{patchbay_cli_path}}" cargo leptos --manifest-path "{{server_manifest}}" serve --release -- --database "{{database}}" --bind "{{bind}}"
 
-fresh-db:
-    rm -f "{{database}}"
-
 discover-tools:
     cargo run --manifest-path "{{server_manifest}}" -- --database "{{database}}" agent-tools discover
 
