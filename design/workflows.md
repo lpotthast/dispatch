@@ -88,6 +88,8 @@ Review-style work that should not run automatically is modeled as work-producing
 
 Mode-specific launch details are server policy. Agents should rely on the prepared prompt and environment, not infer policy from local files.
 
+For Codex-backed launches, Patchbay prepares a project-specific Codex home before the run starts. The project home contains generated Codex config and rules derived from project settings, while shared Codex auth and skills are linked from Patchbay's shared managed Codex home when present. The run sets `CODEX_HOME` and `CODEX_SQLITE_HOME` to that project home so settings, rules, logs, sessions, and SQLite state are isolated per project.
+
 ## Workspaces
 
 Project settings choose the workspace policy:
@@ -105,6 +107,10 @@ Project settings define an automation commit policy. `auto_commit` defaults to o
 Current-branch runs are instructed to inspect the initial git status, commit completed work only when auto-commit is enabled, and revert their own changes before releasing incomplete work. The current-branch failure revert strategy defaults to manual revert and can be changed to Git reset for projects that intentionally allow that more destructive cleanup path.
 
 Git branch and Git worktree runs are always instructed to commit before ending the run. If the work is incomplete in those modes, agents commit useful partial work and release the item with an explanation instead of reverting the workspace, because the isolated branch or worktree preserves context for follow-up work without polluting the base workspace.
+
+Project settings also define the mutable Git command policy. New and migrated projects allow `git add`, `git commit`, `git push`, and `git reset` by default. `git commit` must use `--no-verify`; Patchbay's Git guard injects it when omitted and rejects `--verify`. Pushes must not be force, mirror, prune, delete, empty-source delete-refspec, or `+ref` pushes. `git reset --hard` is allowed only when the hard-reset policy allows it for isolated Git branch or Git worktree runs; it is blocked for current-branch runs by default.
+
+Patchbay expresses the broad allow-list through generated Codex rules in the project Codex home. A run-specific `git` shim remains necessary for argument checks that prefix rules cannot express, such as a force-push flag appearing after the remote name. The generated prompt includes the effective Git commands expected to work for the run.
 
 ## Stale Claims
 

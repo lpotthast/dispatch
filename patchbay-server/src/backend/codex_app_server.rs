@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fs, path::Path, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use codex_app_server_sdk::{
     ClientError, Codex, CodexClient, StdioConfig,
@@ -15,8 +21,8 @@ use crate::{
         storage::{Store, patchbay_home_dir, utc_now},
     },
     shared::view_models::{
-        AgentToolName, CodexAppServerStatusView, CodexAuthSetupView, CodexPreconditionView,
-        CodexRateLimitView, CodexUsageSummaryView,
+        AgentSandboxMode, AgentToolName, CodexAppServerStatusView, CodexAuthSetupView,
+        CodexPreconditionView, CodexRateLimitView, CodexUsageSummaryView, ProjectSettingsView,
     },
 };
 
@@ -37,6 +43,7 @@ use_memories = false
 generate_memories = false
 disable_on_external_context = true
 "#;
+const PROJECT_RULES_FILE_NAME: &str = "patchbay-git.rules";
 
 pub const CODEX_INSTALL_PROMPT: &str =
     "Install Codex and make sure `codex app-server` is available on PATH.";
@@ -556,12 +563,13 @@ fn format_unix_timestamp(timestamp: i64) -> Option<String> {
         .and_then(|time| time.format(&Rfc3339).ok())
 }
 
-pub async fn spawn_codex_with_env(
+pub async fn spawn_codex_with_home_and_env(
     codex_binary: &Path,
+    codex_home: &Path,
     mut env: HashMap<String, String>,
 ) -> Result<Codex> {
     let mut config = stdio_config(codex_binary);
-    env.extend(codex_environment()?);
+    env.extend(codex_environment_for_home(codex_home)?);
     config.env = env;
     Ok(Codex::spawn_stdio(config)
         .await
@@ -574,6 +582,29 @@ pub fn codex_home_dir() -> PathBuf {
 
 pub fn codex_config_path() -> PathBuf {
     codex_config_path_for_home(&codex_home_dir())
+}
+
+pub fn codex_project_home_dir(project_id: i64) -> PathBuf {
+    codex_home_dir()
+        .join("projects")
+        .join(project_id.to_string())
+}
+
+pub fn ensure_project_codex_home(settings: &ProjectSettingsView) -> Result<PathBuf> {
+    let shared_home = ensure_codex_home()?;
+    let project_home = codex_project_home_dir(settings.project_id);
+    fs::create_dir_all(&project_home).context_with(|| {
+        format!(
+            "failed to create Patchbay project Codex home {}",
+            project_home.display()
+        )
+    })?;
+    link_shared_codex_entry(&shared_home, &project_home, "auth.json")?;
+    link_shared_codex_entry(&shared_home, &project_home, "installation_id")?;
+    link_shared_codex_entry(&shared_home, &project_home, "skills")?;
+    write_project_codex_config(&project_home, settings)?;
+    write_project_git_rules(&project_home, settings)?;
+    Ok(project_home)
 }
 
 fn codex_auth_setup(codex_binary: &Path) -> CodexAuthSetupView {
@@ -615,6 +646,16 @@ fn shell_quote(value: &str) -> String {
 
 fn codex_environment() -> Result<HashMap<String, String>> {
     let codex_home = ensure_codex_home()?;
+    codex_environment_for_home(&codex_home)
+}
+
+fn codex_environment_for_home(codex_home: &Path) -> Result<HashMap<String, String>> {
+    if !codex_home.is_dir() {
+        bail!(
+            "Patchbay Codex home {} does not exist or is not a directory",
+            codex_home.display()
+        );
+    }
     let codex_home = codex_home.to_string_lossy().into_owned();
     Ok(HashMap::from([
         ("CODEX_HOME".to_owned(), codex_home.clone()),
@@ -649,6 +690,182 @@ fn ensure_codex_home_at(codex_home: &Path) -> Result<()> {
     Ok(())
 }
 
+fn link_shared_codex_entry(
+    shared_home: &Path,
+    project_home: &Path,
+    entry_name: &str,
+) -> Result<()> {
+    let source = shared_home.join(entry_name);
+    if !source.exists() {
+        return Ok(());
+    }
+    let destination = project_home.join(entry_name);
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Ok(());
+    }
+    Ok(symlink_path(&source, &destination).context_with(|| {
+        format!(
+            "failed to link shared Codex entry {} into {}",
+            source.display(),
+            destination.display()
+        )
+    })?)
+}
+
+#[cfg(unix)]
+fn symlink_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, destination)
+}
+
+#[cfg(windows)]
+fn symlink_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if source.is_dir() {
+        std::os::windows::fs::symlink_dir(source, destination)
+    } else {
+        std::os::windows::fs::symlink_file(source, destination)
+    }
+}
+
+fn write_project_codex_config(codex_home: &Path, settings: &ProjectSettingsView) -> Result<()> {
+    let config_path = codex_config_path_for_home(codex_home);
+    let sandbox_mode = match settings.agent_sandbox_mode {
+        AgentSandboxMode::WorkspaceWrite => "workspace-write",
+        AgentSandboxMode::DangerFullAccess => "danger-full-access",
+    };
+    let writable_roots = toml_string_array(&settings.agent_extra_writable_roots);
+    let config = format!(
+        r#"# Managed by Patchbay.
+# This file is regenerated from the Patchbay project settings.
+
+approval_policy = "never"
+sandbox_mode = {sandbox_mode}
+
+[features]
+memories = false
+
+[memories]
+use_memories = false
+generate_memories = false
+disable_on_external_context = true
+
+[sandbox_workspace_write]
+network_access = true
+writable_roots = {writable_roots}
+"#,
+        sandbox_mode = toml_string(sandbox_mode),
+    );
+    Ok(fs::write(&config_path, config)
+        .context_with(|| format!("failed to write Codex config {}", config_path.display()))?)
+}
+
+fn write_project_git_rules(codex_home: &Path, settings: &ProjectSettingsView) -> Result<()> {
+    let rules_dir = codex_home.join("rules");
+    fs::create_dir_all(&rules_dir)
+        .context_with(|| format!("failed to create Codex rules dir {}", rules_dir.display()))?;
+    let rules_path = rules_dir.join(PROJECT_RULES_FILE_NAME);
+    Ok(
+        fs::write(&rules_path, git_rules_for_policy(settings)).context_with(|| {
+            format!(
+                "failed to write Codex git rules file {}",
+                rules_path.display()
+            )
+        })?,
+    )
+}
+
+fn git_rules_for_policy(settings: &ProjectSettingsView) -> String {
+    let policy = &settings.agent_git_command_policy;
+    let mut rules = String::from(
+        r#"# Managed by Patchbay.
+# These rules mirror this project's Patchbay Git command policy. Patchbay also
+# puts a guarded git shim first on PATH for checks that command prefixes cannot express.
+
+"#,
+    );
+    if policy.add {
+        rules.push_str(&prefix_rule(
+            &["git", "add"],
+            "allow",
+            "Patchbay allows staging explicit changes for this project.",
+        ));
+    }
+    if policy.commit {
+        rules.push_str(&prefix_rule(
+            &["git", "commit"],
+            "allow",
+            "Patchbay allows commits for this project; the git wrapper enforces --no-verify.",
+        ));
+    }
+    if policy.push {
+        rules.push_str(&prefix_rule(
+            &["git", "push"],
+            "allow",
+            "Patchbay allows non-force pushes for this project.",
+        ));
+        for forbidden in [
+            ["git", "push", "--force"],
+            ["git", "push", "-f"],
+            ["git", "push", "--force-with-lease"],
+            ["git", "push", "--mirror"],
+            ["git", "push", "--delete"],
+            ["git", "push", "--prune"],
+        ] {
+            rules.push_str(&prefix_rule(
+                &forbidden,
+                "forbidden",
+                "Patchbay blocks force, mirror, delete, and prune pushes; use a normal git push.",
+            ));
+        }
+    }
+    if policy.reset {
+        rules.push_str(&prefix_rule(
+            &["git", "reset"],
+            "allow",
+            "Patchbay allows git reset within this project's configured limits.",
+        ));
+        if !policy.allows_hard_reset(settings.workspace_mode) {
+            rules.push_str(&prefix_rule(
+                &["git", "reset", "--hard"],
+                "forbidden",
+                "Patchbay blocks git reset --hard for the current workspace mode.",
+            ));
+        }
+    }
+    rules
+}
+
+fn prefix_rule(pattern: &[&str], decision: &str, justification: &str) -> String {
+    let pattern = pattern
+        .iter()
+        .map(|value| toml_string(value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"prefix_rule(
+    pattern = [{pattern}],
+    decision = {decision},
+    justification = {justification},
+)
+
+"#,
+        decision = toml_string(decision),
+        justification = toml_string(justification),
+    )
+}
+
+fn toml_string_array(values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| toml_string(value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{values}]")
+}
+
+fn toml_string(value: &str) -> String {
+    serde_json::to_string(value).expect("TOML-compatible string must serialize")
+}
+
 fn stdio_config(codex_binary: &Path) -> StdioConfig {
     StdioConfig {
         codex_binary: codex_binary.to_string_lossy().into_owned(),
@@ -664,6 +881,10 @@ mod tests {
 
     use super::*;
     use crate::backend::{agent_tools::set_tool_path, storage::Store};
+    use crate::shared::view_models::{
+        AgentGitCommandPolicy, AgentReasoningEffort, RevertStrategy, WorkspaceMode,
+        WorktreeCleanupPolicy,
+    };
 
     #[tokio::test]
     async fn unavailable_app_server_status_prompts_for_codex_install() {
@@ -765,5 +986,68 @@ mod tests {
         assert!(config.contains("[memories]"));
         assert!(config.contains("use_memories = false"));
         assert!(config.contains("generate_memories = false"));
+    }
+
+    #[test]
+    fn project_codex_config_uses_project_sandbox_settings() {
+        let temp = TempDir::new().unwrap();
+        let mut settings = project_settings();
+        settings.agent_extra_writable_roots = vec!["/tmp/patchbay-browser".to_owned()];
+
+        write_project_codex_config(temp.path(), &settings).unwrap();
+
+        let config = fs::read_to_string(codex_config_path_for_home(temp.path())).unwrap();
+        assert!(config.contains("approval_policy = \"never\""));
+        assert!(config.contains("sandbox_mode = \"workspace-write\""));
+        assert!(config.contains("network_access = true"));
+        assert!(config.contains("writable_roots = [\"/tmp/patchbay-browser\"]"));
+        assert!(config.contains("memories = false"));
+    }
+
+    #[test]
+    fn project_git_rules_reflect_allowed_commands_and_hard_reset() {
+        let mut settings = project_settings();
+        settings.workspace_mode = WorkspaceMode::CurrentBranch;
+        settings.agent_git_command_policy = AgentGitCommandPolicy {
+            add: true,
+            commit: true,
+            push: true,
+            reset: true,
+            ..Default::default()
+        };
+
+        let rules = git_rules_for_policy(&settings);
+
+        assert!(rules.contains("pattern = [\"git\", \"add\"]"));
+        assert!(rules.contains("pattern = [\"git\", \"commit\"]"));
+        assert!(rules.contains("pattern = [\"git\", \"push\"]"));
+        assert!(rules.contains("pattern = [\"git\", \"push\", \"--force\"]"));
+        assert!(rules.contains("pattern = [\"git\", \"reset\"]"));
+        assert!(rules.contains("pattern = [\"git\", \"reset\", \"--hard\"]"));
+        assert!(rules.contains("decision = \"forbidden\""));
+    }
+
+    fn project_settings() -> ProjectSettingsView {
+        ProjectSettingsView {
+            id: 7,
+            project_id: 7,
+            workspace_mode: WorkspaceMode::GitWorktree,
+            max_code_edit_agents: 1,
+            allow_refinement_agents_during_editing: false,
+            create_pr: false,
+            auto_commit: true,
+            commit_standard: String::new(),
+            revert_strategy: RevertStrategy::Manual,
+            stale_claim_minutes: 0,
+            worktree_cleanup_policy: WorktreeCleanupPolicy::Manual,
+            default_agent_tool: AgentToolName::Codex,
+            default_agent_model: None,
+            default_agent_reasoning_effort: Some(AgentReasoningEffort::XHigh),
+            agent_sandbox_mode: AgentSandboxMode::WorkspaceWrite,
+            agent_extra_writable_roots: Vec::new(),
+            agent_git_command_policy: AgentGitCommandPolicy::default(),
+            created_at: "2026-06-17T00:00:00Z".to_owned(),
+            updated_at: "2026-06-17T00:00:00Z".to_owned(),
+        }
     }
 }

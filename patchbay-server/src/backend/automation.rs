@@ -33,11 +33,12 @@ use crate::{
         storage::{Store, utc_now},
     },
     shared::view_models::{
-        AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog,
-        AgentRunOutputPiece, AgentRunStatus, AgentRunView, AgentSandboxMode, AgentToolName,
-        AutomationMode, AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
-        FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView,
-        RevertStrategy, RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
+        AUTOMATION_BLOCKED_LABEL_KEY, AgentGitRuntimePolicy, AgentReasoningEffort,
+        AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece, AgentRunStatus, AgentRunView,
+        AgentSandboxMode, AgentToolName, AutomationMode, AutomationStatusView,
+        CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL, FINISHED_STATE_LABEL,
+        ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView, RevertStrategy,
+        RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -75,6 +76,11 @@ struct WorkspacePlan {
     branch_name: Option<String>,
 }
 
+struct GitRuntimeFiles {
+    shim_dir: PathBuf,
+    policy_path: PathBuf,
+}
+
 struct LaunchDetails {
     work_item_id: Option<i64>,
     command: String,
@@ -101,6 +107,7 @@ struct PromptContext<'a> {
     commit_standard: &'a str,
     revert_strategy: RevertStrategy,
     create_pr: bool,
+    agent_git_command_policy: &'a patchbay_types::AgentGitCommandPolicy,
 }
 
 struct AgentProcessOutput {
@@ -114,9 +121,13 @@ struct AgentProcessStart {
     project_name: String,
     tool_name: AgentToolName,
     codex_binary: PathBuf,
+    codex_home: PathBuf,
     patchbay_binary: PathBuf,
     prompt_path: PathBuf,
     working_dir: PathBuf,
+    git_shim_dir: PathBuf,
+    git_policy_path: PathBuf,
+    real_git_path: PathBuf,
     agent_id: String,
     claimed_item_id: Option<i64>,
     agent_model: Option<String>,
@@ -552,6 +563,48 @@ async fn complete_started_automation_run(
     let log_path = log_dir.join(format!("run-{}.output.json", run.id));
     let agent_model = effective_agent_model(&settings, claimed_item.as_ref());
     let agent_reasoning_effort = effective_agent_reasoning_effort(&settings, claimed_item.as_ref());
+    let codex_home = match codex_app_server::ensure_project_codex_home(&settings) {
+        Ok(codex_home) => codex_home,
+        Err(err) => {
+            return fail_run_after_claim(
+                store,
+                &project_name,
+                run,
+                claimed_item.as_ref(),
+                &agent_id,
+                format!("Failed to prepare project Codex home: {err:#}"),
+            )
+            .await;
+        }
+    };
+    let real_git_path = match resolve_real_git_path() {
+        Ok(real_git_path) => real_git_path,
+        Err(err) => {
+            return fail_run_after_claim(
+                store,
+                &project_name,
+                run,
+                claimed_item.as_ref(),
+                &agent_id,
+                format!("Failed to resolve git for automation: {err:#}"),
+            )
+            .await;
+        }
+    };
+    let git_runtime = match prepare_git_runtime(run.id, &log_dir, &patchbay_binary, &settings) {
+        Ok(git_runtime) => git_runtime,
+        Err(err) => {
+            return fail_run_after_claim(
+                store,
+                &project_name,
+                run,
+                claimed_item.as_ref(),
+                &agent_id,
+                format!("Failed to prepare git policy wrapper: {err:#}"),
+            )
+            .await;
+        }
+    };
     let memory_event_id = match projects::latest_memory_event_id(store, project.id).await {
         Ok(memory_event_id) => memory_event_id,
         Err(err) => {
@@ -580,6 +633,7 @@ async fn complete_started_automation_run(
         commit_standard: &settings.commit_standard,
         revert_strategy: settings.revert_strategy,
         create_pr: settings.create_pr,
+        agent_git_command_policy: &settings.agent_git_command_policy,
     });
     if let Err(err) = fs::write(&prompt_path, prompt)
         .context_with(|| format!("failed to write prompt {}", prompt_path.display()))
@@ -638,9 +692,13 @@ async fn complete_started_automation_run(
             project_name: project_name.clone(),
             tool_name: tool,
             codex_binary,
+            codex_home,
             patchbay_binary,
             prompt_path,
             working_dir: PathBuf::from(&run.working_dir),
+            git_shim_dir: git_runtime.shim_dir,
+            git_policy_path: git_runtime.policy_path,
+            real_git_path,
             agent_id: agent_id.clone(),
             claimed_item_id: claimed_item.as_ref().map(|item| item.id),
             agent_model,
@@ -1379,21 +1437,113 @@ fn to_codex_reasoning(effort: AgentReasoningEffort) -> CodexReasoningEffort {
     }
 }
 
+fn prepare_git_runtime(
+    run_id: i64,
+    log_dir: &Path,
+    patchbay_binary: &Path,
+    settings: &ProjectSettingsView,
+) -> Result<GitRuntimeFiles> {
+    let shim_dir = log_dir.join(format!("run-{run_id}-bin"));
+    fs::create_dir_all(&shim_dir)
+        .context_with(|| format!("failed to create git shim dir {}", shim_dir.display()))?;
+    let policy_path = log_dir.join(format!("run-{run_id}.git-policy.json"));
+    let runtime_policy = AgentGitRuntimePolicy {
+        policy: settings.agent_git_command_policy.clone(),
+        workspace_mode: settings.workspace_mode,
+    };
+    let policy_json = serde_json::to_string_pretty(&runtime_policy)
+        .context("failed to encode git runtime policy")?;
+    fs::write(&policy_path, policy_json)
+        .context_with(|| format!("failed to write git policy {}", policy_path.display()))?;
+    let shim_path = shim_dir.join("git");
+    fs::write(
+        &shim_path,
+        format!(
+            "#!/bin/sh\nexec {} git \"$@\"\n",
+            shell_quote(&patchbay_binary.to_string_lossy())
+        ),
+    )
+    .context_with(|| format!("failed to write git shim {}", shim_path.display()))?;
+    mark_executable(&shim_path)?;
+    Ok(GitRuntimeFiles {
+        shim_dir,
+        policy_path,
+    })
+}
+
+fn resolve_real_git_path() -> Result<PathBuf> {
+    let path = std::env::var_os("PATH").ok_or_else(|| report!("PATH is not set"))?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join("git");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!("git was not found on PATH")
+}
+
+#[cfg(unix)]
+fn mark_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .context_with(|| format!("failed to stat {}", path.display()))?
+        .permissions();
+    permissions.set_mode(0o755);
+    Ok(fs::set_permissions(path, permissions)
+        .context_with(|| format!("failed to mark {} executable", path.display()))?)
+}
+
+#[cfg(not(unix))]
+fn mark_executable(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':'))
+    {
+        return value.to_owned();
+    }
+
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn agent_environment(
     patchbay_binary: &Path,
+    git_runtime: &GitRuntimeFiles,
+    real_git_path: &Path,
     project_name: &str,
     agent_id: &str,
     claimed_item_id: Option<i64>,
     api_url: Option<&str>,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
+    let path = std::env::var("PATH").unwrap_or_default();
     if let Some(bin_dir) = patchbay_binary.parent() {
-        let path = std::env::var("PATH").unwrap_or_default();
         env.insert(
             "PATH".to_owned(),
-            format!("{}:{path}", bin_dir.to_string_lossy()),
+            format!(
+                "{}:{}:{path}",
+                git_runtime.shim_dir.to_string_lossy(),
+                bin_dir.to_string_lossy()
+            ),
+        );
+    } else {
+        env.insert(
+            "PATH".to_owned(),
+            format!("{}:{path}", git_runtime.shim_dir.to_string_lossy()),
         );
     }
+    env.insert(
+        "PATCHBAY_GIT_POLICY_PATH".to_owned(),
+        git_runtime.policy_path.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "PATCHBAY_REAL_GIT".to_owned(),
+        real_git_path.to_string_lossy().into_owned(),
+    );
     env.insert("PATCHBAY_PROJECT".to_owned(), project_name.to_owned());
     env.insert("PATCHBAY_AGENT_ID".to_owned(), agent_id.to_owned());
     if let Some(item_id) = claimed_item_id {
@@ -1572,12 +1722,22 @@ async fn run_codex_app_server_turn(
 
     let env = agent_environment(
         &start.patchbay_binary,
+        &GitRuntimeFiles {
+            shim_dir: start.git_shim_dir.clone(),
+            policy_path: start.git_policy_path.clone(),
+        },
+        &start.real_git_path,
         &start.project_name,
         &start.agent_id,
         start.claimed_item_id,
         SERVER_API_URL.get().map(String::as_str),
     );
-    let codex = codex_app_server::spawn_codex_with_env(&start.codex_binary, env).await?;
+    let codex = codex_app_server::spawn_codex_with_home_and_env(
+        &start.codex_binary,
+        &start.codex_home,
+        env,
+    )
+    .await?;
     let mut thread_options = ThreadOptions::builder()
         .working_directory(working_dir)
         .sandbox_mode(agent_sandbox_mode(start.agent_sandbox_mode))
@@ -1924,6 +2084,12 @@ fn build_prompt(context: PromptContext<'_>) -> String {
         }
     }
     prompt.push('\n');
+    prompt.push_str("## Available Git Commands\n\n");
+    prompt.push_str(&git_command_policy_prompt(
+        context.agent_git_command_policy,
+        context.workspace_mode,
+    ));
+    prompt.push('\n');
     prompt.push_str("Commit standard:\n");
     if context.commit_standard.trim().is_empty() {
         prompt.push_str(
@@ -1948,6 +2114,45 @@ fn build_prompt(context: PromptContext<'_>) -> String {
         );
     }
     prompt
+}
+
+fn git_command_policy_prompt(
+    policy: &patchbay_types::AgentGitCommandPolicy,
+    workspace_mode: WorkspaceMode,
+) -> String {
+    let mut lines = Vec::new();
+    if policy.add {
+        lines.push("- `git add ...` is allowed; stage only changes for this work item.");
+    }
+    if policy.commit {
+        lines.push("- `git commit ...` is allowed. Use `--no-verify`; Patchbay also enforces it.");
+    }
+    if policy.push {
+        lines.push(
+            "- `git push ...` is allowed for normal pushes. Force, mirror, prune, delete, empty-source delete-refspec, and `+ref` pushes are blocked.",
+        );
+    }
+    if policy.reset {
+        lines.push("- `git reset ...` is allowed within this project's configured limits.");
+        if policy.allows_hard_reset(workspace_mode) {
+            lines.push(
+                "- `git reset --hard` is allowed because this run uses an isolated branch/worktree mode.",
+            );
+        } else {
+            lines.push(
+                "- `git reset --hard` is blocked for this workspace mode; preserve unrelated current-branch work.",
+            );
+        }
+    }
+    if lines.is_empty() {
+        return "No mutable Git commands are configured for this project. If a Git command is blocked, report that blocker in your progress or final response.\n".to_owned();
+    }
+    lines.push(
+        "- Other mutable Git commands may be blocked by Codex rules or the Patchbay git wrapper. If blocked, report the exact command and reason.",
+    );
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
 }
 
 fn current_branch_revert_instruction(revert_strategy: RevertStrategy) -> &'static str {
@@ -2641,6 +2846,7 @@ mod tests {
             commit_standard: "Use short imperative subjects.",
             revert_strategy: RevertStrategy::Manual,
             create_pr: false,
+            agent_git_command_policy: &Default::default(),
         });
 
         assert!(prompt.contains("## Patchbay Agent Instructions"));
@@ -2689,6 +2895,11 @@ mod tests {
         assert!(prompt.contains("Failure revert strategy: manual"));
         assert!(prompt.contains("create a git commit before calling `patchbay item finish`"));
         assert!(prompt.contains("revert all changes you made using the `manual` strategy"));
+        assert!(prompt.contains("## Available Git Commands"));
+        assert!(prompt.contains("`git add ...` is allowed"));
+        assert!(prompt.contains("Patchbay also enforces it"));
+        assert!(prompt.contains("Force, mirror, prune, delete"));
+        assert!(prompt.contains("`git reset --hard` is blocked for this workspace mode"));
         assert!(prompt.contains("Use short imperative subjects."));
     }
 
@@ -2708,6 +2919,7 @@ mod tests {
             commit_standard: "",
             revert_strategy: RevertStrategy::GitReset,
             create_pr: false,
+            agent_git_command_policy: &Default::default(),
         });
 
         assert!(prompt.contains("Workspace mode: git_worktree"));
@@ -2716,6 +2928,7 @@ mod tests {
             prompt.contains("do not revert partial changes solely because the work is incomplete")
         );
         assert!(prompt.contains("Commit the useful partial work"));
+        assert!(prompt.contains("`git reset --hard` is allowed because this run uses an isolated"));
         assert!(
             prompt.contains("not configured; infer the repository's existing commit message style")
         );
@@ -2723,8 +2936,14 @@ mod tests {
 
     #[test]
     fn agent_environment_exposes_api_but_not_database() {
+        let git_runtime = GitRuntimeFiles {
+            shim_dir: PathBuf::from("/tmp/patchbay-run-bin"),
+            policy_path: PathBuf::from("/tmp/patchbay-git-policy.json"),
+        };
         let env = agent_environment(
             Path::new("/tmp/patchbay"),
+            &git_runtime,
+            Path::new("/usr/bin/git"),
             "demo",
             "patchbay-run-1",
             Some(42),
@@ -2746,6 +2965,18 @@ mod tests {
         assert_eq!(
             env.get("PATCHBAY_API_URL").map(String::as_str),
             Some("http://127.0.0.1:4000")
+        );
+        assert_eq!(
+            env.get("PATCHBAY_GIT_POLICY_PATH").map(String::as_str),
+            Some("/tmp/patchbay-git-policy.json")
+        );
+        assert_eq!(
+            env.get("PATCHBAY_REAL_GIT").map(String::as_str),
+            Some("/usr/bin/git")
+        );
+        assert!(
+            env.get("PATH")
+                .is_some_and(|path| path.starts_with("/tmp/patchbay-run-bin:"))
         );
         assert!(!env.contains_key("PATCHBAY_DATABASE"));
         assert!(!env.contains_key("PATCHBAY_URL"));

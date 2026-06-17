@@ -40,6 +40,7 @@ enum Projects {
     DefaultAgentReasoningEffort,
     AgentSandboxMode,
     AgentExtraWritableRoots,
+    AgentGitCommandPolicy,
     CreatedAt,
     UpdatedAt,
 }
@@ -199,6 +200,9 @@ enum AutomationTriggers {
 
 pub struct Migrator;
 
+const DEFAULT_AGENT_GIT_COMMAND_POLICY: &str =
+    r#"{"add":true,"commit":true,"push":true,"reset":true,"hard_reset":"isolated_workspaces"}"#;
+
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
@@ -230,6 +234,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddProjectAgentSandboxMode),
             Box::new(DecoupleStatesAndSwimLanes),
             Box::new(AddProjectCommitPolicy),
+            Box::new(AddProjectAgentGitCommandPolicy),
         ]
     }
 }
@@ -454,6 +459,12 @@ async fn create_projects(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                         .text()
                         .not_null()
                         .default(""),
+                )
+                .col(
+                    ColumnDef::new(Projects::AgentGitCommandPolicy)
+                        .text()
+                        .not_null()
+                        .default(DEFAULT_AGENT_GIT_COMMAND_POLICY),
                 )
                 .col(
                     ColumnDef::new(Projects::CreatedAt)
@@ -2077,6 +2088,39 @@ impl MigrationTrait for AddProjectCommitPolicy {
     }
 }
 
+struct AddProjectAgentGitCommandPolicy;
+
+impl MigrationName for AddProjectAgentGitCommandPolicy {
+    fn name(&self) -> &str {
+        "m20260617_000027_add_project_agent_git_command_policy"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddProjectAgentGitCommandPolicy {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        let default_git_policy = format!(
+            "TEXT NOT NULL DEFAULT '{}'",
+            DEFAULT_AGENT_GIT_COMMAND_POLICY
+        );
+        add_column_if_missing(
+            manager,
+            "projects",
+            "agent_git_command_policy",
+            &default_git_policy,
+        )
+        .await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        drop_column_if_present(manager, "projects", "agent_git_command_policy").await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+}
+
 async fn seed_default_work_item_automations(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     manager
         .get_connection()
@@ -2674,6 +2718,17 @@ async fn add_project_run_settings_columns(manager: &SchemaManager<'_>) -> Result
         "projects",
         "agent_extra_writable_roots",
         "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+    let default_git_policy = format!(
+        "TEXT NOT NULL DEFAULT '{}'",
+        DEFAULT_AGENT_GIT_COMMAND_POLICY
+    );
+    add_column_if_missing(
+        manager,
+        "projects",
+        "agent_git_command_policy",
+        &default_git_policy,
     )
     .await
 }

@@ -30,6 +30,8 @@ patchbay item progress 124 --body "Updated follow-up context."
 
 Agents should omit project, agent, and claimed item arguments for the claimed item because Patchbay sets the environment before launch.
 
+Patchbay may also put a run-specific `git` shim first on `PATH`. That shim calls an internal `patchbay git ...` guard command, which reads `PATCHBAY_GIT_POLICY_PATH` and `PATCHBAY_REAL_GIT`, enforces the project mutable Git command policy, and then delegates to the real Git executable. This internal command is not part of the normal agent workflow; agents should run ordinary `git ...` commands and follow the generated prompt's allow-list.
+
 ## Context Resolution
 
 The standalone CLI resolves context in this order:
@@ -94,6 +96,14 @@ patchbay memory set --body "..." [--json]
 ```
 
 `memory append` and `memory set` require project and agent context. They write through the Patchbay API, never through Codex internal memory, and create attributed `MemoryChanged` events.
+
+Internal automation command:
+
+```text
+patchbay git <git-args...>
+```
+
+This is used only by Patchbay's run-specific Git shim. It injects `--no-verify` for `git commit`, blocks force/mirror/prune/delete/empty-source delete-refspec/`+ref` pushes, and blocks reset modes outside the project policy.
 
 Automation commands:
 

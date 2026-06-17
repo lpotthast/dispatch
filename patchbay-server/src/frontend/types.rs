@@ -181,6 +181,7 @@ pub mod project {
         pub default_agent_reasoning_effort: Option<String>,
         pub agent_sandbox_mode: String,
         pub agent_extra_writable_roots: String,
+        pub agent_git_command_policy: String,
     }
 
     #[derive(Clone, PartialEq, Eq, Debug, CkField, Serialize, Deserialize)]
@@ -234,6 +235,7 @@ pub mod project {
         pub default_agent_reasoning_effort: Option<String>,
         pub agent_sandbox_mode: String,
         pub agent_extra_writable_roots: String,
+        pub agent_git_command_policy: String,
         pub created_at: String,
         pub updated_at: String,
     }
@@ -259,6 +261,7 @@ pub mod project {
                 default_agent_reasoning_effort: read.default_agent_reasoning_effort,
                 agent_sandbox_mode: read.agent_sandbox_mode,
                 agent_extra_writable_roots: read.agent_extra_writable_roots,
+                agent_git_command_policy: read.agent_git_command_policy,
             }
         }
     }

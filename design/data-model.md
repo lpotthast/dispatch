@@ -16,6 +16,7 @@ Project data includes:
 - stale-claim timeout;
 - pull request and worktree cleanup preferences;
 - default agent tool, model, and reasoning effort.
+- agent sandbox mode, extra writable roots, and mutable Git command policy.
 
 All item and automation API calls are project-scoped. Missing project context is an error for agent-facing operations.
 
@@ -117,8 +118,10 @@ Project settings control automation behavior:
 - auto-commit behavior for current-branch automation;
 - commit standard text used in generated agent commit instructions;
 - failure revert strategy for current-branch automation: manual revert or Git reset;
+- mutable Git command policy: whether agents may use `git add`, `git commit`, `git push`, and `git reset`, plus whether hard reset is never allowed or only allowed in isolated branch/worktree runs;
 - stale-claim timeout;
 - worktree cleanup policy;
-- default agent tool, model, and reasoning effort.
+- default agent tool, model, and reasoning effort;
+- agent sandbox mode and extra writable roots.
 
 Settings are applied by server services at launch and workflow boundaries, not by the agent-facing CLI.

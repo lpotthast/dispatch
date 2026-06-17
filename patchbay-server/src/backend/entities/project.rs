@@ -96,6 +96,9 @@ pub struct Model {
     pub agent_extra_writable_roots: String,
 
     #[ck_create_model(exclude)]
+    pub agent_git_command_policy: String,
+
+    #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
     pub created_at: String,
 

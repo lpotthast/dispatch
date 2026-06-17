@@ -108,6 +108,7 @@ pub struct ProjectView {
     pub default_agent_reasoning_effort: Option<AgentReasoningEffort>,
     pub agent_sandbox_mode: AgentSandboxMode,
     pub agent_extra_writable_roots: Vec<String>,
+    pub agent_git_command_policy: AgentGitCommandPolicy,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -365,6 +366,84 @@ impl FromStr for WorkspaceMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentGitHardResetPolicy {
+    Never,
+    #[default]
+    IsolatedWorkspaces,
+}
+
+impl AgentGitHardResetPolicy {
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::IsolatedWorkspaces => "isolated_workspaces",
+        }
+    }
+}
+
+impl fmt::Display for AgentGitHardResetPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_storage())
+    }
+}
+
+impl FromStr for AgentGitHardResetPolicy {
+    type Err = ParseEnumError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().replace('-', "_").as_str() {
+            "never" => Ok(Self::Never),
+            "isolated" | "isolated_workspace" | "isolated_workspaces" => {
+                Ok(Self::IsolatedWorkspaces)
+            }
+            _ => Err(ParseEnumError(
+                "agent git hard-reset policy must be one of: never, isolated_workspaces",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentGitCommandPolicy {
+    pub add: bool,
+    pub commit: bool,
+    pub push: bool,
+    pub reset: bool,
+    pub hard_reset: AgentGitHardResetPolicy,
+}
+
+impl AgentGitCommandPolicy {
+    pub fn allows_hard_reset(&self, workspace_mode: WorkspaceMode) -> bool {
+        self.reset
+            && match self.hard_reset {
+                AgentGitHardResetPolicy::Never => false,
+                AgentGitHardResetPolicy::IsolatedWorkspaces => {
+                    workspace_mode != WorkspaceMode::CurrentBranch
+                }
+            }
+    }
+}
+
+impl Default for AgentGitCommandPolicy {
+    fn default() -> Self {
+        Self {
+            add: true,
+            commit: true,
+            push: true,
+            reset: true,
+            hard_reset: AgentGitHardResetPolicy::IsolatedWorkspaces,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentGitRuntimePolicy {
+    pub policy: AgentGitCommandPolicy,
+    pub workspace_mode: WorkspaceMode,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorktreeCleanupPolicy {
@@ -455,6 +534,7 @@ pub struct ProjectSettingsView {
     pub default_agent_reasoning_effort: Option<AgentReasoningEffort>,
     pub agent_sandbox_mode: AgentSandboxMode,
     pub agent_extra_writable_roots: Vec<String>,
+    pub agent_git_command_policy: AgentGitCommandPolicy,
     pub created_at: String,
     pub updated_at: String,
 }

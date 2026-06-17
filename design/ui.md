@@ -70,11 +70,14 @@ Project settings should expose:
 - current-branch auto-commit behavior;
 - commit standard text for generated agent commit messages;
 - current-branch failure revert strategy;
+- mutable Git command policy as structured controls for `git add`, `git commit`, `git push`, `git reset`, and hard-reset mode;
 - stale-claim timeout;
 - worktree cleanup policy;
 - default agent tool, model, and reasoning effort.
 
 Settings changes should go through server handlers and be reflected in automation launches without requiring agents to know settings internals.
+
+Codex configuration generated from project settings should not be exposed as raw TOML in the main UI. Operators configure supported policy fields, and Patchbay generates the per-project Codex config and rules.
 
 When a selected project uses the current-branch workspace mode, the top bar should include an Auto-Commit toggle next to the automation Start/Stop control so operators can quickly decide whether completed current-branch work should be committed by the agent.
 

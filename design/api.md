@@ -99,7 +99,7 @@ The Leptos UI uses server form handlers for operator actions such as:
 
 - creating, updating, and deleting projects;
 - updating project prompts, memory, and settings;
-- toggling project auto-commit and updating project commit policy;
+- toggling project auto-commit and updating project commit, revert, and mutable Git command policy;
 - creating, updating, moving, deleting, and commenting on work items;
 - starting, stopping, and recovering automation;
 - cleaning up worktrees;

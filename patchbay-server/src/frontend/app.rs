@@ -32,13 +32,13 @@ use crate::{
         },
     },
     shared::view_models::{
-        AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AgentRunOutputKind,
-        AgentRunOutputPiece, AgentRunStatus, AgentRunView, AuthorType, AutomationStatusView,
-        CLAIMED_FROM_STATE_LABEL_KEY, CodexAgentModel, CodexAppServerStatusView,
-        CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
-        ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
-        ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY, SwimLaneView, UiEvent,
-        WorkItemLabelView, WorkItemStateView, WorkItemView, WorkspaceMode,
+        AUTOMATION_BLOCKED_LABEL_KEY, AgentGitHardResetPolicy, AgentReasoningEffort,
+        AgentRunOutputKind, AgentRunOutputPiece, AgentRunStatus, AgentRunView, AuthorType,
+        AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, CodexAgentModel,
+        CodexAppServerStatusView, CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView,
+        CommentView, ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView,
+        ProjectSettingsView, ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY,
+        SwimLaneView, UiEvent, WorkItemLabelView, WorkItemStateView, WorkItemView, WorkspaceMode,
     },
 };
 #[cfg(not(feature = "ssr"))]
@@ -843,11 +843,10 @@ where
 
     Effect::new(move |_| match resource.get() {
         Some(Ok(page)) => set_displayed_page.set(Some(ResilientPage::Content(page))),
-        Some(Err(err)) => {
-            if displayed_page.with_untracked(Option::is_none) {
-                set_displayed_page.set(Some(ResilientPage::InitialError(err.to_string())));
-            }
+        Some(Err(err)) if displayed_page.with_untracked(Option::is_none) => {
+            set_displayed_page.set(Some(ResilientPage::InitialError(err.to_string())));
         }
+        Some(Err(_)) => {}
         None => {}
     });
 
@@ -4467,6 +4466,10 @@ fn project_settings_view(
     let commit_standard = settings.commit_standard.clone();
     let manual_revert_selected = settings.revert_strategy == RevertStrategy::Manual;
     let git_reset_selected = settings.revert_strategy == RevertStrategy::GitReset;
+    let git_policy = settings.agent_git_command_policy.clone();
+    let hard_reset_never_selected = git_policy.hard_reset == AgentGitHardResetPolicy::Never;
+    let hard_reset_isolated_selected =
+        git_policy.hard_reset == AgentGitHardResetPolicy::IsolatedWorkspaces;
     let initial_memory = project_view.memory.clone();
     let dirty_baseline = initial_memory.clone();
     let history_for_options = memory_events.clone();
@@ -4582,6 +4585,51 @@ fn project_settings_view(
                     <select id="project-revert-strategy" name="revert_strategy">
                         <option value="manual" selected=manual_revert_selected>"revert manually"</option>
                         <option value="git_reset" selected=git_reset_selected>"git reset"</option>
+                    </select>
+                    <div class="git-command-policy">
+                        <label class="checkbox-row" for="project-git-add">
+                            <input
+                                id="project-git-add"
+                                type="checkbox"
+                                name="git_add"
+                                checked=git_policy.add
+                            />
+                            <span>"git add"</span>
+                        </label>
+                        <label class="checkbox-row" for="project-git-commit">
+                            <input
+                                id="project-git-commit"
+                                type="checkbox"
+                                name="git_commit"
+                                checked=git_policy.commit
+                            />
+                            <span>"git commit"</span>
+                        </label>
+                        <label class="checkbox-row" for="project-git-push">
+                            <input
+                                id="project-git-push"
+                                type="checkbox"
+                                name="git_push"
+                                checked=git_policy.push
+                            />
+                            <span>"git push"</span>
+                        </label>
+                        <label class="checkbox-row" for="project-git-reset">
+                            <input
+                                id="project-git-reset"
+                                type="checkbox"
+                                name="git_reset"
+                                checked=git_policy.reset
+                            />
+                            <span>"git reset"</span>
+                        </label>
+                    </div>
+                    <label for="project-git-hard-reset">"Hard reset"</label>
+                    <select id="project-git-hard-reset" name="git_hard_reset">
+                        <option value="isolated_workspaces" selected=hard_reset_isolated_selected>
+                            "isolated branches/worktrees only"
+                        </option>
+                        <option value="never" selected=hard_reset_never_selected>"never"</option>
                     </select>
                     <button>"Save policy"</button>
                 </form>

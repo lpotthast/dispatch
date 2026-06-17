@@ -25,10 +25,10 @@ use crate::{
         swim_lanes, work_item_states,
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentSandboxMode, AgentToolName, CodexAgentModel,
-        ProjectMemoryCompactionView, ProjectMemoryEventView, ProjectMemoryUpdateView,
-        ProjectMemoryView, ProjectSettingsView, ProjectView, RevertStrategy, WorkspaceMode,
-        WorktreeCleanupPolicy,
+        AgentGitCommandPolicy, AgentReasoningEffort, AgentSandboxMode, AgentToolName,
+        CodexAgentModel, ProjectMemoryCompactionView, ProjectMemoryEventView,
+        ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView, ProjectView,
+        RevertStrategy, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -68,6 +68,7 @@ pub struct UpdateProjectSettings {
     pub default_agent_reasoning_effort: Option<Option<AgentReasoningEffort>>,
     pub agent_sandbox_mode: Option<AgentSandboxMode>,
     pub agent_extra_writable_roots: Option<Vec<String>>,
+    pub agent_git_command_policy: Option<AgentGitCommandPolicy>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +162,10 @@ impl From<ProjectModel> for ProjectView {
                 &project.agent_extra_writable_roots,
             )
             .expect("project agent extra writable roots must be valid"),
+            agent_git_command_policy: parse_agent_git_command_policy_storage(
+                &project.agent_git_command_policy,
+            )
+            .expect("project agent git command policy must be valid"),
             created_at: project.created_at,
             updated_at: project.updated_at,
         }
@@ -223,6 +228,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         )),
         agent_sandbox_mode: Set(AgentSandboxMode::WorkspaceWrite.as_storage().to_owned()),
         agent_extra_writable_roots: Set(String::new()),
+        agent_git_command_policy: Set(default_agent_git_command_policy_json()),
         created_at: Set(now.clone()),
         updated_at: Set(now),
         ..Default::default()
@@ -562,6 +568,7 @@ pub async fn update_settings(
         && update.default_agent_reasoning_effort.is_none()
         && update.agent_sandbox_mode.is_none()
         && update.agent_extra_writable_roots.is_none()
+        && update.agent_git_command_policy.is_none()
     {
         bail!("project settings update requires at least one field");
     }
@@ -613,6 +620,12 @@ pub async fn update_settings(
         Some(value) => normalize_agent_extra_writable_roots(value)?,
         None => parse_agent_extra_writable_roots_storage(&existing.agent_extra_writable_roots)?,
     };
+    let agent_git_command_policy =
+        update
+            .agent_git_command_policy
+            .unwrap_or(parse_agent_git_command_policy_storage(
+                &existing.agent_git_command_policy,
+            )?);
     validate_agent_extra_writable_roots_do_not_include_database(
         &agent_extra_writable_roots,
         store.path(),
@@ -646,6 +659,9 @@ pub async fn update_settings(
     active.agent_sandbox_mode = Set(agent_sandbox_mode.as_storage().to_owned());
     active.agent_extra_writable_roots = Set(serialize_agent_extra_writable_roots(
         &agent_extra_writable_roots,
+    ));
+    active.agent_git_command_policy = Set(serialize_agent_git_command_policy(
+        &agent_git_command_policy,
     ));
     active.updated_at = Set(utc_now());
 
@@ -880,6 +896,9 @@ fn project_settings_to_view(project: ProjectModel) -> Result<ProjectSettingsView
         agent_extra_writable_roots: parse_agent_extra_writable_roots_storage(
             &project.agent_extra_writable_roots,
         )?,
+        agent_git_command_policy: parse_agent_git_command_policy_storage(
+            &project.agent_git_command_policy,
+        )?,
         created_at: project.created_at,
         updated_at: project.updated_at,
     })
@@ -906,6 +925,22 @@ pub(crate) fn parse_agent_extra_writable_roots_storage(value: &str) -> Result<Ve
 
 pub(crate) fn serialize_agent_extra_writable_roots(roots: &[String]) -> String {
     roots.join("\n")
+}
+
+pub(crate) fn default_agent_git_command_policy_json() -> String {
+    serialize_agent_git_command_policy(&AgentGitCommandPolicy::default())
+}
+
+pub(crate) fn parse_agent_git_command_policy_storage(value: &str) -> Result<AgentGitCommandPolicy> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(AgentGitCommandPolicy::default());
+    }
+    Ok(serde_json::from_str(value).context("failed to parse agent git command policy")?)
+}
+
+pub(crate) fn serialize_agent_git_command_policy(policy: &AgentGitCommandPolicy) -> String {
+    serde_json::to_string(policy).expect("agent git command policy must serialize")
 }
 
 pub(crate) fn normalize_agent_extra_writable_roots(roots: Vec<String>) -> Result<Vec<String>> {
@@ -1159,6 +1194,10 @@ mod tests {
             AgentSandboxMode::WorkspaceWrite
         );
         assert!(settings.agent_extra_writable_roots.is_empty());
+        assert_eq!(
+            settings.agent_git_command_policy,
+            AgentGitCommandPolicy::default()
+        );
     }
 
     #[tokio::test]
@@ -1252,6 +1291,13 @@ mod tests {
                     "~/Library/Caches/chrome-for-testing-manager".to_owned(),
                     "/tmp/patchbay-browser".to_owned(),
                 ]),
+                agent_git_command_policy: Some(AgentGitCommandPolicy {
+                    add: true,
+                    commit: false,
+                    push: true,
+                    reset: false,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         )
@@ -1287,6 +1333,20 @@ mod tests {
         assert_eq!(
             project.agent_extra_writable_roots,
             settings.agent_extra_writable_roots
+        );
+        assert_eq!(
+            settings.agent_git_command_policy,
+            AgentGitCommandPolicy {
+                add: true,
+                commit: false,
+                push: true,
+                reset: false,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            project.agent_git_command_policy,
+            settings.agent_git_command_policy
         );
     }
 

@@ -23,6 +23,7 @@ The server crate contains:
 - custom JSON API endpoints;
 - CrudKit-backed admin endpoints;
 - automation process launch and log capture;
+- Patchbay-managed Codex homes, per-project Codex config/rules, and run-specific tool shims;
 - the trusted server/operator CLI.
 
 The operator CLI in this crate may accept `--database` because it is part of the trusted server surface. It is not the agent-facing CLI.
@@ -46,6 +47,8 @@ This crate builds the `patchbay` binary used by agents. It is intentionally smal
 Patchbay persists data in SQLite through the server crate. The default database path is under the user's Patchbay data directory, while repository development recipes pass `.patchbay/patchbay.sqlite3` explicitly.
 
 Database writes must flow through server services. This keeps workflow checks in one process and prevents launched agents from bypassing ownership, state, project, or version rules.
+
+Codex runtime state is Patchbay-owned local state under the user's Patchbay data directory. The shared managed Codex home stores login/status state. Each project gets a project Codex home under that shared tree for generated `config.toml`, `rules/*.rules`, sessions, logs, and SQLite state. Project homes may symlink shared auth and skill assets so projects can have independent runtime policy without requiring a new login for every project.
 
 ## Server Routes
 

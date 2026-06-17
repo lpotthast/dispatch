@@ -36,9 +36,9 @@ use crate::{
     },
     frontend,
     shared::view_models::{
-        AgentReasoningEffort, AgentToolName, AuthorType, AutomationActivation, AutomationEffect,
-        AutomationMode, DEFAULT_STATE_LABEL, ProcessSessionView, RevertStrategy, WorkspaceMode,
-        WorktreeCleanupPolicy,
+        AgentGitCommandPolicy, AgentGitHardResetPolicy, AgentReasoningEffort, AgentToolName,
+        AuthorType, AutomationActivation, AutomationEffect, AutomationMode, DEFAULT_STATE_LABEL,
+        ProcessSessionView, RevertStrategy, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -630,6 +630,7 @@ async fn update_settings(
             default_agent_reasoning_effort: Some(default_agent_reasoning_effort),
             agent_sandbox_mode,
             agent_extra_writable_roots,
+            agent_git_command_policy: None,
         },
     )
     .await
@@ -682,6 +683,11 @@ struct UpdateCommitPolicyForm {
     auto_commit: Option<String>,
     commit_standard: Option<String>,
     revert_strategy: String,
+    git_add: Option<String>,
+    git_commit: Option<String>,
+    git_push: Option<String>,
+    git_reset: Option<String>,
+    git_hard_reset: String,
 }
 
 async fn update_commit_policy(
@@ -693,6 +699,17 @@ async fn update_commit_policy(
         Ok(value) => value,
         Err(err) => return error_response(err).await,
     };
+    let git_hard_reset = match form.git_hard_reset.parse::<AgentGitHardResetPolicy>() {
+        Ok(value) => value,
+        Err(err) => return error_response(err).await,
+    };
+    let agent_git_command_policy = AgentGitCommandPolicy {
+        add: form.git_add.is_some(),
+        commit: form.git_commit.is_some(),
+        push: form.git_push.is_some(),
+        reset: form.git_reset.is_some(),
+        hard_reset: git_hard_reset,
+    };
     match projects::update_settings(
         &state.store,
         &project,
@@ -700,6 +717,7 @@ async fn update_commit_policy(
             auto_commit: Some(form.auto_commit.is_some()),
             commit_standard: form.commit_standard,
             revert_strategy: Some(revert_strategy),
+            agent_git_command_policy: Some(agent_git_command_policy),
             ..Default::default()
         },
     )
