@@ -1344,6 +1344,21 @@ button.link-danger {
   background: $amber-soft;
   color: #6f4309;
   font-weight: 720;
+  text-decoration: none;
+}
+
+a.claim-badge {
+  &:hover,
+  &:focus-visible {
+    border-color: rgba($amber, 0.62);
+    background: #ffe8bd;
+    color: #6f4309;
+    text-decoration: none;
+  }
+
+  &:focus-visible {
+    @include control-focus;
+  }
 }
 
 .claim-dot {

@@ -1805,7 +1805,7 @@ fn item_content(page: ItemPage) -> AnyView {
     let claim = item
         .claimed_by
         .clone()
-        .map(|agent| claim_badge(agent, "Claimed", item.claimed_at.clone()));
+        .map(|agent| claim_badge(&project, agent, "Claimed", item.claimed_at.clone()));
     let finished = item.finished_at.clone().map(|finished_at| {
         view! { <span>"finished " {finished_at}</span> }
     });
@@ -1902,7 +1902,7 @@ fn item_content(page: ItemPage) -> AnyView {
 
 fn comment_author_view(project: &str, author_type: AuthorType, author: String) -> AnyView {
     if author_type == AuthorType::Agent
-        && let Some(run_id) = infer_agent_comment_run_id(&author)
+        && let Some(run_id) = infer_patchbay_run_id(&author)
     {
         let href = format!(
             "/projects/{}/automation/runs/{}/log",
@@ -1918,8 +1918,8 @@ fn comment_author_view(project: &str, author_type: AuthorType, author: String) -
     view! { {author} }.into_any()
 }
 
-fn infer_agent_comment_run_id(author: &str) -> Option<i64> {
-    let id = author.strip_prefix("patchbay-run-")?;
+fn infer_patchbay_run_id(agent_id: &str) -> Option<i64> {
+    let id = agent_id.strip_prefix("patchbay-run-")?;
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -5713,7 +5713,7 @@ fn item_card(project: String, item: WorkItemView) -> impl IntoView + 'static {
         } else {
             "Claimed"
         };
-        claim_badge(agent, status, item.claimed_at.clone())
+        claim_badge(&project, agent, status, item.claimed_at.clone())
     });
 
     view! {
@@ -6021,8 +6021,30 @@ fn state_label(item: &WorkItemView) -> &str {
     item.state.as_deref().unwrap_or("(no state)")
 }
 
-fn claim_badge(agent: String, status: &'static str, claimed_at: Option<String>) -> AnyView {
+fn claim_badge(
+    project: &str,
+    agent: String,
+    status: &'static str,
+    claimed_at: Option<String>,
+) -> AnyView {
     let elapsed = claim_elapsed_timer(claimed_at);
+    if let Some(run_id) = infer_patchbay_run_id(&agent) {
+        let href = format!(
+            "/projects/{}/automation/runs/{}/log",
+            encode_path(project),
+            run_id
+        );
+        return view! {
+            <a class="claim-badge" href=href>
+                <span class="claim-dot" aria-hidden="true"></span>
+                <span>{status}</span>
+                <span class="claim-agent">{agent}</span>
+                {elapsed}
+            </a>
+        }
+        .into_any();
+    }
+
     view! {
         <div class="claim-badge">
             <span class="claim-dot" aria-hidden="true"></span>
@@ -6104,23 +6126,21 @@ fn preview(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_agent_comment_run_id,
-    };
+    use super::{claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_patchbay_run_id};
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
     #[test]
     fn infers_run_id_from_patchbay_agent_name() {
-        assert_eq!(infer_agent_comment_run_id("patchbay-run-60"), Some(60));
+        assert_eq!(infer_patchbay_run_id("patchbay-run-60"), Some(60));
     }
 
     #[test]
     fn ignores_non_run_agent_names() {
-        assert_eq!(infer_agent_comment_run_id("codex"), None);
-        assert_eq!(infer_agent_comment_run_id("patchbay-run-"), None);
-        assert_eq!(infer_agent_comment_run_id("patchbay-run-0"), None);
-        assert_eq!(infer_agent_comment_run_id("patchbay-run-+60"), None);
-        assert_eq!(infer_agent_comment_run_id("patchbay-run-abc"), None);
+        assert_eq!(infer_patchbay_run_id("codex"), None);
+        assert_eq!(infer_patchbay_run_id("patchbay-run-"), None);
+        assert_eq!(infer_patchbay_run_id("patchbay-run-0"), None);
+        assert_eq!(infer_patchbay_run_id("patchbay-run-+60"), None);
+        assert_eq!(infer_patchbay_run_id("patchbay-run-abc"), None);
     }
 
     #[test]

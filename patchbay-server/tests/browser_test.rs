@@ -369,6 +369,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_contains(driver, "Start agent").await?;
         assert_source_contains(driver, "Comments").await?;
         add_agent_comment(driver).await?;
+        claim_current_item(driver).await?;
         let item_url = driver
             .current_url()
             .await
@@ -382,6 +383,11 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             By::Css(
                 "section.comments .comment-author-link[href='/projects/demo/automation/runs/60/log']",
             ),
+        )
+        .await?;
+        find(
+            driver,
+            By::Css(".item-meta a.claim-badge[href='/projects/demo/automation/runs/60/log']"),
         )
         .await?;
         assert_source_contains(driver, "patchbay-run-60").await?;
@@ -524,6 +530,58 @@ async fn add_agent_comment(driver: &WebDriver) -> Result<(), Report> {
         .convert::<String>()
         .context("failed to read agent comment setup response")?;
     assert_that!(created).is_equal_to("ok".to_owned());
+    Ok(())
+}
+
+async fn claim_current_item(driver: &WebDriver) -> Result<(), Report> {
+    let claimed = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const itemId = window.location.pathname.match(/\/items\/(\d+)$/)?.[1];
+            if (!itemId) {
+                done('missing item id');
+                return;
+            }
+            (async () => {
+                const state = 'browser-claimable';
+                const moveResponse = await fetch(`/api/projects/demo/items/${itemId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ state }),
+                });
+                if (!moveResponse.ok) {
+                    done(await moveResponse.text());
+                    return;
+                }
+
+                const claimResponse = await fetch('/api/projects/demo/items/claim', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        agent_id: 'patchbay-run-60',
+                        state,
+                    }),
+                });
+                if (!claimResponse.ok) {
+                    done(await claimResponse.text());
+                    return;
+                }
+                const payload = await claimResponse.json();
+                if (!payload.item || String(payload.item.id) !== itemId) {
+                    done(`claimed wrong item: ${payload.item?.id ?? 'none'}`);
+                    return;
+                }
+                done('ok');
+            })().catch(error => done(String(error)));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to claim current item through API browser-test request")?
+        .convert::<String>()
+        .context("failed to read item claim setup response")?;
+    assert_that!(claimed).is_equal_to("ok".to_owned());
     Ok(())
 }
 
