@@ -1,5 +1,20 @@
 # Repository Guidelines
 
+## Design Source of Truth
+
+The `design/` directory is Patchbay's spec-like source of truth for product behavior, functional requirements, and technical architecture. Implementation code contains the fine details, but it should implement the design described there rather than becoming the only place where decisions live.
+
+Start with `design/patchbay.md` for the system overview, core invariants, and document map. Then consult the focused design docs before changing related behavior:
+
+- `design/architecture.md`: process boundaries, crate responsibilities, storage ownership, and route classes.
+- `design/data-model.md`: projects, work items, comments, events, agent tools, agent runs, automation, and settings.
+- `design/api.md`: custom JSON endpoints, UI form endpoints, CrudKit boundaries, workflow semantics, and errors.
+- `design/cli.md`: agent-facing CLI contract, context resolution, commands, and development shim.
+- `design/workflows.md`: claim, progress, finish, release, updates, automation launch, stale claims, run logs, and pull requests.
+- `design/ui.md`: Leptos routes, workflow surface, admin surfaces, project settings, live updates, and browser coverage.
+
+Any change that affects user-visible behavior, workflow rules, API or CLI contracts, storage shape, automation, project settings, or major UI structure must either follow the existing design docs or update `design/` in the same change so the design remains authoritative.
+
 ## Layout
 
 Patchbay uses standalone root-level Rust 2024 crates and intentionally has no root `Cargo.toml` or Cargo workspace.
@@ -10,7 +25,7 @@ Patchbay uses standalone root-level Rust 2024 crates and intentionally has no ro
 - `patchbay-cli/`: standalone agent-facing `patchbay` CLI binary; it relays to a running server and must not open SQLite.
 - `dev-bin/patchbay`: tracked development shim that puts the CLI relay on `PATH` before installation.
 - `crudkit/`: Git submodule used as a local dependency; do not put Patchbay workflow rules there.
-- `design/`: product and architecture notes.
+- `design/`: authoritative product, workflow, UI, API, CLI, data-model, and architecture specifications for Patchbay.
 
 Keep Patchbay-specific claim, progress, finish, release, automation, and board behavior in Patchbay-owned server services and custom API endpoints, not CrudKit routes.
 
