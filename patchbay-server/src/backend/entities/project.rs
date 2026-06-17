@@ -81,6 +81,12 @@ pub struct Model {
     pub default_agent_reasoning_effort: Option<String>,
 
     #[ck_create_model(exclude)]
+    pub agent_sandbox_mode: String,
+
+    #[ck_create_model(exclude)]
+    pub agent_extra_writable_roots: String,
+
+    #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
     pub created_at: String,
 

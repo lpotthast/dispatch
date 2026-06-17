@@ -34,8 +34,8 @@ use crate::{
     },
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog,
-        AgentRunOutputPiece, AgentRunStatus, AgentRunView, AgentToolName, AutomationMode,
-        AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
+        AgentRunOutputPiece, AgentRunStatus, AgentRunView, AgentSandboxMode, AgentToolName,
+        AutomationMode, AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
         FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView,
         RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
@@ -117,6 +117,8 @@ struct AgentProcessStart {
     claimed_item_id: Option<i64>,
     agent_model: Option<String>,
     agent_reasoning_effort: Option<AgentReasoningEffort>,
+    agent_sandbox_mode: AgentSandboxMode,
+    agent_extra_writable_roots: Vec<String>,
 }
 
 struct OutputPieceDraft {
@@ -635,6 +637,8 @@ async fn complete_started_automation_run(
             claimed_item_id: claimed_item.as_ref().map(|item| item.id),
             agent_model,
             agent_reasoning_effort,
+            agent_sandbox_mode: settings.agent_sandbox_mode,
+            agent_extra_writable_roots: settings.agent_extra_writable_roots.clone(),
         },
         sessions,
         cancellation,
@@ -1393,12 +1397,27 @@ fn agent_environment(
     env
 }
 
-fn agent_sandbox_policy() -> serde_json::Value {
-    serde_json::json!({
-        "type": "workspaceWrite",
-        "networkAccess": true,
-        "writableRoots": [],
-    })
+fn agent_sandbox_mode(mode: AgentSandboxMode) -> SandboxMode {
+    match mode {
+        AgentSandboxMode::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+        AgentSandboxMode::DangerFullAccess => SandboxMode::DangerFullAccess,
+    }
+}
+
+fn agent_sandbox_policy(
+    mode: AgentSandboxMode,
+    agent_extra_writable_roots: &[String],
+) -> serde_json::Value {
+    match mode {
+        AgentSandboxMode::WorkspaceWrite => serde_json::json!({
+            "type": "workspaceWrite",
+            "networkAccess": true,
+            "writableRoots": agent_extra_writable_roots,
+        }),
+        AgentSandboxMode::DangerFullAccess => serde_json::json!({
+            "type": "dangerFullAccess",
+        }),
+    }
 }
 
 fn codex_memory_config_overrides() -> serde_json::Map<String, serde_json::Value> {
@@ -1553,9 +1572,13 @@ async fn run_codex_app_server_turn(
     let codex = codex_app_server::spawn_codex_with_env(&start.codex_binary, env).await?;
     let mut thread_options = ThreadOptions::builder()
         .working_directory(working_dir)
-        .sandbox_mode(SandboxMode::WorkspaceWrite)
+        .sandbox_mode(agent_sandbox_mode(start.agent_sandbox_mode))
         .approval_policy(ApprovalMode::Never)
-        .sandbox_policy(agent_sandbox_policy())
+        .network_access_enabled(true)
+        .sandbox_policy(agent_sandbox_policy(
+            start.agent_sandbox_mode,
+            &start.agent_extra_writable_roots,
+        ))
         .config(codex_memory_config_overrides());
     if let Some(agent_model) = start.agent_model {
         thread_options = thread_options.model(agent_model);
@@ -2537,6 +2560,10 @@ mod tests {
         assert!(
             prompt.contains("is the source of truth for work state, labels, and project memory")
         );
+        assert!(prompt.contains("Patchbay-launched agents run through the Codex SDK"));
+        assert!(
+            prompt.contains("extra writable root or sandbox mode change would likely be needed")
+        );
         assert!(prompt.contains("PATCHBAY_API_URL=<api-url>"));
         assert!(prompt.contains("PATCHBAY_CLAIMED_ITEM_ID=<item-id>"));
         assert!(prompt.contains("When `PATCHBAY_CLAIMED_ITEM_ID` is set"));
@@ -2616,6 +2643,40 @@ mod tests {
         assert_eq!(
             config.get("memories.generate_memories"),
             Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn codex_thread_sandbox_uses_project_writable_roots() {
+        let roots = vec![
+            "/tmp/patchbay-browser".to_owned(),
+            "/Users/test/.patchbay/codex".to_owned(),
+        ];
+        let policy = agent_sandbox_policy(AgentSandboxMode::WorkspaceWrite, &roots);
+
+        assert_eq!(
+            policy,
+            serde_json::json!({
+                "type": "workspaceWrite",
+                "networkAccess": true,
+                "writableRoots": roots,
+            })
+        );
+    }
+
+    #[test]
+    fn codex_thread_sandbox_can_disable_sandbox_for_project() {
+        let roots = vec!["/tmp/ignored-when-full-access".to_owned()];
+
+        assert_eq!(
+            agent_sandbox_mode(AgentSandboxMode::DangerFullAccess),
+            SandboxMode::DangerFullAccess
+        );
+        assert_eq!(
+            agent_sandbox_policy(AgentSandboxMode::DangerFullAccess, &roots),
+            serde_json::json!({
+                "type": "dangerFullAccess",
+            })
         );
     }
 

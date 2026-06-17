@@ -43,7 +43,7 @@ pub mod automation_trigger {
                 enabled: true,
                 activation: "work_item".to_owned(),
                 effect: "consume_work".to_owned(),
-                schedule: "@every 15s".to_owned(),
+                schedule: "@every 10s".to_owned(),
                 mode: "execute".to_owned(),
                 tool_name: "codex".to_owned(),
                 prompt: String::new(),
@@ -176,6 +176,8 @@ pub mod project {
         pub default_agent_tool: String,
         pub default_agent_model: Option<String>,
         pub default_agent_reasoning_effort: Option<String>,
+        pub agent_sandbox_mode: String,
+        pub agent_extra_writable_roots: String,
     }
 
     #[derive(Clone, PartialEq, Eq, Debug, CkField, Serialize, Deserialize)]
@@ -224,6 +226,8 @@ pub mod project {
         pub default_agent_tool: String,
         pub default_agent_model: Option<String>,
         pub default_agent_reasoning_effort: Option<String>,
+        pub agent_sandbox_mode: String,
+        pub agent_extra_writable_roots: String,
         pub created_at: String,
         pub updated_at: String,
     }
@@ -244,6 +248,8 @@ pub mod project {
                 default_agent_tool: read.default_agent_tool,
                 default_agent_model: read.default_agent_model,
                 default_agent_reasoning_effort: read.default_agent_reasoning_effort,
+                agent_sandbox_mode: read.agent_sandbox_mode,
+                agent_extra_writable_roots: read.agent_extra_writable_roots,
             }
         }
     }

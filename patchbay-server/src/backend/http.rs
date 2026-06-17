@@ -539,6 +539,8 @@ struct UpdateSettingsForm {
     default_agent_tool: String,
     default_agent_model: Option<String>,
     default_agent_reasoning_effort: Option<String>,
+    agent_sandbox_mode: Option<String>,
+    agent_extra_writable_roots: Option<String>,
 }
 
 async fn update_settings(
@@ -561,11 +563,25 @@ async fn update_settings(
         Ok(value) => value,
         Err(err) => return error_response(err).await,
     };
+    let agent_sandbox_mode = match form.agent_sandbox_mode {
+        Some(value) => match value.parse() {
+            Ok(value) => Some(value),
+            Err(err) => return error_response(err).await,
+        },
+        None => None,
+    };
     let default_agent_reasoning_effort =
         match parse_optional_reasoning_effort(form.default_agent_reasoning_effort) {
             Ok(value) => value,
             Err(err) => return error_response(err).await,
         };
+    let agent_extra_writable_roots = match form.agent_extra_writable_roots {
+        Some(value) => match projects::parse_agent_extra_writable_roots_text(&value) {
+            Ok(value) => Some(value),
+            Err(err) => return error_response(err).await,
+        },
+        None => None,
+    };
 
     match projects::update_settings(
         &state.store,
@@ -585,6 +601,8 @@ async fn update_settings(
                     .filter(|value| !value.trim().is_empty()),
             ),
             default_agent_reasoning_effort: Some(default_agent_reasoning_effort),
+            agent_sandbox_mode,
+            agent_extra_writable_roots,
         },
     )
     .await

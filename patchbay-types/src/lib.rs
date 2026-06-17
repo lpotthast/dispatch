@@ -98,6 +98,8 @@ pub struct ProjectView {
     pub default_agent_tool: AgentToolName,
     pub default_agent_model: Option<String>,
     pub default_agent_reasoning_effort: Option<AgentReasoningEffort>,
+    pub agent_sandbox_mode: AgentSandboxMode,
+    pub agent_extra_writable_roots: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -404,8 +406,46 @@ pub struct ProjectSettingsView {
     pub default_agent_tool: AgentToolName,
     pub default_agent_model: Option<String>,
     pub default_agent_reasoning_effort: Option<AgentReasoningEffort>,
+    pub agent_sandbox_mode: AgentSandboxMode,
+    pub agent_extra_writable_roots: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSandboxMode {
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl AgentSandboxMode {
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::WorkspaceWrite => "workspace_write",
+            Self::DangerFullAccess => "danger_full_access",
+        }
+    }
+}
+
+impl fmt::Display for AgentSandboxMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_storage())
+    }
+}
+
+impl FromStr for AgentSandboxMode {
+    type Err = ParseEnumError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().replace('-', "_").as_str() {
+            "workspace_write" | "workspacewrite" => Ok(Self::WorkspaceWrite),
+            "danger_full_access" | "dangerfullaccess" => Ok(Self::DangerFullAccess),
+            _ => Err(ParseEnumError(
+                "agent sandbox mode must be one of: workspace_write, danger_full_access",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

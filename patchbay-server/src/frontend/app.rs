@@ -2265,6 +2265,20 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
                         ..Default::default()
                     },
                 ),
+                Elem::field(
+                    ProjectField::AgentSandboxMode,
+                    FieldOptions {
+                        label: Some(Label::new("Sandbox mode")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::AgentExtraWritableRoots,
+                    FieldOptions {
+                        label: Some(Label::new("Extra writable roots")),
+                        ..Default::default()
+                    },
+                ),
             ],
         }))],
         order_by: indexmap! {
@@ -2336,6 +2350,22 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             .register(
                 ProjectField::DefaultAgentReasoningEffort,
                 agent_reasoning_field_renderer::<DynUpdateField>(Some("Codex default")),
+            )
+            .register(
+                ProjectField::AgentSandboxMode,
+                select_field_renderer::<DynUpdateField>(
+                    &[
+                        ("workspace_write", "workspace_write"),
+                        ("danger_full_access", "danger_full_access"),
+                    ],
+                    false,
+                ),
+            )
+            .register(
+                ProjectField::AgentExtraWritableRoots,
+                multiline_text_field_renderer::<DynUpdateField>(
+                    "One absolute path per line; ~ is expanded on save.",
+                ),
             )
             .build(),
     }
@@ -3232,6 +3262,37 @@ fn project_path_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
                                 </button>
                             </div>
                         </div>
+                    }
+                    .into_any()
+                }
+            }
+        },
+    )
+}
+
+fn multiline_text_field_renderer<F: TypeErasedField>(
+    placeholder: &'static str,
+) -> FieldRenderer<F> {
+    FieldRenderer::new(
+        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+            let current =
+                Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
+
+            match field_mode {
+                FieldMode::Display => view! { {move || current.get()} }.into_any(),
+                FieldMode::Readable | FieldMode::Editable => {
+                    let disabled = field_mode != FieldMode::Editable || field_options.disabled;
+                    view! {
+                        {render_label(field_options.label.clone())}
+                        <textarea
+                            class="crud-input-field"
+                            prop:value=move || current.get()
+                            disabled=disabled
+                            placeholder=placeholder
+                            on:input=move |event| {
+                                value_changed.run(Ok(Value::String(event_target_value(&event))));
+                            }
+                        />
                     }
                     .into_any()
                 }

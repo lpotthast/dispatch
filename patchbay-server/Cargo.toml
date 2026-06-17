@@ -100,7 +100,7 @@ git2 = { version = "0.20", optional = true }
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"], optional = true }
 indexmap = { version = "2", features = ["serde"], optional = true }
 leptonic = { version = "0.5.0", git = "https://github.com/lpotthast/leptonic", branch = "migrate-to-leptos-0.8", features = ["tiptap"] }
-leptos = "0.8.15"
+leptos = "0.8.19"
 leptos-use = { version = "0.18.3", default-features = false, features = ["use_websocket"], optional = true }
 leptos_axum = { version = "=0.8.7", optional = true }
 leptos_meta = "=0.8.5"
@@ -125,8 +125,8 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
 assertr = "0.6.0"
-browser-test = "0.2.1"
-leptos-browser-test = { version = "0.2.1", path = "../../leptos-browser-test" }
+browser-test = { version = "0.4.0" }
+leptos-browser-test = { version = "0.3.0" }
 tempfile = "3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -15,6 +15,12 @@ PATCHBAY_CLAIMED_ITEM_ID=<item-id>
 
 When `PATCHBAY_CLAIMED_ITEM_ID` is set, commands taking an `[item-id]` default to that id; omit the item id for normal claimed-item work. `item list`, `item create`, and `item claim` do not use the claimed item. Use an explicit item id only when intentionally addressing another item. Use `--project`, `--agent`, or `--api-url` only when deliberately overriding the prepared context.
 
+## Runtime Sandbox
+
+Patchbay-launched agents run through the Codex SDK in the project's configured sandbox. The default is a restricted workspace-write sandbox with network access enabled. Additional writable host paths can be configured on the Patchbay project as extra writable roots, and projects can opt into a less restricted sandbox mode when a tool cannot work inside the workspace sandbox at all.
+
+If a command fails in a way that looks caused by sandbox restrictions, such as denied writes to tool homes, caches, browser profiles, macOS app registration, or other host resources outside the workspace, do not work around it. Report the blocker in progress/final output and tell the user which project extra writable root or sandbox mode change would likely be needed.
+
 ## CLI Quick Reference
 
 Work item and comment commands:

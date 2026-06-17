@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env,
     path::{Path, PathBuf},
     str::FromStr,
@@ -24,9 +25,9 @@ use crate::{
         swim_lanes,
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentToolName, CodexAgentModel, ProjectMemoryCompactionView,
-        ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView,
-        ProjectView, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentReasoningEffort, AgentSandboxMode, AgentToolName, CodexAgentModel,
+        ProjectMemoryCompactionView, ProjectMemoryEventView, ProjectMemoryUpdateView,
+        ProjectMemoryView, ProjectSettingsView, ProjectView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -61,6 +62,8 @@ pub struct UpdateProjectSettings {
     pub default_agent_tool: Option<AgentToolName>,
     pub default_agent_model: Option<Option<String>>,
     pub default_agent_reasoning_effort: Option<Option<AgentReasoningEffort>>,
+    pub agent_sandbox_mode: Option<AgentSandboxMode>,
+    pub agent_extra_writable_roots: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +143,14 @@ impl From<ProjectModel> for ProjectView {
                 .map(str::parse::<AgentReasoningEffort>)
                 .transpose()
                 .expect("project default agent reasoning effort must be valid"),
+            agent_sandbox_mode: project
+                .agent_sandbox_mode
+                .parse::<AgentSandboxMode>()
+                .expect("project agent sandbox mode must be valid"),
+            agent_extra_writable_roots: parse_agent_extra_writable_roots_storage(
+                &project.agent_extra_writable_roots,
+            )
+            .expect("project agent extra writable roots must be valid"),
             created_at: project.created_at,
             updated_at: project.updated_at,
         }
@@ -197,6 +208,8 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         default_agent_reasoning_effort: Set(Some(
             default_agent_reasoning_effort.as_storage().to_owned(),
         )),
+        agent_sandbox_mode: Set(AgentSandboxMode::WorkspaceWrite.as_storage().to_owned()),
+        agent_extra_writable_roots: Set(String::new()),
         created_at: Set(now.clone()),
         updated_at: Set(now),
         ..Default::default()
@@ -530,6 +543,8 @@ pub async fn update_settings(
         && update.default_agent_tool.is_none()
         && update.default_agent_model.is_none()
         && update.default_agent_reasoning_effort.is_none()
+        && update.agent_sandbox_mode.is_none()
+        && update.agent_extra_writable_roots.is_none()
     {
         bail!("project settings update requires at least one field");
     }
@@ -566,6 +581,17 @@ pub async fn update_settings(
             .map(str::parse::<AgentReasoningEffort>)
             .transpose()?,
     };
+    let agent_sandbox_mode = update
+        .agent_sandbox_mode
+        .unwrap_or(AgentSandboxMode::from_str(&existing.agent_sandbox_mode)?);
+    let agent_extra_writable_roots = match update.agent_extra_writable_roots {
+        Some(value) => normalize_agent_extra_writable_roots(value)?,
+        None => parse_agent_extra_writable_roots_storage(&existing.agent_extra_writable_roots)?,
+    };
+    validate_agent_extra_writable_roots_do_not_include_database(
+        &agent_extra_writable_roots,
+        store.path(),
+    )?;
     validate_settings(
         workspace_mode,
         max_code_edit_agents,
@@ -589,6 +615,10 @@ pub async fn update_settings(
     active.default_agent_model = Set(default_agent_model);
     active.default_agent_reasoning_effort =
         Set(default_agent_reasoning_effort.map(|effort| effort.as_storage().to_owned()));
+    active.agent_sandbox_mode = Set(agent_sandbox_mode.as_storage().to_owned());
+    active.agent_extra_writable_roots = Set(serialize_agent_extra_writable_roots(
+        &agent_extra_writable_roots,
+    ));
     active.updated_at = Set(utc_now());
 
     let updated = active
@@ -815,6 +845,10 @@ fn project_settings_to_view(project: ProjectModel) -> Result<ProjectSettingsView
             .as_deref()
             .map(str::parse::<AgentReasoningEffort>)
             .transpose()?,
+        agent_sandbox_mode: AgentSandboxMode::from_str(&project.agent_sandbox_mode)?,
+        agent_extra_writable_roots: parse_agent_extra_writable_roots_storage(
+            &project.agent_extra_writable_roots,
+        )?,
         created_at: project.created_at,
         updated_at: project.updated_at,
     })
@@ -829,6 +863,54 @@ pub(crate) fn normalize_optional(value: Option<String>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+pub(crate) fn parse_agent_extra_writable_roots_text(value: &str) -> Result<Vec<String>> {
+    normalize_agent_extra_writable_roots(value.lines().map(str::to_owned).collect())
+}
+
+pub(crate) fn parse_agent_extra_writable_roots_storage(value: &str) -> Result<Vec<String>> {
+    parse_agent_extra_writable_roots_text(value)
+}
+
+pub(crate) fn serialize_agent_extra_writable_roots(roots: &[String]) -> String {
+    roots.join("\n")
+}
+
+pub(crate) fn normalize_agent_extra_writable_roots(roots: Vec<String>) -> Result<Vec<String>> {
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::new();
+    for root in roots {
+        let root = root.trim();
+        if root.is_empty() {
+            continue;
+        }
+        let expanded = expand_home_path(root);
+        if !Path::new(&expanded).is_absolute() {
+            bail!("agent extra writable root '{root}' must resolve to an absolute path");
+        }
+        if seen.insert(expanded.clone()) {
+            normalized.push(expanded);
+        }
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn validate_agent_extra_writable_roots_do_not_include_database(
+    roots: &[String],
+    database_path: &Path,
+) -> Result<()> {
+    for root in roots {
+        let root_path = Path::new(root);
+        if database_path.starts_with(root_path) {
+            bail!(
+                "agent extra writable root '{}' includes Patchbay database {}; choose a narrower directory",
+                root,
+                database_path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn infer_agent_run_id(agent_id: &str) -> Option<i64> {
@@ -1038,6 +1120,11 @@ mod tests {
             settings.default_agent_reasoning_effort,
             Some(AgentReasoningEffort::highest())
         );
+        assert_eq!(
+            settings.agent_sandbox_mode,
+            AgentSandboxMode::WorkspaceWrite
+        );
+        assert!(settings.agent_extra_writable_roots.is_empty());
     }
 
     #[tokio::test]
@@ -1121,6 +1208,13 @@ mod tests {
                 workspace_mode: Some(WorkspaceMode::GitBranch),
                 create_pr: Some(true),
                 default_agent_tool: Some(AgentToolName::Codex),
+                agent_sandbox_mode: Some(AgentSandboxMode::DangerFullAccess),
+                agent_extra_writable_roots: Some(vec![
+                    " ~/Library/Caches/chrome-for-testing-manager ".to_owned(),
+                    "".to_owned(),
+                    "~/Library/Caches/chrome-for-testing-manager".to_owned(),
+                    "/tmp/patchbay-browser".to_owned(),
+                ]),
                 ..Default::default()
             },
         )
@@ -1132,6 +1226,44 @@ mod tests {
         assert_eq!(settings.workspace_mode, WorkspaceMode::GitBranch);
         assert_eq!(project.workspace_mode, WorkspaceMode::GitBranch);
         assert_eq!(project.default_agent_tool, AgentToolName::Codex);
+        assert_eq!(
+            settings.agent_sandbox_mode,
+            AgentSandboxMode::DangerFullAccess
+        );
+        assert_eq!(
+            project.agent_sandbox_mode,
+            AgentSandboxMode::DangerFullAccess
+        );
+        assert_eq!(
+            settings.agent_extra_writable_roots,
+            vec![
+                expand_home_path("~/Library/Caches/chrome-for-testing-manager"),
+                "/tmp/patchbay-browser".to_owned(),
+            ]
+        );
+        assert_eq!(
+            project.agent_extra_writable_roots,
+            settings.agent_extra_writable_roots
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_reject_roots_that_include_database() {
+        let (temp, store) = test_store().await;
+        create_demo_project(&store, project_path(&temp, "demo")).await;
+
+        let err = update_settings(
+            &store,
+            "demo",
+            UpdateProjectSettings {
+                agent_extra_writable_roots: Some(vec![temp.path().to_string_lossy().into_owned()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("includes Patchbay database"));
     }
 
     #[tokio::test]

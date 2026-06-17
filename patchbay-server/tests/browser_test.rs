@@ -1,12 +1,12 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::{borrow::Cow, time::Duration};
+use std::{borrow::Cow, env, time::Duration};
 
 use assertr::prelude::*;
 use browser_test::thirtyfour::{By, ChromiumLikeCapabilities, WebDriver};
 use browser_test::{
     BrowserTest, BrowserTestFailurePolicy, BrowserTestParallelism, BrowserTestRunner,
-    BrowserTestVisibility, BrowserTests, BrowserTimeouts, PauseConfig, async_trait,
+    BrowserTestVisibility, BrowserTests, BrowserTimeouts, ChromeBinary, PauseConfig, async_trait,
 };
 use leptos_browser_test::{LeptosTestApp, LeptosTestAppConfig, Report, ResultExt, bail};
 use tempfile::TempDir;
@@ -16,16 +16,36 @@ async fn browser_tests() -> Result<(), Report> {
     tracing_subscriber::fmt().init();
 
     let app = PatchbayTestApp::start().await?;
+    let browser_visibility = BrowserTestVisibility::from_env();
+    let run_chrome_single_process = browser_visibility.resolve().is_headless();
 
-    BrowserTestRunner::new()
-        .with_chrome_capabilities(|caps| {
+    let run_result = BrowserTestRunner::new()
+        // Headless Shell is a command-line Chrome-for-Testing artifact, not the macOS Chrome .app
+        // bundle. That avoids LaunchServices / WindowServer app-registration calls that are
+        // blocked by the default Codex SDK sandbox before WebDriver can create a session. Visible
+        // browser-test runs still use regular Chrome because Headless Shell cannot show a window.
+        .with_headless_chrome_binary(ChromeBinary::ChromeHeadlessShell)
+        .with_chrome_capabilities(move |caps| {
+            // Chrome's process sandbox can fail in nested/managed CI-style sandboxes. WebDriver
+            // still runs in Patchbay's test process sandbox, so this only disables Chrome's own
+            // child-process sandbox layer.
             caps.add_arg("--no-sandbox")?;
+            if run_chrome_single_process {
+                // The Codex SDK workspace sandbox on macOS denies Mach service registration. In
+                // Headless Shell, Chromium otherwise registers
+                // org.chromium.Chromium.MachPortRendezvousServer.<pid> before DevTools startup for
+                // child-process rendezvous. Keeping the headless browser in one process avoids that
+                // bootstrap_check_in path; visible debugging runs stay multi-process.
+                caps.add_arg("--single-process")?;
+            }
+            // Avoid /dev/shm startup failures in restricted environments by using regular temp
+            // files for Chrome IPC/shared-memory storage.
             caps.add_arg("--disable-dev-shm-usage")?;
             Ok(())
         })
         .with_test_parallelism(BrowserTestParallelism::Sequential)
         .with_failure_policy(BrowserTestFailurePolicy::RunAll)
-        .with_visibility(BrowserTestVisibility::from_env())
+        .with_visibility(browser_visibility)
         .with_pause(PauseConfig::from_env())
         .with_timeouts(
             BrowserTimeouts::builder()
@@ -34,8 +54,9 @@ async fn browser_tests() -> Result<(), Report> {
                 .build(),
         )
         .run(&app, BrowserTests::new().with(PatchbayBoardTest))
-        .await
-        .map_err(Report::into_dynamic)?;
+        .await;
+
+    run_result.map_err(Report::into_dynamic)?;
 
     Ok(())
 }
@@ -91,6 +112,8 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
 
         assert_that!(driver.title().await.context("failed to read page title")?)
             .is_equal_to("Projects");
+        find(driver, By::Css(".project-switcher")).await?;
+        find(driver, By::Css("[data-crudkit-leptos='projects']")).await?;
         assert_source_contains(driver, "project-switcher").await?;
         assert_source_does_not_contain(driver, ">Switch<").await?;
         assert_source_contains(driver, "data-crudkit-leptos=\"projects\"").await?;

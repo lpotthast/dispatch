@@ -24,11 +24,26 @@ check:
     cargo check --manifest-path "{{api_client_manifest}}"
     cargo check --manifest-path "{{types_manifest}}"
 
+update:
+    cargo update --manifest-path "{{server_manifest}}"
+    cargo update --manifest-path "{{cli_manifest}}"
+    cargo update --manifest-path "{{api_client_manifest}}"
+    cargo update --manifest-path "{{types_manifest}}"
+
+upgrade:
+    cargo upgrade --manifest-path "{{server_manifest}}"
+    cargo upgrade --manifest-path "{{cli_manifest}}"
+    cargo upgrade --manifest-path "{{api_client_manifest}}"
+    cargo upgrade --manifest-path "{{types_manifest}}"
+
 test:
-    cargo test --manifest-path "{{server_manifest}}"
-    cargo test --manifest-path "{{cli_manifest}}"
-    cargo test --manifest-path "{{api_client_manifest}}"
-    cargo test --manifest-path "{{types_manifest}}"
+    cargo test --manifest-path "{{server_manifest}}" --lib --bins
+    cargo test --manifest-path "{{server_manifest}}" --doc
+    cargo test --manifest-path "{{cli_manifest}}" --bins
+    cargo test --manifest-path "{{api_client_manifest}}" --lib
+    cargo test --manifest-path "{{api_client_manifest}}" --doc
+    cargo test --manifest-path "{{types_manifest}}" --lib
+    cargo test --manifest-path "{{types_manifest}}" --doc
 
 browser-test:
     cargo test --manifest-path "{{server_manifest}}" --test browser_test -- --nocapture

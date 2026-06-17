@@ -35,6 +35,8 @@ enum Projects {
     DefaultAgentTool,
     DefaultAgentModel,
     DefaultAgentReasoningEffort,
+    AgentSandboxMode,
+    AgentExtraWritableRoots,
     CreatedAt,
     UpdatedAt,
 }
@@ -207,6 +209,8 @@ impl MigratorTrait for Migrator {
             Box::new(RenameAutomationActivationAndRequireSchedule),
             Box::new(AddWorkItemStateLabelReadView),
             Box::new(AddSwimLaneCreateItemFlag),
+            Box::new(AddProjectAgentExtraWritableRoots),
+            Box::new(AddProjectAgentSandboxMode),
         ]
     }
 }
@@ -401,6 +405,18 @@ async fn create_projects(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                     ColumnDef::new(Projects::DefaultAgentReasoningEffort)
                         .string()
                         .null(),
+                )
+                .col(
+                    ColumnDef::new(Projects::AgentSandboxMode)
+                        .string()
+                        .not_null()
+                        .default("workspace_write"),
+                )
+                .col(
+                    ColumnDef::new(Projects::AgentExtraWritableRoots)
+                        .text()
+                        .not_null()
+                        .default(""),
                 )
                 .col(
                     ColumnDef::new(Projects::CreatedAt)
@@ -1891,6 +1907,64 @@ impl MigrationTrait for AddSwimLaneCreateItemFlag {
     }
 }
 
+struct AddProjectAgentExtraWritableRoots;
+
+impl MigrationName for AddProjectAgentExtraWritableRoots {
+    fn name(&self) -> &str {
+        "m20260616_000023_add_project_agent_extra_writable_roots"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddProjectAgentExtraWritableRoots {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        add_column_if_missing(
+            manager,
+            "projects",
+            "agent_extra_writable_roots",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        .await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        drop_column_if_present(manager, "projects", "agent_extra_writable_roots").await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+}
+
+struct AddProjectAgentSandboxMode;
+
+impl MigrationName for AddProjectAgentSandboxMode {
+    fn name(&self) -> &str {
+        "m20260616_000024_add_project_agent_sandbox_mode"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddProjectAgentSandboxMode {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        add_column_if_missing(
+            manager,
+            "projects",
+            "agent_sandbox_mode",
+            "TEXT NOT NULL DEFAULT 'workspace_write'",
+        )
+        .await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        drop_column_if_present(manager, "projects", "agent_sandbox_mode").await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+}
+
 async fn seed_default_work_item_automations(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     manager
         .get_connection()
@@ -2329,6 +2403,20 @@ async fn add_project_run_settings_columns(manager: &SchemaManager<'_>) -> Result
         "projects",
         "default_agent_reasoning_effort",
         "TEXT",
+    )
+    .await?;
+    add_column_if_missing(
+        manager,
+        "projects",
+        "agent_sandbox_mode",
+        "TEXT NOT NULL DEFAULT 'workspace_write'",
+    )
+    .await?;
+    add_column_if_missing(
+        manager,
+        "projects",
+        "agent_extra_writable_roots",
+        "TEXT NOT NULL DEFAULT ''",
     )
     .await
 }

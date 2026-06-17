@@ -21,8 +21,8 @@ use crate::{
         swim_lanes,
     },
     shared::view_models::{
-        AgentReasoningEffort, AgentToolName, AutomationActivation, AutomationEffect,
-        CodexAgentModel, DEFAULT_STATE_LABEL, STATE_LABEL_KEY, WorkspaceMode,
+        AgentReasoningEffort, AgentSandboxMode, AgentToolName, AutomationActivation,
+        AutomationEffect, CodexAgentModel, DEFAULT_STATE_LABEL, STATE_LABEL_KEY, WorkspaceMode,
         WorktreeCleanupPolicy,
     },
 };
@@ -222,6 +222,23 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
                     .map_err(|err| project_unprocessable_error(err.to_string()))
             })
             .transpose()?;
+        update_model.agent_sandbox_mode = update_model
+            .agent_sandbox_mode
+            .parse::<AgentSandboxMode>()
+            .map_err(|err| project_unprocessable_error(err.to_string()))?
+            .as_storage()
+            .to_owned();
+        let agent_extra_writable_roots = projects::parse_agent_extra_writable_roots_text(
+            &update_model.agent_extra_writable_roots,
+        )
+        .map_err(|err| project_unprocessable_error(err.to_string()))?;
+        projects::validate_agent_extra_writable_roots_do_not_include_database(
+            &agent_extra_writable_roots,
+            _context.store.path(),
+        )
+        .map_err(|err| project_unprocessable_error(err.to_string()))?;
+        update_model.agent_extra_writable_roots =
+            projects::serialize_agent_extra_writable_roots(&agent_extra_writable_roots);
         projects::validate_settings(
             workspace_mode,
             update_model.max_code_edit_agents,
