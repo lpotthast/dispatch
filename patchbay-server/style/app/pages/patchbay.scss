@@ -1360,6 +1360,12 @@ button.link-danger {
   white-space: nowrap;
 }
 
+.claim-elapsed {
+  min-width: 4ch;
+  color: #6f4309;
+  font-variant-numeric: tabular-nums;
+}
+
 .project-settings {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1494,7 +1500,7 @@ button.link-danger {
   margin-bottom: 14px;
   color: $ink-soft;
 
-  span {
+  > span {
     display: inline-flex;
     min-height: 28px;
     align-items: center;

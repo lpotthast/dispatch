@@ -83,8 +83,7 @@ use leptos_use::{
     ReconnectLimit, UseWebSocketOptions, UseWebSocketReturn, use_websocket_with_options,
 };
 use serde::{Deserialize, Serialize};
-#[cfg(not(feature = "ssr"))]
-use time::OffsetDateTime;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 #[cfg(not(feature = "ssr"))]
 use uuid::Uuid;
 
@@ -1806,9 +1805,10 @@ fn item_content(page: ItemPage) -> AnyView {
     let state_action = format!("/projects/{}/items/{}/move", encode_path(&project), item.id);
     let current_state = item.state.clone().unwrap_or_default();
     let state_options = work_item_state_select_options(&work_item_states, current_state.clone());
-    let claim = item.claimed_by.clone().map(|agent| {
-        view! { <span>"claimed by " {agent}</span> }
-    });
+    let claim = item
+        .claimed_by
+        .clone()
+        .map(|agent| claim_badge(agent, "Claimed", item.claimed_at.clone()));
     let finished = item.finished_at.clone().map(|finished_at| {
         view! { <span>"finished " {finished_at}</span> }
     });
@@ -5756,13 +5756,7 @@ fn item_card(project: String, item: WorkItemView) -> impl IntoView + 'static {
         } else {
             "Claimed"
         };
-        view! {
-            <div class="claim-badge">
-                <span class="claim-dot" aria-hidden="true"></span>
-                <span>{status}</span>
-                <span class="claim-agent">{agent}</span>
-            </div>
-        }
+        claim_badge(agent, status, item.claimed_at.clone())
     });
 
     view! {
@@ -6070,6 +6064,71 @@ fn state_label(item: &WorkItemView) -> &str {
     item.state.as_deref().unwrap_or("(no state)")
 }
 
+fn claim_badge(agent: String, status: &'static str, claimed_at: Option<String>) -> AnyView {
+    let elapsed = claim_elapsed_timer(claimed_at);
+    view! {
+        <div class="claim-badge">
+            <span class="claim-dot" aria-hidden="true"></span>
+            <span>{status}</span>
+            <span class="claim-agent">{agent}</span>
+            {elapsed}
+        </div>
+    }
+    .into_any()
+}
+
+fn claim_elapsed_timer(claimed_at: Option<String>) -> AnyView {
+    let Some(claimed_at) = claimed_at else {
+        return ().into_any();
+    };
+    if claim_elapsed_seconds(&claimed_at).is_none() {
+        return ().into_any();
+    }
+
+    let (tick, set_tick) = signal(0_u64);
+    let _poll = use_interval_fn(
+        move || {
+            set_tick.update(|tick| *tick = tick.saturating_add(1));
+        },
+        1000,
+    );
+    view! {
+        <span class="claim-elapsed" title="Time in progress">
+            {move || {
+                let _ = tick.get();
+                claim_elapsed_label(&claimed_at).unwrap_or_default()
+            }}
+        </span>
+    }
+    .into_any()
+}
+
+fn claim_elapsed_label(claimed_at: &str) -> Option<String> {
+    claim_elapsed_seconds(claimed_at).map(format_claim_elapsed_seconds)
+}
+
+fn claim_elapsed_seconds(claimed_at: &str) -> Option<i64> {
+    claim_elapsed_seconds_at(claimed_at, OffsetDateTime::now_utc())
+}
+
+fn claim_elapsed_seconds_at(claimed_at: &str, now: OffsetDateTime) -> Option<i64> {
+    let claimed_at = OffsetDateTime::parse(claimed_at, &Rfc3339).ok()?;
+    Some((now - claimed_at).whole_seconds().max(0))
+}
+
+fn format_claim_elapsed_seconds(total_seconds: i64) -> String {
+    let total_seconds = total_seconds.max(0);
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 fn format_label(key: &str, value: Option<&str>) -> String {
     match value {
         Some(value) => format!("{key}={value}"),
@@ -6088,7 +6147,10 @@ fn preview(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::infer_agent_comment_run_id;
+    use super::{
+        claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_agent_comment_run_id,
+    };
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
     #[test]
     fn infers_run_id_from_patchbay_agent_name() {
@@ -6102,5 +6164,26 @@ mod tests {
         assert_eq!(infer_agent_comment_run_id("patchbay-run-0"), None);
         assert_eq!(infer_agent_comment_run_id("patchbay-run-+60"), None);
         assert_eq!(infer_agent_comment_run_id("patchbay-run-abc"), None);
+    }
+
+    #[test]
+    fn formats_claim_elapsed_time() {
+        assert_eq!(format_claim_elapsed_seconds(70), "1:10");
+        assert_eq!(format_claim_elapsed_seconds(3670), "1:01:10");
+        assert_eq!(format_claim_elapsed_seconds(-5), "0:00");
+    }
+
+    #[test]
+    fn derives_claim_elapsed_time_from_claim_timestamp() {
+        let now = OffsetDateTime::parse("2026-06-17T18:01:10Z", &Rfc3339).unwrap();
+        assert_eq!(
+            claim_elapsed_seconds_at("2026-06-17T18:00:00Z", now),
+            Some(70)
+        );
+        assert_eq!(
+            claim_elapsed_seconds_at("2026-06-17T18:02:00Z", now),
+            Some(0)
+        );
+        assert_eq!(claim_elapsed_seconds_at("not a timestamp", now), None);
     }
 }

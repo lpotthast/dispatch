@@ -25,7 +25,7 @@ The main workflow surface should make these states easy to inspect:
 
 - backlog and all work;
 - project-defined swim-lanes based on lane filters and lane ordering;
-- in-progress work and claimant;
+- in-progress work and claimant, including a frontend-derived elapsed claim timer from the claim start time;
 - recent comments and progress;
 - automation status;
 - stale or blocked work;
