@@ -93,7 +93,10 @@ pub async fn list_items(
     models_to_views(store, items).await
 }
 
-pub async fn count_items_outside_swim_lanes(store: &Store, project_name: &str) -> Result<i64> {
+pub async fn count_items_outside_work_item_states(
+    store: &Store,
+    project_name: &str,
+) -> Result<i64> {
     let project_id = projects::project_id(store, project_name).await?;
     let row = store
         .db()
@@ -106,9 +109,9 @@ pub async fn count_items_outside_swim_lanes(store: &Store, project_name: &str) -
               AND NOT EXISTS (
                   SELECT 1
                   FROM work_item_labels AS wil
-                  JOIN swim_lanes AS sl
-                    ON sl.project_id = wi.project_id
-                   AND sl.identifier = wil.label_value
+                  JOIN work_item_states AS wis
+                    ON wis.project_id = wi.project_id
+                   AND wis.identifier = wil.label_value
                   WHERE wil.project_id = wi.project_id
                     AND wil.work_item_id = wi.id
                     AND wil.label_key = ?2
@@ -117,12 +120,12 @@ pub async fn count_items_outside_swim_lanes(store: &Store, project_name: &str) -
             vec![project_id.into(), STATE_LABEL_KEY.to_owned().into()],
         ))
         .await
-        .context("failed to count work items outside swim-lanes")?;
+        .context("failed to count work items outside authored states")?;
 
     row.map(|row| row.try_get::<i64>("", "count"))
         .transpose()
-        .context("failed to read work items outside swim-lanes count")?
-        .ok_or_else(|| report!("missing work items outside swim-lanes count"))
+        .context("failed to read work items outside authored states count")?
+        .ok_or_else(|| report!("missing work items outside authored states count"))
 }
 
 pub async fn has_unclaimed_item_matching_condition(
@@ -1791,14 +1794,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn counts_items_outside_configured_swim_lanes() {
+    async fn counts_items_outside_authored_work_item_states() {
         let (_temp, store) = test_store().await;
         create_item(
             &store,
             "demo",
             CreateWorkItem {
                 title: "Valid item".to_owned(),
-                description: "Uses a configured swim-lane state".to_owned(),
+                description: "Uses an authored state".to_owned(),
                 state: "open".to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
@@ -1855,10 +1858,10 @@ mod tests {
         .await
         .unwrap();
 
-        let demo_count = count_items_outside_swim_lanes(&store, "demo")
+        let demo_count = count_items_outside_work_item_states(&store, "demo")
             .await
             .unwrap();
-        let other_count = count_items_outside_swim_lanes(&store, "other")
+        let other_count = count_items_outside_work_item_states(&store, "other")
             .await
             .unwrap();
 

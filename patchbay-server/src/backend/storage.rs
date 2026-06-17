@@ -149,6 +149,7 @@ mod tests {
             "m20260616_000022_add_swim_lane_create_item_flag",
             "m20260616_000023_add_project_agent_extra_writable_roots",
             "m20260616_000024_add_project_agent_sandbox_mode",
+            "m20260617_000025_decouple_states_and_swim_lanes",
         ];
 
         assert_eq!(names.as_slice(), expected.as_slice());

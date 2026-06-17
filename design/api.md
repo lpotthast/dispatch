@@ -87,7 +87,9 @@ CrudKit-generated routes are mounted under `/api` for ordinary admin resources:
 - comments;
 - agent tools;
 - agent runs;
-- automation rules.
+- automation rules;
+- work item states;
+- swim-lanes.
 
 CrudKit is not used for custom workflow authority. Admin CRUD can inspect and maintain records, but workflow transitions should use the custom endpoints so server services apply Patchbay rules consistently.
 

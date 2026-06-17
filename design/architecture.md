@@ -55,7 +55,7 @@ The server exposes three classes of routes:
 - Custom Patchbay JSON API routes under `/api/projects/...`.
 - CrudKit-generated API routes under `/api` for ordinary admin resources.
 
-Custom Patchbay workflow endpoints are not CrudKit endpoints. CrudKit remains an admin accelerator, not the authority for claim, finish, release, automation, or live workflow behavior.
+Custom Patchbay workflow endpoints are not CrudKit endpoints. CrudKit remains an admin accelerator for records such as projects, work item states, swim-lanes, and automation rules, not the authority for claim, finish, release, automation, or live workflow behavior.
 
 ## Development Commands
 

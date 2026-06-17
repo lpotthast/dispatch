@@ -26,6 +26,10 @@ use crate::{
             CreateWorkItem as CrudCreateWorkItem, CreateWorkItemField, CrudWorkItemResource,
             ReadWorkItem, ReadWorkItemField, WorkItem as CrudWorkItem, WorkItemField,
         },
+        work_item_state::{
+            CreateWorkItemState, CreateWorkItemStateField, CrudWorkItemStateResource,
+            ReadWorkItemState, ReadWorkItemStateField, WorkItemState, WorkItemStateField,
+        },
     },
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AgentRunOutputKind,
@@ -34,7 +38,7 @@ use crate::{
         CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
         ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
         ProjectView, RunLogView, STATE_LABEL_KEY, SwimLaneView, UiEvent, WorkItemLabelView,
-        WorkItemView,
+        WorkItemStateView, WorkItemView,
     },
 };
 #[cfg(not(feature = "ssr"))]
@@ -44,7 +48,7 @@ use crudkit_leptos::crud_instance_mgr::CrudInstanceMgr;
 use crudkit_leptos::crudkit_core::{
     Value,
     condition::{Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator},
-    id::{IdValue, SerializableId},
+    id::{IdValue, SerializableId, SerializableIdEntry},
 };
 use crudkit_leptos::fields::{FieldRenderer, render_label};
 use crudkit_leptos::{
@@ -82,15 +86,15 @@ const BOARD_ITEMS_REFRESH_INTERVAL_MS: u64 = 30_000;
 const DEFAULT_CREATE_ITEM_STATE: &str = "idea";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CreateItemLaneOption {
+struct CreateItemStateOption {
     identifier: String,
     name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CreateItemOpenRequest {
-    AnyCreatableLane,
-    SingleLane(String),
+    AnyState,
+    SingleState(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -106,6 +110,7 @@ pub struct BoardPage {
     pub run_sessions: Vec<BoardRunSessionView>,
     pub items: Vec<WorkItemView>,
     pub swim_lanes: Vec<SwimLaneView>,
+    pub work_item_states: Vec<WorkItemStateView>,
     pub misconfigured_item_count: i64,
     pub api_base_url: String,
     pub codex_status: CodexAppServerStatusView,
@@ -116,6 +121,7 @@ pub struct BoardPage {
 pub struct BoardItemsSection {
     pub items: Vec<WorkItemView>,
     pub swim_lanes: Vec<SwimLaneView>,
+    pub work_item_states: Vec<WorkItemStateView>,
     pub misconfigured_item_count: i64,
 }
 
@@ -159,6 +165,7 @@ pub struct ItemPage {
     pub item: WorkItemView,
     pub comments: Vec<CommentView>,
     pub label_suggestions: Vec<ProjectLabelView>,
+    pub work_item_states: Vec<WorkItemStateView>,
     pub automation_runs: Vec<AgentRunView>,
     pub codex_status: CodexAppServerStatusView,
 }
@@ -685,7 +692,8 @@ fn item_event_matches(event: &UiEvent, project: Option<String>, item_id: Option<
         UiEvent::AgentRunChanged { item_id: None, .. }
         | UiEvent::AgentOutputChanged { item_id: None, .. }
         | UiEvent::MemoryChanged { .. }
-        | UiEvent::SwimLaneChanged { .. } => false,
+        | UiEvent::SwimLaneChanged { .. }
+        | UiEvent::WorkItemStateChanged { .. } => false,
     }
 }
 
@@ -710,7 +718,8 @@ fn run_log_event_matches(event: &UiEvent, project: Option<String>, run_id: Optio
         UiEvent::WorkItemChanged { .. }
         | UiEvent::CommentChanged { .. }
         | UiEvent::MemoryChanged { .. }
-        | UiEvent::SwimLaneChanged { .. } => false,
+        | UiEvent::SwimLaneChanged { .. }
+        | UiEvent::WorkItemStateChanged { .. } => false,
     }
 }
 
@@ -729,6 +738,7 @@ fn event_project(event: &UiEvent) -> Option<&str> {
         | UiEvent::CommentChanged { project, .. }
         | UiEvent::MemoryChanged { project, .. }
         | UiEvent::SwimLaneChanged { project, .. }
+        | UiEvent::WorkItemStateChanged { project, .. }
         | UiEvent::AutomationChanged { project, .. }
         | UiEvent::AgentRunChanged { project, .. }
         | UiEvent::AgentOutputChanged { project, .. } => Some(project),
@@ -828,6 +838,7 @@ fn board_content(page: BoardPage) -> AnyView {
         run_sessions,
         items,
         swim_lanes,
+        work_item_states,
         misconfigured_item_count,
         api_base_url,
         codex_status,
@@ -856,23 +867,23 @@ fn board_content(page: BoardPage) -> AnyView {
         let project_workspace =
             project_workspace_panel(&project, &project_view, board_return_to.clone());
         let (show_create_item_modal, set_show_create_item_modal) = signal(false);
-        let initial_create_item_lane_options = creatable_lane_options(&swim_lanes);
+        let initial_create_item_state_options = creatable_state_options(&work_item_states);
         let initial_create_item_state =
-            default_create_item_state(&initial_create_item_lane_options);
+            default_create_item_state(&initial_create_item_state_options);
         let (create_item_state, set_create_item_state) = signal(initial_create_item_state);
-        let (create_item_lane_options, set_create_item_lane_options) =
-            signal(initial_create_item_lane_options);
-        let (create_item_swim_lanes, set_create_item_swim_lanes) = signal(swim_lanes.clone());
-        let has_create_item_lanes =
-            Memo::new(move |_| !creatable_lane_options(&create_item_swim_lanes.get()).is_empty());
+        let (create_item_state_options, set_create_item_state_options) =
+            signal(initial_create_item_state_options);
+        let (create_item_states, set_create_item_states) = signal(work_item_states.clone());
+        let has_create_item_states =
+            Memo::new(move |_| !creatable_state_options(&create_item_states.get()).is_empty());
         let open_create_item = Callback::new(move |request: CreateItemOpenRequest| {
-            let lanes = create_item_swim_lanes.get_untracked();
-            let options = create_item_options_for_request(&lanes, &request);
+            let states = create_item_states.get_untracked();
+            let options = create_item_options_for_request(&states, &request);
             if options.is_empty() {
                 return;
             }
             set_create_item_state.set(default_create_item_state(&options));
-            set_create_item_lane_options.set(options);
+            set_create_item_state_options.set(options);
             set_show_create_item_modal.set(true);
         });
         let board = view! {
@@ -880,21 +891,21 @@ fn board_content(page: BoardPage) -> AnyView {
                 project=project.clone()
                 initial_items=items
                 initial_swim_lanes=swim_lanes
+                initial_work_item_states=work_item_states
                 initial_misconfigured_item_count=misconfigured_item_count
                 open_create_item=open_create_item
-                set_create_item_swim_lanes=set_create_item_swim_lanes
+                set_create_item_states=set_create_item_states
             />
         };
         let create_item = create_item_modal(
             &project,
             show_create_item_modal,
             set_show_create_item_modal,
-            create_item_lane_options,
+            create_item_state_options,
             create_item_state,
             set_create_item_state,
         );
         let work_items_api_base_url = api_base_url.clone();
-        let swim_lanes_api_base_url = api_base_url;
         let admin_project_id = project_view.id;
         let project_settings =
             project_settings_view(&project, project_view, settings, memory_events);
@@ -919,9 +930,9 @@ fn board_content(page: BoardPage) -> AnyView {
                         </div>
                         <button
                             type="button"
-                            disabled=move || !has_create_item_lanes.get()
+                            disabled=move || !has_create_item_states.get()
                             on:click=move |_| {
-                                open_create_item.run(CreateItemOpenRequest::AnyCreatableLane)
+                                open_create_item.run(CreateItemOpenRequest::AnyState)
                             }
                         >
                             "New item"
@@ -937,11 +948,6 @@ fn board_content(page: BoardPage) -> AnyView {
                     {create_item}
                     <WorkItemsPanel
                         api_base_url=work_items_api_base_url
-                        project=project.clone()
-                        project_id=admin_project_id
-                    />
-                    <SwimLanesPanel
-                        api_base_url=swim_lanes_api_base_url
                         project=project.clone()
                         project_id=admin_project_id
                     />
@@ -1085,14 +1091,41 @@ fn ProjectsContent(
     api_base_url: String,
     codex_status: CodexAppServerStatusView,
 ) -> impl IntoView + 'static {
+    let selected_project_view = selected_project
+        .as_ref()
+        .and_then(|project| projects.iter().find(|candidate| candidate.name == *project))
+        .cloned()
+        .or_else(|| projects.first().cloned());
     let topbar = top_bar(
         projects.clone(),
         active_project_names,
-        selected_project,
+        selected_project.clone(),
         ActivePage::Projects,
         None,
         codex_status,
     );
+    let query = use_query_map();
+    let edit_swim_lane_id = query
+        .read_untracked()
+        .get("edit_swim_lane")
+        .and_then(|value| value.parse().ok());
+    let project_authoring = selected_project_view.as_ref().map(|project_view| {
+        let project_name = project_view.name.clone();
+        let project_id = project_view.id;
+        view! {
+            <WorkItemStatesPanel
+                api_base_url=api_base_url.clone()
+                project=project_name.clone()
+                project_id=project_id
+            />
+            <SwimLanesPanel
+                api_base_url=api_base_url.clone()
+                project=project_name
+                project_id=project_id
+                edit_lane_id=edit_swim_lane_id
+            />
+        }
+    });
 
     view! {
         <div>
@@ -1102,6 +1135,7 @@ fn ProjectsContent(
                     <h1>"Projects"</h1>
                 </section>
                 {projects_panel(api_base_url)}
+                {project_authoring}
             </main>
         </div>
     }
@@ -1550,6 +1584,7 @@ fn item_content(page: ItemPage) -> AnyView {
         item,
         comments,
         label_suggestions,
+        work_item_states,
         automation_runs,
         codex_status,
     } = page;
@@ -1589,6 +1624,7 @@ fn item_content(page: ItemPage) -> AnyView {
         agent_reasoning_options(item.agent_reasoning_effort_override, "Project default");
     let state_action = format!("/projects/{}/items/{}/move", encode_path(&project), item.id);
     let current_state = item.state.clone().unwrap_or_default();
+    let state_options = work_item_state_select_options(&work_item_states, current_state.clone());
     let claim = item.claimed_by.clone().map(|agent| {
         view! { <span>"claimed by " {agent}</span> }
     });
@@ -1612,7 +1648,7 @@ fn item_content(page: ItemPage) -> AnyView {
             }
         })
         .collect::<Vec<_>>();
-    let labels = item_labels_view(&project, &item, label_suggestions);
+    let labels = item_labels_view(&project, &item, label_suggestions, &work_item_states);
 
     view! {
         <div>
@@ -1659,12 +1695,9 @@ fn item_content(page: ItemPage) -> AnyView {
                 <section class="actions">
                     <form method="post" action=state_action>
                         <input type="hidden" name="version" value=item.version.to_string()/>
-                        <input
-                            name="state"
-                            value=current_state
-                            placeholder="state label"
-                            required
-                        />
+                        <select name="state">
+                            {state_options}
+                        </select>
                         <button>"Set state"</button>
                     </form>
                     <form method="post" action=delete_action>
@@ -1727,6 +1760,7 @@ fn item_labels_view(
     project: &str,
     item: &WorkItemView,
     suggestions: Vec<ProjectLabelView>,
+    work_item_states: &[WorkItemStateView],
 ) -> AnyView {
     let add_action = format!(
         "/projects/{}/items/{}/labels",
@@ -1734,7 +1768,7 @@ fn item_labels_view(
         item.id
     );
     let suggestion_options = label_suggestion_options(&suggestions);
-    let state_suggestion_options = state_suggestion_options(&suggestions);
+    let state_suggestion_options = state_suggestion_options(work_item_states);
     let rows = item
         .labels
         .iter()
@@ -1821,13 +1855,45 @@ fn label_suggestion_options(suggestions: &[ProjectLabelView]) -> Vec<impl IntoVi
         .collect()
 }
 
-fn state_suggestion_options(suggestions: &[ProjectLabelView]) -> Vec<impl IntoView> {
-    suggestions
+fn state_suggestion_options(states: &[WorkItemStateView]) -> Vec<impl IntoView> {
+    states
         .iter()
-        .filter(|label| label.key == STATE_LABEL_KEY)
-        .filter_map(|label| label.value.clone())
+        .map(|state| state.identifier.clone())
         .map(|value| view! { <option value=value></option> })
         .collect()
+}
+
+fn work_item_state_select_options(
+    states: &[WorkItemStateView],
+    selected_state: String,
+) -> Vec<AnyView> {
+    let mut options = states
+        .iter()
+        .map(|state| {
+            let selected = state.identifier == selected_state;
+            view! {
+                <option value=state.identifier.clone() selected=selected>
+                    {state.name.clone()}
+                </option>
+            }
+            .into_any()
+        })
+        .collect::<Vec<_>>();
+    if !selected_state.is_empty()
+        && !states
+            .iter()
+            .any(|state| state.identifier == selected_state)
+    {
+        let label = format!("{selected_state} (unknown)");
+        options.insert(
+            0,
+            view! {
+                <option value=selected_state selected=true>{label}</option>
+            }
+            .into_any(),
+        );
+    }
+    options
 }
 
 fn patchbay_labels_panel() -> impl IntoView {
@@ -2614,18 +2680,175 @@ fn work_item_model_handler(project_id: i64) -> ModelHandler {
 }
 
 #[component]
-fn SwimLanesPanel(
+fn WorkItemStatesPanel(
     api_base_url: String,
     project: String,
     project_id: i64,
 ) -> impl IntoView + 'static {
     view! {
-        <section class="swim-lanes-admin panel">
+        <section id="work-item-states" class="work-item-states-admin panel">
+            <div class="panel-heading">
+                <h2>"Work item states"</h2>
+            </div>
+            <div class="crudkit-work-item-states" data-crudkit-leptos="work-item-states">
+                {work_item_states_crudkit_instance(api_base_url, project, project_id)}
+            </div>
+        </section>
+    }
+}
+
+fn work_item_states_crudkit_instance(
+    api_base_url: String,
+    project: String,
+    project_id: i64,
+) -> impl IntoView + 'static {
+    let (context, set_context) = signal(None::<CrudInstanceContext>);
+    reload_crudkit_on_live_event(context, move |event| {
+        event_scopes_named_project(event, Some(project.as_str()))
+            && matches!(event, UiEvent::WorkItemStateChanged { .. })
+    });
+
+    view! {
+        <CrudInstance
+            name="work-item-states"
+            config=work_item_states_crudkit_config(api_base_url, project_id)
+            on_context_created=Callback::new(move |context| set_context.set(Some(context)))
+        />
+    }
+}
+
+fn work_item_states_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
+    CrudInstanceConfig {
+        api_base_url,
+        view: SerializableCrudView::List,
+        list_columns: vec![
+            Header::showing(
+                ReadWorkItemStateField::Identifier,
+                HeaderOptions {
+                    display_name: "Identifier".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadWorkItemStateField::Name,
+                HeaderOptions {
+                    display_name: "Name".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadWorkItemStateField::Position,
+                HeaderOptions {
+                    display_name: "Position".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+        ],
+        create_elements: CreateElements::Custom(vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::create_field(
+                    CreateWorkItemStateField::Identifier,
+                    FieldOptions {
+                        label: Some(Label::new("Identifier")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateWorkItemStateField::Name,
+                    FieldOptions {
+                        label: Some(Label::new("Name")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateWorkItemStateField::Position,
+                    FieldOptions {
+                        label: Some(Label::new("Position")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))]),
+        elements: vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::field(
+                    WorkItemState::Id,
+                    FieldOptions {
+                        disabled: true,
+                        label: Some(Label::new("ID")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    WorkItemStateField::Identifier,
+                    FieldOptions {
+                        label: Some(Label::new("Identifier")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    WorkItemStateField::Name,
+                    FieldOptions {
+                        label: Some(Label::new("Name")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    WorkItemStateField::Position,
+                    FieldOptions {
+                        label: Some(Label::new("Position")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))],
+        order_by: indexmap! {
+            ReadWorkItemState::Position.into() => Order::Asc,
+            ReadWorkItemState::Id.into() => Order::Asc,
+        },
+        items_per_page: ItemsPerPage::default(),
+        page_nr: PageNr::first(),
+        base_condition: Some(project_id_condition(project_id)),
+        resource_name: CrudWorkItemStateResource::resource_name().to_owned(),
+        reqwest_executor: Arc::new(NewClientPerRequestExecutor),
+        model_handler: work_item_state_model_handler(project_id),
+        actions: vec![],
+        entity_actions: vec![],
+        read_field_renderer: FieldRendererRegistry::builder().build(),
+        create_field_renderer: FieldRendererRegistry::builder().build(),
+        update_field_renderer: FieldRendererRegistry::builder().build(),
+    }
+}
+
+fn work_item_state_model_handler(project_id: i64) -> ModelHandler {
+    let mut handler = ModelHandler::new::<CreateWorkItemState, ReadWorkItemState, WorkItemState>();
+    handler.get_default_create_model = Callback::new(move |()| {
+        DynCreateModel::from(CreateWorkItemState {
+            project_id,
+            position: 50,
+            ..Default::default()
+        })
+    });
+    handler
+}
+
+#[component]
+fn SwimLanesPanel(
+    api_base_url: String,
+    project: String,
+    project_id: i64,
+    edit_lane_id: Option<i64>,
+) -> impl IntoView + 'static {
+    view! {
+        <section id="swim-lanes" class="swim-lanes-admin panel">
             <div class="panel-heading">
                 <h2>"Swim-lanes"</h2>
             </div>
             <div class="crudkit-swim-lanes" data-crudkit-leptos="swim-lanes">
-                {swim_lanes_crudkit_instance(api_base_url, project, project_id)}
+                {swim_lanes_crudkit_instance(api_base_url, project, project_id, edit_lane_id)}
             </div>
         </section>
     }
@@ -2635,6 +2858,7 @@ fn swim_lanes_crudkit_instance(
     api_base_url: String,
     project: String,
     project_id: i64,
+    edit_lane_id: Option<i64>,
 ) -> impl IntoView + 'static {
     let (context, set_context) = signal(None::<CrudInstanceContext>);
     reload_crudkit_on_live_event(context, move |event| {
@@ -2645,16 +2869,24 @@ fn swim_lanes_crudkit_instance(
     view! {
         <CrudInstance
             name="swim-lanes"
-            config=swim_lanes_crudkit_config(api_base_url, project_id)
+            config=swim_lanes_crudkit_config(api_base_url, project_id, edit_lane_id)
             on_context_created=Callback::new(move |context| set_context.set(Some(context)))
         />
     }
 }
 
-fn swim_lanes_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
+fn swim_lanes_crudkit_config(
+    api_base_url: String,
+    project_id: i64,
+    edit_lane_id: Option<i64>,
+) -> CrudInstanceConfig {
+    let view = edit_lane_id
+        .map(crudkit_i64_id)
+        .map(SerializableCrudView::Edit)
+        .unwrap_or(SerializableCrudView::List);
     CrudInstanceConfig {
         api_base_url,
-        view: SerializableCrudView::List,
+        view,
         list_columns: vec![
             Header::showing(
                 ReadSwimLaneField::Identifier,
@@ -2674,6 +2906,14 @@ fn swim_lanes_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
                 ReadSwimLaneField::Position,
                 HeaderOptions {
                     display_name: "Position".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadSwimLaneField::ItemOrder,
+                HeaderOptions {
+                    display_name: "Order".into(),
                     min_width: true,
                     ..Default::default()
                 },
@@ -2708,6 +2948,20 @@ fn swim_lanes_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
                     CreateSwimLaneField::Position,
                     FieldOptions {
                         label: Some(Label::new("Position")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateSwimLaneField::Filter,
+                    FieldOptions {
+                        label: Some(Label::new("Filter")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateSwimLaneField::ItemOrder,
+                    FieldOptions {
+                        label: Some(Label::new("Order")),
                         ..Default::default()
                     },
                 ),
@@ -2753,6 +3007,20 @@ fn swim_lanes_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
                     },
                 ),
                 Elem::field(
+                    SwimLaneField::Filter,
+                    FieldOptions {
+                        label: Some(Label::new("Filter")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    SwimLaneField::ItemOrder,
+                    FieldOptions {
+                        label: Some(Label::new("Order")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
                     SwimLaneField::CanCreateItems,
                     FieldOptions {
                         label: Some(Label::new("Can create items")),
@@ -2762,6 +3030,7 @@ fn swim_lanes_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
             ],
         }))],
         order_by: indexmap! {
+            ReadSwimLane::Position.into() => Order::Asc,
             ReadSwimLane::Id.into() => Order::Asc,
         },
         items_per_page: ItemsPerPage::default(),
@@ -2773,8 +3042,30 @@ fn swim_lanes_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
         actions: vec![],
         entity_actions: vec![],
         read_field_renderer: FieldRendererRegistry::builder().build(),
-        create_field_renderer: FieldRendererRegistry::builder().build(),
-        update_field_renderer: FieldRendererRegistry::builder().build(),
+        create_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                CreateSwimLaneField::Filter,
+                multiline_text_field_renderer::<DynCreateField>(
+                    "{\"All\":[{\"column_name\":\"state\",\"operator\":\"=\",\"value\":{\"String\":\"open\"}}]}",
+                ),
+            )
+            .register(
+                CreateSwimLaneField::ItemOrder,
+                swim_lane_order_field_renderer::<DynCreateField>(),
+            )
+            .build(),
+        update_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                SwimLaneField::Filter,
+                multiline_text_field_renderer::<DynUpdateField>(
+                    "{\"All\":[{\"column_name\":\"state\",\"operator\":\"=\",\"value\":{\"String\":\"open\"}}]}",
+                ),
+            )
+            .register(
+                SwimLaneField::ItemOrder,
+                swim_lane_order_field_renderer::<DynUpdateField>(),
+            )
+            .build(),
     }
 }
 
@@ -2784,6 +3075,8 @@ fn swim_lane_model_handler(project_id: i64) -> ModelHandler {
         DynCreateModel::from(CreateSwimLane {
             project_id,
             position: 50,
+            filter: "{\"All\":[]}".to_owned(),
+            item_order: "updated_desc".to_owned(),
             ..Default::default()
         })
     });
@@ -3599,6 +3892,29 @@ fn select_field_renderer<F: TypeErasedField>(
     )
 }
 
+fn swim_lane_order_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+    select_field_renderer(
+        &[
+            ("updated_desc", "Updated newest first"),
+            ("updated_asc", "Updated oldest first"),
+            ("created_desc", "Created newest first"),
+            ("created_asc", "Created oldest first"),
+            ("id_desc", "ID descending"),
+            ("id_asc", "ID ascending"),
+            ("title_asc", "Title A-Z"),
+            ("title_desc", "Title Z-A"),
+        ],
+        false,
+    )
+}
+
+fn crudkit_i64_id(id: i64) -> SerializableId {
+    SerializableId(vec![SerializableIdEntry {
+        field_name: "id".to_owned(),
+        value: IdValue::I64(id),
+    }])
+}
+
 fn project_id_condition(project_id: i64) -> Condition {
     Condition::All(vec![ConditionElement::Clause(ConditionClause {
         column_name: "project_id".to_owned(),
@@ -3908,12 +4224,14 @@ fn LiveBoardItems(
     project: String,
     initial_items: Vec<WorkItemView>,
     initial_swim_lanes: Vec<SwimLaneView>,
+    initial_work_item_states: Vec<WorkItemStateView>,
     initial_misconfigured_item_count: i64,
     open_create_item: Callback<CreateItemOpenRequest>,
-    set_create_item_swim_lanes: WriteSignal<Vec<SwimLaneView>>,
+    set_create_item_states: WriteSignal<Vec<WorkItemStateView>>,
 ) -> impl IntoView + 'static {
     let (items, set_items) = signal(initial_items);
     let (swim_lanes, set_swim_lanes) = signal(initial_swim_lanes);
+    let (work_item_states, set_work_item_states) = signal(initial_work_item_states);
     let (misconfigured_item_count, set_misconfigured_item_count) =
         signal(initial_misconfigured_item_count);
     let project_for_loader = project.clone();
@@ -3924,7 +4242,9 @@ fn LiveBoardItems(
         event_scopes_named_project(event, Some(project_for_events.as_str()))
             && matches!(
                 event,
-                UiEvent::WorkItemChanged { .. } | UiEvent::SwimLaneChanged { .. }
+                UiEvent::WorkItemChanged { .. }
+                    | UiEvent::SwimLaneChanged { .. }
+                    | UiEvent::WorkItemStateChanged { .. }
             )
     });
 
@@ -3932,8 +4252,10 @@ fn LiveBoardItems(
         if let Some(Ok(section)) = section.get() {
             set_items.set(section.items);
             let updated_swim_lanes = section.swim_lanes;
-            set_create_item_swim_lanes.set(updated_swim_lanes.clone());
+            let updated_work_item_states = section.work_item_states;
             set_swim_lanes.set(updated_swim_lanes);
+            set_create_item_states.set(updated_work_item_states.clone());
+            set_work_item_states.set(updated_work_item_states);
             set_misconfigured_item_count.set(section.misconfigured_item_count);
         }
     });
@@ -3944,6 +4266,7 @@ fn LiveBoardItems(
                 project.clone(),
                 items.get(),
                 swim_lanes.get(),
+                work_item_states.get(),
                 misconfigured_item_count.get(),
                 open_create_item,
             )
@@ -4635,35 +4958,31 @@ fn maintenance_view(project: &str) -> impl IntoView + 'static {
 }
 
 fn create_item_options_for_request(
-    swim_lanes: &[SwimLaneView],
+    states: &[WorkItemStateView],
     request: &CreateItemOpenRequest,
-) -> Vec<CreateItemLaneOption> {
+) -> Vec<CreateItemStateOption> {
     match request {
-        CreateItemOpenRequest::AnyCreatableLane => creatable_lane_options(swim_lanes),
-        CreateItemOpenRequest::SingleLane(identifier) => swim_lanes
+        CreateItemOpenRequest::AnyState => creatable_state_options(states),
+        CreateItemOpenRequest::SingleState(identifier) => states
             .iter()
-            .filter(|lane| lane.can_create_items && lane.identifier == *identifier)
-            .map(create_item_lane_option)
+            .filter(|state| state.identifier == *identifier)
+            .map(create_item_state_option)
             .collect(),
     }
 }
 
-fn creatable_lane_options(swim_lanes: &[SwimLaneView]) -> Vec<CreateItemLaneOption> {
-    swim_lanes
-        .iter()
-        .filter(|lane| lane.can_create_items)
-        .map(create_item_lane_option)
-        .collect()
+fn creatable_state_options(states: &[WorkItemStateView]) -> Vec<CreateItemStateOption> {
+    states.iter().map(create_item_state_option).collect()
 }
 
-fn create_item_lane_option(lane: &SwimLaneView) -> CreateItemLaneOption {
-    CreateItemLaneOption {
-        identifier: lane.identifier.clone(),
-        name: lane.name.clone(),
+fn create_item_state_option(state: &WorkItemStateView) -> CreateItemStateOption {
+    CreateItemStateOption {
+        identifier: state.identifier.clone(),
+        name: state.name.clone(),
     }
 }
 
-fn default_create_item_state(options: &[CreateItemLaneOption]) -> String {
+fn default_create_item_state(options: &[CreateItemStateOption]) -> String {
     options
         .iter()
         .find(|option| option.identifier == DEFAULT_CREATE_ITEM_STATE)
@@ -4672,14 +4991,14 @@ fn default_create_item_state(options: &[CreateItemLaneOption]) -> String {
         .unwrap_or_else(|| DEFAULT_CREATE_ITEM_STATE.to_owned())
 }
 
-fn create_item_lane_option_views(
-    options: Vec<CreateItemLaneOption>,
+fn create_item_state_option_views(
+    options: Vec<CreateItemStateOption>,
     selected_state: String,
 ) -> Vec<AnyView> {
     if options.is_empty() {
         return vec![
             view! {
-                <option value="" selected=true>"No lanes available"</option>
+                <option value="" selected=true>"No states available"</option>
             }
             .into_any(),
         ];
@@ -4703,7 +5022,7 @@ fn create_item_modal(
     project: &str,
     show_when: ReadSignal<bool>,
     set_show_when: WriteSignal<bool>,
-    lane_options: ReadSignal<Vec<CreateItemLaneOption>>,
+    state_options: ReadSignal<Vec<CreateItemStateOption>>,
     selected_state: ReadSignal<String>,
     set_selected_state: WriteSignal<String>,
 ) -> impl IntoView + 'static {
@@ -4737,17 +5056,17 @@ fn create_item_modal(
                         <textarea name="description" placeholder="Description" required></textarea>
                     </label>
                     <label>
-                        <span>"Lane"</span>
+                        <span>"State"</span>
                         <select
                             name="state"
                             prop:value=move || selected_state.get()
-                            disabled=move || lane_options.get().is_empty()
+                            disabled=move || state_options.get().is_empty()
                             on:change=move |event| {
                                 set_selected_state.set(event_target_value(&event));
                             }
                         >
-                            {move || create_item_lane_option_views(
-                                lane_options.get(),
+                            {move || create_item_state_option_views(
+                                state_options.get(),
                                 selected_state.get(),
                             )}
                         </select>
@@ -4773,7 +5092,7 @@ fn create_item_modal(
                     >
                         "Cancel"
                     </button>
-                    <button type="submit" disabled=move || lane_options.get().is_empty()>
+                    <button type="submit" disabled=move || state_options.get().is_empty()>
                         "Create item"
                     </button>
                 </ModalFooter>
@@ -4842,43 +5161,61 @@ fn board_view(
     project: String,
     items: Vec<WorkItemView>,
     swim_lanes: Vec<SwimLaneView>,
+    _work_item_states: Vec<WorkItemStateView>,
     misconfigured_item_count: i64,
     open_create_item: Callback<CreateItemOpenRequest>,
 ) -> impl IntoView + 'static {
     let lanes = swim_lanes
         .into_iter()
         .map(|lane| {
-            let lane_identifier = lane.identifier.clone();
-            let label = lane.name;
-            let cards = items
+            let label = lane.name.clone();
+            let mut lane_items = items
                 .iter()
-                .filter(|item| item.state.as_deref() == Some(lane_identifier.as_str()))
+                .filter(|item| item_matches_condition(item, &lane.filter))
                 .cloned()
+                .collect::<Vec<_>>();
+            sort_lane_items(&mut lane_items, &lane.item_order);
+            let cards = lane_items
+                .into_iter()
                 .map(|item| item_card(project.clone(), item))
                 .collect::<Vec<_>>();
             let count = cards.len();
-            let create_state = lane_identifier.clone();
+            let create_state = lane_create_state(&lane.filter);
             let add_button = if lane.can_create_items {
-                view! {
-                    <button
-                        type="button"
-                        class="lane-add"
-                        on:click=move |_| {
-                            open_create_item.run(CreateItemOpenRequest::SingleLane(create_state.clone()))
+                create_state
+                    .map(|create_state| {
+                        view! {
+                            <button
+                                type="button"
+                                class="lane-add"
+                                on:click=move |_| {
+                                    open_create_item.run(CreateItemOpenRequest::SingleState(create_state.clone()))
+                                }
+                            >
+                                "+ Add"
+                            </button>
                         }
-                    >
-                        "+ Add"
-                    </button>
-                }
-                .into_any()
+                        .into_any()
+                    })
+                    .unwrap_or_else(|| ().into_any())
             } else {
                 ().into_any()
             };
+            let edit_href = lane_edit_href(&project, lane.id);
+            let edit_label = format!("Edit {}", label);
             view! {
                 <section class="lane">
                     <header class="lane-header">
                         <h2>{label}</h2>
                         <span class="lane-count">{count}</span>
+                        <a
+                            class="lane-edit"
+                            href=edit_href
+                            title=edit_label.clone()
+                            aria-label=edit_label
+                        >
+                            "⚙"
+                        </a>
                     </header>
                     <div class="lane-cards">{cards}</div>
                     {add_button}
@@ -4893,17 +5230,16 @@ fn board_view(
             "items"
         };
         let verb = if misconfigured_item_count == 1 {
-            "is"
+            "has"
         } else {
-            "are"
+            "have"
         };
-        let message = format!(
-            "{misconfigured_item_count} {item_word} {verb} incorrectly labeled or unlabeled."
-        );
+        let message =
+            format!("{misconfigured_item_count} {item_word} {verb} an unknown or missing state.");
 
         view! {
             <section class="board-state-warning" role="status">
-                <strong>"Swim-lane warning"</strong>
+                <strong>"State warning"</strong>
                 <span>{message}</span>
                 <a href="#work-items-admin">"Review work items"</a>
             </section>
@@ -4917,6 +5253,127 @@ fn board_view(
             <section class="board">{lanes}</section>
             {warning}
         </div>
+    }
+}
+
+fn lane_edit_href(project: &str, lane_id: i64) -> String {
+    format!(
+        "/projects?project={}&edit_swim_lane={}#swim-lanes",
+        encode_path(project),
+        lane_id
+    )
+}
+
+fn lane_create_state(condition: &Condition) -> Option<String> {
+    match condition {
+        Condition::All(elements) | Condition::Any(elements) => {
+            elements.iter().find_map(|element| match element {
+                ConditionElement::Clause(clause)
+                    if clause.column_name.trim() == STATE_LABEL_KEY
+                        && clause.operator == Operator::Equal =>
+                {
+                    match &clause.value {
+                        ConditionClauseValue::String(value) => Some(value.clone()),
+                        _ => None,
+                    }
+                }
+                ConditionElement::Clause(_) => None,
+                ConditionElement::Condition(condition) => lane_create_state(condition),
+            })
+        }
+    }
+}
+
+fn item_matches_condition(item: &WorkItemView, condition: &Condition) -> bool {
+    match condition {
+        Condition::All(elements) => elements
+            .iter()
+            .all(|element| item_matches_condition_element(item, element)),
+        Condition::Any(elements) => elements
+            .iter()
+            .any(|element| item_matches_condition_element(item, element)),
+    }
+}
+
+fn item_matches_condition_element(item: &WorkItemView, element: &ConditionElement) -> bool {
+    match element {
+        ConditionElement::Clause(clause) => item_matches_clause(item, clause),
+        ConditionElement::Condition(condition) => item_matches_condition(item, condition),
+    }
+}
+
+fn item_matches_clause(item: &WorkItemView, clause: &ConditionClause) -> bool {
+    let key = clause.column_name.trim();
+    let label = item.labels.iter().find(|label| label.key == key);
+    let label_value = label.and_then(|label| label.value.as_deref());
+
+    match (&clause.operator, &clause.value) {
+        (Operator::Equal, ConditionClauseValue::Bool(expected)) => label.is_some() == *expected,
+        (Operator::NotEqual, ConditionClauseValue::Bool(expected)) => label.is_some() != *expected,
+        (Operator::Equal, ConditionClauseValue::String(expected)) => {
+            label_value == Some(expected.as_str())
+        }
+        (Operator::NotEqual, ConditionClauseValue::String(expected)) => {
+            label_value != Some(expected.as_str())
+        }
+        (Operator::Equal, ConditionClauseValue::Json(serde_json::Value::Null)) => {
+            label.is_some() && label_value.is_none()
+        }
+        (Operator::NotEqual, ConditionClauseValue::Json(serde_json::Value::Null)) => {
+            label.is_none() || label_value.is_some()
+        }
+        (Operator::IsIn, ConditionClauseValue::Json(serde_json::Value::Array(values))) => {
+            let Some(label_value) = label_value else {
+                return false;
+            };
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .any(|expected| expected == label_value)
+        }
+        _ => false,
+    }
+}
+
+fn sort_lane_items(items: &mut [WorkItemView], item_order: &str) {
+    match item_order {
+        "updated_asc" => items.sort_by(|left, right| {
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        "created_desc" => items.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.cmp(&left.id))
+        }),
+        "created_asc" => items.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        "id_desc" => items.sort_by_key(|item| std::cmp::Reverse(item.id)),
+        "id_asc" => items.sort_by_key(|item| item.id),
+        "title_asc" => items.sort_by(|left, right| {
+            left.title
+                .to_lowercase()
+                .cmp(&right.title.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        "title_desc" => items.sort_by(|left, right| {
+            right
+                .title
+                .to_lowercase()
+                .cmp(&left.title.to_lowercase())
+                .then_with(|| right.id.cmp(&left.id))
+        }),
+        _ => items.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.id.cmp(&left.id))
+        }),
     }
 }
 

@@ -1007,6 +1007,26 @@ button.link-danger {
   }
 }
 
+.lane-edit {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: $ink-soft;
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+
+  &:hover,
+  &:focus-visible {
+    color: $ink;
+    background: $subtle;
+    border-color: $border;
+  }
+}
+
 .lane-count {
   display: inline-flex;
   min-width: 28px;
@@ -1457,6 +1477,7 @@ button.link-danger {
   .crudkit-agent-tools,
   .crudkit-automation-triggers,
   .crudkit-work-items,
+  .crudkit-work-item-states,
   .crudkit-swim-lanes,
   .compact-list {
     grid-column: 1 / -1;
@@ -1478,6 +1499,7 @@ button.link-danger {
 .crudkit-agent-tools,
 .crudkit-automation-triggers,
 .crudkit-work-items,
+.crudkit-work-item-states,
 .crudkit-swim-lanes {
   overflow: auto;
   padding-top: 14px;

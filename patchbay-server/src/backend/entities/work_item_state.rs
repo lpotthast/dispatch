@@ -4,10 +4,10 @@ use sea_orm::{DerivePrimaryKey, EntityTrait, EnumIter, PrimaryKeyTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-pub type SwimLane = Entity;
-pub type SwimLaneModel = Model;
-pub type SwimLaneActiveModel = ActiveModel;
-pub type SwimLaneId = ModelId;
+pub type WorkItemState = Entity;
+pub type WorkItemStateModel = Model;
+pub type WorkItemStateActiveModel = ActiveModel;
+pub type WorkItemStateId = ModelId;
 
 #[derive(
     Clone,
@@ -25,8 +25,8 @@ pub type SwimLaneId = ModelId;
     Serialize,
     Deserialize,
 )]
-#[sea_orm(table_name = "swim_lanes")]
-#[read_view(table_name = "swim_lanes_read_view")]
+#[sea_orm(table_name = "work_item_states")]
+#[read_view(table_name = "work_item_states_read_view")]
 pub struct Model {
     #[sea_orm(primary_key)]
     #[serde(skip_deserializing)]
@@ -42,12 +42,6 @@ pub struct Model {
     pub name: String,
 
     pub position: i64,
-
-    pub filter: String,
-
-    pub item_order: String,
-
-    pub can_create_items: bool,
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]

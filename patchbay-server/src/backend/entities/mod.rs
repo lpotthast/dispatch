@@ -7,3 +7,4 @@ pub mod swim_lane;
 pub mod work_item;
 pub mod work_item_event;
 pub mod work_item_label;
+pub mod work_item_state;

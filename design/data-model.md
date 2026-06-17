@@ -35,11 +35,13 @@ Core fields include:
 - optional agent model and reasoning effort overrides;
 - comment count and timestamps.
 
-Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook: swim-lanes show items whose `state=<swim-lane-identifier>` label matches the lane.
+Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook for claim, finish, release, and default automation transitions.
 
-Patchbay also uses hardcoded workflow labels. `patchbay:claimed-from-state=<state-label>` is transient claim bookkeeping so release can restore the lane an item came from. `patchbay:automation-blocked` marks released, non-operable work that automation should skip until the label is removed.
+Patchbay also uses hardcoded workflow labels. `patchbay:claimed-from-state=<state-label>` is transient claim bookkeeping so release can restore the state an item came from. `patchbay:automation-blocked` marks released, non-operable work that automation should skip until the label is removed.
 
-Swim-lanes are project-scoped records with an identifier, display name, and position. New projects start with `idea`, `open`, `in_progress`, and `done` lanes, but users can add, rename, reorder, or remove lanes for their project. New projects also get an editable work-consuming automation that checks for the first unclaimed item matching `state=open`.
+Work item states are project-scoped records with an identifier, display name, and position. They define the authored values that operators should use for the `state` label. New projects start with `idea`, `open`, `in_progress`, and `done` states.
+
+Swim-lanes are project-scoped records with an identifier, display name, position, item order, item creation flag, and a CrudKit `Condition`-shaped filter stored as JSON. Lane filters use work item label keys as `column_name` values, so a lane can show `state=open`, `severity=high`, or nested label combinations. New projects start with lanes that mirror the default states by filtering on `state=<state-identifier>`, but users can add, rename, reorder, remove, or redefine lanes independently from authored states. New projects also get an editable work-consuming automation that checks for the first unclaimed item matching `state=open`.
 
 The version field supports optimistic safety for updates and workflow transitions. Claim ownership is enforced server-side.
 

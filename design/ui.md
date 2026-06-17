@@ -23,7 +23,7 @@ The UI should keep project context visible and avoid hiding workflow state behin
 The main workflow surface should make these states easy to inspect:
 
 - backlog and all work;
-- project-defined swim-lanes based on `state=<lane-identifier>` labels;
+- project-defined swim-lanes based on lane filters and lane ordering;
 - in-progress work and claimant;
 - recent comments and progress;
 - automation status;
@@ -39,6 +39,7 @@ CrudKit is appropriate for ordinary resource administration:
 
 - projects;
 - work items;
+- work item states;
 - swim-lanes;
 - comments;
 - agent tools;
@@ -46,6 +47,8 @@ CrudKit is appropriate for ordinary resource administration:
 - automation rules.
 
 Patchbay-specific actions such as claim, release, finish, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
+
+Work item state and swim-lane authoring live on project administration surfaces, not the main board. The board shows small lane edit controls that navigate to the selected swim-lane editor. New item state choices come from authored work item states. Lane add controls may preselect a state when a lane filter is state-backed.
 
 The Codex app-server status panel should guide setup failures directly. When
 Patchbay's managed Codex home is not signed in, the panel shows the exact

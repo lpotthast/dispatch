@@ -70,6 +70,10 @@ impl_add_crud_routes!(
     crate::backend::crudkit_resources::CrudSwimLaneResource,
     swim_lane
 );
+impl_add_crud_routes!(
+    crate::backend::crudkit_resources::CrudWorkItemStateResource,
+    work_item_state
+);
 
 pub(crate) fn router(
     state: AppState,
@@ -86,6 +90,7 @@ pub(crate) fn router(
     crud_router = axum_agent_run_crud_routes::add_crud_routes("/api", crud_router);
     crud_router = axum_automation_trigger_crud_routes::add_crud_routes("/api", crud_router);
     crud_router = axum_swim_lane_crud_routes::add_crud_routes("/api", crud_router);
+    crud_router = axum_work_item_state_crud_routes::add_crud_routes("/api", crud_router);
 
     let leptos_shell = {
         let leptos_options = leptos_options.clone();
@@ -260,6 +265,7 @@ pub(crate) fn router(
         .layer(Extension(contexts.agent_run))
         .layer(Extension(contexts.automation_trigger))
         .layer(Extension(contexts.swim_lane))
+        .layer(Extension(contexts.work_item_state))
         .with_state(leptos_options)
 }
 

@@ -99,6 +99,15 @@ pub(crate) fn publish_swim_lane_changed(project: &str) {
     });
 }
 
+pub(crate) fn publish_work_item_state_changed(project: &str) {
+    let project = project.to_owned();
+    publish(|sequence, timestamp| UiEvent::WorkItemStateChanged {
+        sequence,
+        timestamp,
+        project,
+    });
+}
+
 pub(crate) fn publish_agent_tool_changed() {
     publish(|sequence, timestamp| UiEvent::AgentToolChanged {
         sequence,

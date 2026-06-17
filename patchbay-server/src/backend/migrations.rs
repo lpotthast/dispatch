@@ -80,7 +80,21 @@ enum SwimLanes {
     Identifier,
     Name,
     Position,
+    Filter,
+    ItemOrder,
     CanCreateItems,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum WorkItemStates {
+    Table,
+    Id,
+    ProjectId,
+    Identifier,
+    Name,
+    Position,
     CreatedAt,
     UpdatedAt,
 }
@@ -211,6 +225,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddSwimLaneCreateItemFlag),
             Box::new(AddProjectAgentExtraWritableRoots),
             Box::new(AddProjectAgentSandboxMode),
+            Box::new(DecoupleStatesAndSwimLanes),
         ]
     }
 }
@@ -1965,6 +1980,56 @@ impl MigrationTrait for AddProjectAgentSandboxMode {
     }
 }
 
+struct DecoupleStatesAndSwimLanes;
+
+impl MigrationName for DecoupleStatesAndSwimLanes {
+    fn name(&self) -> &str {
+        "m20260617_000025_decouple_states_and_swim_lanes"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for DecoupleStatesAndSwimLanes {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "swim_lanes_read_view").await?;
+        create_work_item_states(manager).await?;
+        add_column_if_missing(
+            manager,
+            "swim_lanes",
+            "filter",
+            "TEXT NOT NULL DEFAULT '{\"All\":[]}'",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "swim_lanes",
+            "item_order",
+            "TEXT NOT NULL DEFAULT 'updated_desc'",
+        )
+        .await?;
+        seed_work_item_states_from_existing_data(manager).await?;
+        seed_swim_lane_filters_from_identifiers(manager).await?;
+        create_read_view(manager, "work_item_states", "work_item_states_read_view").await?;
+        create_read_view(manager, "swim_lanes", "swim_lanes_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "work_item_states_read_view").await?;
+        drop_read_view(manager, "swim_lanes_read_view").await?;
+        drop_column_if_present(manager, "swim_lanes", "item_order").await?;
+        drop_column_if_present(manager, "swim_lanes", "filter").await?;
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(WorkItemStates::Table)
+                    .if_exists()
+                    .to_owned(),
+            )
+            .await?;
+        create_read_view(manager, "swim_lanes", "swim_lanes_read_view").await
+    }
+}
+
 async fn seed_default_work_item_automations(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     manager
         .get_connection()
@@ -2134,6 +2199,18 @@ async fn create_swim_lanes(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                         .default(0),
                 )
                 .col(
+                    ColumnDef::new(SwimLanes::Filter)
+                        .text()
+                        .not_null()
+                        .default("{\"All\":[]}"),
+                )
+                .col(
+                    ColumnDef::new(SwimLanes::ItemOrder)
+                        .string()
+                        .not_null()
+                        .default("updated_desc"),
+                )
+                .col(
                     ColumnDef::new(SwimLanes::CanCreateItems)
                         .boolean()
                         .not_null()
@@ -2169,6 +2246,73 @@ async fn create_swim_lanes(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                 .table(SwimLanes::Table)
                 .col(SwimLanes::ProjectId)
                 .col(SwimLanes::Identifier)
+                .unique()
+                .if_not_exists()
+                .to_owned(),
+        )
+        .await
+}
+
+async fn create_work_item_states(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    manager
+        .create_table(
+            Table::create()
+                .table(WorkItemStates::Table)
+                .if_not_exists()
+                .col(
+                    ColumnDef::new(WorkItemStates::Id)
+                        .big_integer()
+                        .not_null()
+                        .auto_increment()
+                        .primary_key(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemStates::ProjectId)
+                        .big_integer()
+                        .not_null(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemStates::Identifier)
+                        .string()
+                        .not_null(),
+                )
+                .col(ColumnDef::new(WorkItemStates::Name).string().not_null())
+                .col(
+                    ColumnDef::new(WorkItemStates::Position)
+                        .big_integer()
+                        .not_null()
+                        .default(0),
+                )
+                .col(
+                    ColumnDef::new(WorkItemStates::CreatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .col(
+                    ColumnDef::new(WorkItemStates::UpdatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .foreign_key(
+                    ForeignKey::create()
+                        .name("fk_work_item_states_project_id")
+                        .from(WorkItemStates::Table, WorkItemStates::ProjectId)
+                        .to(Projects::Table, Projects::Id)
+                        .on_delete(ForeignKeyAction::Cascade),
+                )
+                .to_owned(),
+        )
+        .await?;
+
+    manager
+        .create_index(
+            Index::create()
+                .name("idx_work_item_states_unique_project_identifier")
+                .table(WorkItemStates::Table)
+                .col(WorkItemStates::ProjectId)
+                .col(WorkItemStates::Identifier)
                 .unique()
                 .if_not_exists()
                 .to_owned(),
@@ -2238,6 +2382,72 @@ async fn migrate_work_item_state_to_labels(manager: &SchemaManager<'_>) -> Resul
     ))
     .await?;
     Ok(())
+}
+
+async fn seed_work_item_states_from_existing_data(
+    manager: &SchemaManager<'_>,
+) -> Result<(), DbErr> {
+    let backend = manager.get_database_backend();
+    let conn = manager.get_connection();
+
+    conn.execute(Statement::from_string(
+        backend,
+        r#"
+        INSERT OR IGNORE INTO "work_item_states"
+            ("project_id", "identifier", "name", "position", "created_at", "updated_at")
+        SELECT
+            "project_id",
+            "identifier",
+            "name",
+            "position",
+            COALESCE("created_at", CURRENT_TIMESTAMP),
+            COALESCE("updated_at", CURRENT_TIMESTAMP)
+        FROM "swim_lanes";
+        "#,
+    ))
+    .await?;
+
+    conn.execute(Statement::from_string(
+        backend,
+        r#"
+        INSERT OR IGNORE INTO "work_item_states"
+            ("project_id", "identifier", "name", "position", "created_at", "updated_at")
+        SELECT
+            "work_item_labels"."project_id",
+            "work_item_labels"."label_value",
+            REPLACE("work_item_labels"."label_value", '_', ' '),
+            1000,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+        FROM "work_item_labels"
+        WHERE "work_item_labels"."label_key" = 'state'
+          AND "work_item_labels"."label_value" IS NOT NULL
+          AND "work_item_labels"."label_value" != '';
+        "#,
+    ))
+    .await
+    .map(|_| ())
+}
+
+async fn seed_swim_lane_filters_from_identifiers(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    manager
+        .get_connection()
+        .execute(Statement::from_string(
+            manager.get_database_backend(),
+            r#"
+            UPDATE "swim_lanes"
+            SET
+                "filter" = '{"All":[{"column_name":"state","operator":"=","value":{"String":"' ||
+                    REPLACE(REPLACE("identifier", '\', '\\'), '"', '\"') ||
+                    '"}}]}',
+                "item_order" = COALESCE(NULLIF("item_order", ''), 'updated_desc')
+            WHERE "filter" IS NULL
+               OR "filter" = ''
+               OR "filter" = '{"All":[]}';
+            "#,
+        ))
+        .await
+        .map(|_| ())
 }
 
 async fn create_read_views(manager: &SchemaManager<'_>) -> Result<(), DbErr> {

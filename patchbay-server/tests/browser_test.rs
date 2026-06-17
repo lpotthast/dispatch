@@ -226,16 +226,35 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_contains(driver, "Maintenance").await?;
         assert_source_contains(driver, "Cleanup worktrees").await?;
         assert_source_contains(driver, "data-crudkit-leptos=\"work-items\"").await?;
-        assert_source_contains(driver, "data-crudkit-leptos=\"swim-lanes\"").await?;
+        assert_source_does_not_contain(driver, "data-crudkit-leptos=\"swim-lanes\"").await?;
+        assert_source_does_not_contain(driver, "data-crudkit-leptos=\"work-item-states\"").await?;
         assert_source_does_not_contain(driver, "Deserialize(").await?;
         assert_source_does_not_contain(driver, "missing field `identifier`").await?;
         assert_source_does_not_contain(driver, "unknown variant `Position`").await?;
+        find(driver, By::Css(".lane:nth-child(1) .lane-edit")).await?;
         find(driver, By::Css(".lane:nth-child(1) .lane-add")).await?;
         find(driver, By::Css(".lane:nth-child(2) .lane-add")).await?;
         assert_lane_add_button_count(driver, 2).await?;
         assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
             .await?;
         assert_crudkit_create_form_survives_live_event(driver).await?;
+
+        driver
+            .goto(app.url("/projects?project=demo"))
+            .await
+            .context("failed to open Patchbay projects page for workflow authoring")?;
+        find(
+            driver,
+            By::Css("[data-crudkit-leptos='work-item-states'] .crud-nav"),
+        )
+        .await?;
+        find(
+            driver,
+            By::Css("[data-crudkit-leptos='swim-lanes'] .crud-nav"),
+        )
+        .await?;
+        assert_source_contains(driver, "data-crudkit-leptos=\"work-item-states\"").await?;
+        assert_source_contains(driver, "data-crudkit-leptos=\"swim-lanes\"").await?;
 
         driver
             .goto(app.url("/automation?project=demo"))
@@ -715,17 +734,17 @@ async fn assert_new_item_lane_options(driver: &WebDriver) -> Result<(), Report> 
             r#"
             const select = document.querySelector('#new-item-modal select[name="state"]');
             if (!select) {
-                throw new Error('missing new item lane select');
+                throw new Error('missing new item state select');
             }
             return `${select.value}|${Array.from(select.options).map(option => option.value).join(',')}`;
             "#,
             Vec::new(),
         )
         .await
-        .context("failed to inspect new item lane options")?
+        .context("failed to inspect new item state options")?
         .convert::<String>()
-        .context("failed to read new item lane options")?;
-    assert_that!(summary).is_equal_to("idea|idea,open".to_owned());
+        .context("failed to read new item state options")?;
+    assert_that!(summary).is_equal_to("idea|idea,open,in_progress,done".to_owned());
     Ok(())
 }
 

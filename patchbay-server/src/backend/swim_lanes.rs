@@ -1,3 +1,6 @@
+use crudkit_core::condition::{
+    Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+};
 use rootcause::{Result, prelude::*};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
@@ -6,10 +9,10 @@ use sea_orm::{
 use crate::{
     backend::{
         entities::swim_lane::{self, SwimLane, SwimLaneActiveModel, SwimLaneModel},
-        projects,
+        items, projects,
         storage::{Store, utc_now},
     },
-    shared::view_models::SwimLaneView,
+    shared::view_models::{STATE_LABEL_KEY, SwimLaneView},
 };
 
 const DEFAULT_SWIM_LANES: [(&str, &str, i64, bool); 4] = [
@@ -18,6 +21,7 @@ const DEFAULT_SWIM_LANES: [(&str, &str, i64, bool); 4] = [
     ("in_progress", "In progress", 30, false),
     ("done", "Done", 40, false),
 ];
+pub const DEFAULT_SWIM_LANE_ITEM_ORDER: &str = "updated_desc";
 
 pub async fn list_swim_lanes(store: &Store, project_name: &str) -> Result<Vec<SwimLaneView>> {
     let project_id = projects::project_id(store, project_name).await?;
@@ -36,7 +40,7 @@ pub async fn list_swim_lanes_for_project_id(
         .await
         .context("failed to list swim-lanes")?;
 
-    Ok(lanes.into_iter().map(model_to_view).collect())
+    lanes.into_iter().map(model_to_view).collect()
 }
 
 pub async fn ensure_default_swim_lanes_for_project_id(
@@ -68,6 +72,8 @@ where
             identifier: Set(identifier.to_owned()),
             name: Set(name.to_owned()),
             position: Set(position),
+            filter: Set(condition_to_filter_json(&state_filter(identifier))?),
+            item_order: Set(DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()),
             can_create_items: Set(can_create_items),
             created_at: Set(now.clone()),
             updated_at: Set(now),
@@ -100,17 +106,56 @@ pub fn normalize_name(name: impl Into<String>) -> Result<String> {
     Ok(name)
 }
 
-fn model_to_view(model: SwimLaneModel) -> SwimLaneView {
-    SwimLaneView {
+pub fn normalize_filter_json(filter: impl Into<String>) -> Result<String> {
+    let filter = filter.into();
+    let filter = filter.trim();
+    if filter.is_empty() {
+        return condition_to_filter_json(&Condition::all());
+    }
+    let condition = serde_json::from_str::<Condition>(filter)
+        .context("swim-lane filter must be a CrudKit Condition JSON object")?;
+    items::validate_label_condition(&condition)?;
+    condition_to_filter_json(&condition)
+}
+
+pub fn normalize_item_order(item_order: impl Into<String>) -> Result<String> {
+    let item_order = item_order.into().trim().to_owned();
+    match item_order.as_str() {
+        "updated_desc" | "updated_asc" | "created_desc" | "created_asc" | "id_desc" | "id_asc"
+        | "title_asc" | "title_desc" => Ok(item_order),
+        _ => bail!(
+            "swim-lane item order must be one of: updated_desc, updated_asc, created_desc, created_asc, id_desc, id_asc, title_asc, title_desc"
+        ),
+    }
+}
+
+pub fn state_filter(state: &str) -> Condition {
+    Condition::All(vec![ConditionElement::Clause(ConditionClause {
+        column_name: STATE_LABEL_KEY.to_owned(),
+        operator: Operator::Equal,
+        value: ConditionClauseValue::String(state.to_owned()),
+    })])
+}
+
+fn condition_to_filter_json(condition: &Condition) -> Result<String> {
+    Ok(serde_json::to_string(condition).context("failed to serialize swim-lane filter")?)
+}
+
+fn model_to_view(model: SwimLaneModel) -> Result<SwimLaneView> {
+    let filter = serde_json::from_str::<Condition>(&model.filter)
+        .context_with(|| format!("failed to parse swim-lane '{}' filter", model.identifier))?;
+    Ok(SwimLaneView {
         id: model.id,
         project_id: model.project_id,
         identifier: model.identifier,
         name: model.name,
         position: model.position,
+        filter,
+        item_order: model.item_order,
         can_create_items: model.can_create_items,
         created_at: model.created_at,
         updated_at: model.updated_at,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -155,6 +200,61 @@ mod tests {
                 ("open".to_owned(), true),
                 ("in_progress".to_owned(), false),
                 ("done".to_owned(), false),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn default_swim_lanes_filter_by_matching_state() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(temp.path().join("patchbay.sqlite3"))
+            .await
+            .unwrap();
+        create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let lanes = list_swim_lanes(&store, "demo")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|lane| (lane.identifier, lane.filter, lane.item_order))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            lanes,
+            vec![
+                (
+                    "idea".to_owned(),
+                    state_filter("idea"),
+                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                ),
+                (
+                    "open".to_owned(),
+                    state_filter("open"),
+                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                ),
+                (
+                    "in_progress".to_owned(),
+                    state_filter("in_progress"),
+                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                ),
+                (
+                    "done".to_owned(),
+                    state_filter("done"),
+                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                ),
             ]
         );
     }

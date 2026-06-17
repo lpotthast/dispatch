@@ -39,6 +39,11 @@ pub enum UiEvent {
         timestamp: String,
         project: String,
     },
+    WorkItemStateChanged {
+        sequence: u64,
+        timestamp: String,
+        project: String,
+    },
     AgentToolChanged {
         sequence: u64,
         timestamp: String,
@@ -572,7 +577,20 @@ pub struct SwimLaneView {
     pub identifier: String,
     pub name: String,
     pub position: i64,
+    pub filter: Condition,
+    pub item_order: String,
     pub can_create_items: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkItemStateView {
+    pub id: i64,
+    pub project_id: i64,
+    pub identifier: String,
+    pub name: String,
+    pub position: i64,
     pub created_at: String,
     pub updated_at: String,
 }

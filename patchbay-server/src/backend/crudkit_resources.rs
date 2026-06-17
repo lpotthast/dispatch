@@ -14,11 +14,11 @@ use crate::{
         automation_triggers,
         entities::{
             agent_run, agent_tool, automation_trigger, comment, project, swim_lane, work_item,
-            work_item_label,
+            work_item_label, work_item_state,
         },
         events, items, projects,
         storage::{Store, utc_now},
-        swim_lanes,
+        swim_lanes, work_item_states,
     },
     shared::view_models::{
         AgentReasoningEffort, AgentSandboxMode, AgentToolName, AutomationActivation,
@@ -36,6 +36,7 @@ pub enum CrudResources {
     AgentRun,
     AutomationTrigger,
     SwimLane,
+    WorkItemState,
 }
 
 impl ResourceType for CrudResources {
@@ -48,6 +49,7 @@ impl ResourceType for CrudResources {
             Self::AgentRun => "agent_runs",
             Self::AutomationTrigger => "automation_triggers",
             Self::SwimLane => "swim_lanes",
+            Self::WorkItemState => "work_item_states",
         }
     }
 }
@@ -152,6 +154,10 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
         data: ProjectHookData,
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
         refresh_crud_project_path_status(context, model).await?;
+        work_item_states::ensure_default_work_item_states_for_project_id(&context.store, model.id)
+            .await
+            .map_err(|err| ProjectHookError(err.to_string()))
+            .map_err(HookError::Internal)?;
         swim_lanes::ensure_default_swim_lanes_for_project_id(&context.store, model.id)
             .await
             .map_err(|err| ProjectHookError(err.to_string()))
@@ -1040,6 +1046,19 @@ async fn publish_swim_lane_project_event(store: &Store, project_id: i64) {
     }
 }
 
+async fn publish_work_item_state_project_event(store: &Store, project_id: i64) {
+    match projects::project_name_by_id(store, project_id).await {
+        Ok(project_name) => events::publish_work_item_state_changed(&project_name),
+        Err(err) => {
+            tracing::warn!(
+                project_id,
+                error = %format_args!("{err:#}"),
+                "failed to resolve project for work item state UI event"
+            );
+        }
+    }
+}
+
 fn parse_activation(
     value: &str,
 ) -> Result<AutomationActivation, HookError<AutomationTriggerHookError>> {
@@ -1238,6 +1257,191 @@ impl SeaOrmResource for CrudAutomationTriggerResource {
 }
 
 #[derive(Clone)]
+pub struct WorkItemStateResourceContext {
+    store: Store,
+}
+
+impl fmt::Debug for WorkItemStateResourceContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("WorkItemStateResourceContext")
+    }
+}
+
+impl CrudResourceContext for WorkItemStateResourceContext {}
+
+#[derive(Debug, Clone)]
+pub struct WorkItemStateHookError(String);
+
+impl fmt::Display for WorkItemStateHookError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for WorkItemStateHookError {}
+
+#[derive(Debug)]
+pub struct WorkItemStateLifetime;
+
+impl CrudLifetime<CrudWorkItemStateResource> for WorkItemStateLifetime {
+    type Error = WorkItemStateHookError;
+
+    async fn before_read(
+        _read_request: &mut ReadRequest<CrudWorkItemStateResource>,
+        _context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn after_read(
+        _read_request: &ReadRequest<CrudWorkItemStateResource>,
+        _read_result: &mut ReadResult<CrudWorkItemStateResource>,
+        _context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn before_create(
+        create_model: &mut work_item_state::CreateModel,
+        _context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        create_model.identifier =
+            work_item_states::normalize_identifier(create_model.identifier.clone())
+                .map_err(|err| work_item_state_unprocessable_error(err.to_string()))?;
+        create_model.name = work_item_states::normalize_name(create_model.name.clone())
+            .map_err(|err| work_item_state_unprocessable_error(err.to_string()))?;
+        Ok(data)
+    }
+
+    async fn after_create(
+        _create_model: &work_item_state::CreateModel,
+        model: &work_item_state::Model,
+        context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        publish_work_item_state_project_event(&context.store, model.project_id).await;
+        Ok(data)
+    }
+
+    async fn before_update(
+        _existing: &work_item_state::Model,
+        update_model: &mut work_item_state::UpdateModel,
+        _update_request: &UpdateRequest,
+        _context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        update_model.identifier =
+            work_item_states::normalize_identifier(update_model.identifier.clone())
+                .map_err(|err| work_item_state_unprocessable_error(err.to_string()))?;
+        update_model.name = work_item_states::normalize_name(update_model.name.clone())
+            .map_err(|err| work_item_state_unprocessable_error(err.to_string()))?;
+        Ok(data)
+    }
+
+    async fn after_update(
+        _update_model: &work_item_state::UpdateModel,
+        model: &work_item_state::Model,
+        _update_request: &UpdateRequest,
+        context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        publish_work_item_state_project_event(&context.store, model.project_id).await;
+        Ok(data)
+    }
+
+    async fn before_delete(
+        _model: &work_item_state::Model,
+        _delete_request: &DeleteRequest<CrudWorkItemStateResource>,
+        _context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn after_delete(
+        model: &work_item_state::Model,
+        _delete_request: &DeleteRequest<CrudWorkItemStateResource>,
+        context: &WorkItemStateResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        publish_work_item_state_project_event(&context.store, model.project_id).await;
+        Ok(data)
+    }
+}
+
+fn work_item_state_unprocessable_error(reason: String) -> HookError<WorkItemStateHookError> {
+    HookError::UnprocessableEntity { reason }
+}
+
+#[derive(Debug, ToSchema)]
+pub struct CrudWorkItemStateResource;
+
+impl CrudResource for CrudWorkItemStateResource {
+    type ReadModel = work_item_state::read_view::Model;
+    type ReadModelId = work_item_state::read_view::ModelId;
+    type ReadModelField = work_item_state::read_view::ModelField;
+
+    type CreateModel = work_item_state::CreateModel;
+    type CreateModelField = work_item_state::ModelField;
+
+    type UpdateModel = work_item_state::UpdateModel;
+    type UpdateModelField = work_item_state::ModelField;
+
+    type Model = work_item_state::Model;
+    type Id = work_item_state::WorkItemStateId;
+    type ModelField = work_item_state::ModelField;
+
+    type Repository = SeaOrmRepo;
+    type ValidationResultRepository =
+        crudkit_sea_orm::validation::unified::repository::UnifiedValidationRepository;
+    type CollaborationService = NoopCollaborationService;
+    type Context = WorkItemStateResourceContext;
+    type HookData = ();
+    type Lifetime = WorkItemStateLifetime;
+    type Auth = NoAuth;
+    type AuthPolicy = OpenAuthPolicy;
+    type ResourceType = CrudResources;
+    const TYPE: CrudResources = CrudResources::WorkItemState;
+}
+
+impl SeaOrmResource for CrudWorkItemStateResource {
+    type Entity = work_item_state::Entity;
+    type SeaOrmModel = work_item_state::Model;
+    type ActiveModel = work_item_state::ActiveModel;
+    type Column = work_item_state::Column;
+    type PrimaryKey = <work_item_state::Entity as EntityTrait>::PrimaryKey;
+
+    type ReadViewEntity = work_item_state::read_view::Entity;
+    type ReadViewSeaOrmModel = work_item_state::read_view::Model;
+    type ReadViewActiveModel = work_item_state::read_view::ActiveModel;
+    type ReadViewColumn = work_item_state::read_view::Column;
+    type ReadViewPrimaryKey = <work_item_state::read_view::Entity as EntityTrait>::PrimaryKey;
+
+    fn model_field_to_column(field: &Self::ModelField) -> Self::Column {
+        <work_item_state::ModelField as CrudColumns<work_item_state::Column>>::to_sea_orm_column(
+            field,
+        )
+    }
+
+    fn read_model_field_to_column(field: &Self::ReadModelField) -> Self::ReadViewColumn {
+        <work_item_state::read_view::ModelField as CrudColumns<
+            work_item_state::read_view::Column,
+        >>::to_sea_orm_column(field)
+    }
+}
+
+#[derive(Clone)]
 pub struct SwimLaneResourceContext {
     store: Store,
 }
@@ -1296,6 +1500,10 @@ impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
         create_model.name = swim_lanes::normalize_name(create_model.name.clone())
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        create_model.filter = swim_lanes::normalize_filter_json(create_model.filter.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        create_model.item_order = swim_lanes::normalize_item_order(create_model.item_order.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
         Ok(data)
     }
 
@@ -1321,6 +1529,10 @@ impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
         update_model.identifier = swim_lanes::normalize_identifier(update_model.identifier.clone())
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
         update_model.name = swim_lanes::normalize_name(update_model.name.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        update_model.filter = swim_lanes::normalize_filter_json(update_model.filter.clone())
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        update_model.item_order = swim_lanes::normalize_item_order(update_model.item_order.clone())
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
         Ok(data)
     }
@@ -1427,6 +1639,7 @@ pub struct CrudContexts {
     pub agent_run: Arc<CrudContext<CrudAgentRunResource>>,
     pub automation_trigger: Arc<CrudContext<CrudAutomationTriggerResource>>,
     pub swim_lane: Arc<CrudContext<CrudSwimLaneResource>>,
+    pub work_item_state: Arc<CrudContext<CrudWorkItemStateResource>>,
 }
 
 pub fn build_contexts(store: Store) -> CrudContexts {
@@ -1507,6 +1720,15 @@ pub fn build_contexts(store: Store) -> CrudContexts {
             resource_validators: vec![],
             validation_result_repository: validation_result_repository.clone(),
             collab_service: collab_service.clone(),
+            global_validation_state: Arc::new(GlobalValidationState::new()),
+        }),
+        work_item_state: Arc::new(CrudContext {
+            res_context: Arc::new(WorkItemStateResourceContext { store }),
+            repository,
+            validators: vec![],
+            resource_validators: vec![],
+            validation_result_repository,
+            collab_service,
             global_validation_state: Arc::new(GlobalValidationState::new()),
         }),
     }

@@ -6,6 +6,7 @@ use crate::{
     backend::{
         automation, automation_controller::AutomationController, codex_app_server, comments, items,
         process_sessions::ProcessSessionRegistry, projects, storage::Store, swim_lanes,
+        work_item_states,
     },
     frontend::{
         ApiDocsPage, BoardAutomationSection, BoardItemsSection, BoardPage, BoardRunSessionView,
@@ -40,6 +41,7 @@ pub(crate) async fn board_page_data(
     let mut run_sessions = Vec::new();
     let mut project_items = Vec::new();
     let mut project_swim_lanes = Vec::new();
+    let mut project_work_item_states = Vec::new();
     let mut misconfigured_item_count = 0;
     if let Some(project) = selected_project_view
         .as_ref()
@@ -55,7 +57,9 @@ pub(crate) async fn board_page_data(
         automation_status = Some(status);
         project_items = items::list_items(store, project, None).await?;
         project_swim_lanes = swim_lanes::list_swim_lanes(store, project).await?;
-        misconfigured_item_count = items::count_items_outside_swim_lanes(store, project).await?;
+        project_work_item_states = work_item_states::list_work_item_states(store, project).await?;
+        misconfigured_item_count =
+            items::count_items_outside_work_item_states(store, project).await?;
     }
 
     Ok(BoardPage {
@@ -70,6 +74,7 @@ pub(crate) async fn board_page_data(
         run_sessions,
         items: project_items,
         swim_lanes: project_swim_lanes,
+        work_item_states: project_work_item_states,
         misconfigured_item_count,
         api_base_url,
         codex_status,
@@ -81,7 +86,9 @@ pub(crate) async fn board_items_section(store: &Store, project: &str) -> Result<
     Ok(BoardItemsSection {
         items: items::list_items(store, project, None).await?,
         swim_lanes: swim_lanes::list_swim_lanes(store, project).await?,
-        misconfigured_item_count: items::count_items_outside_swim_lanes(store, project).await?,
+        work_item_states: work_item_states::list_work_item_states(store, project).await?,
+        misconfigured_item_count: items::count_items_outside_work_item_states(store, project)
+            .await?,
     })
 }
 
@@ -213,6 +220,7 @@ pub(crate) async fn item_page_data(
     let item = items::get_item(store, project, item_id).await?;
     let comments = comments::list_comments(store, project, item_id).await?;
     let label_suggestions = items::list_project_labels(store, project).await?;
+    let work_item_states = work_item_states::list_work_item_states(store, project).await?;
     let automation_runs = automation::list_runs_for_item(store, project, item_id, Some(10)).await?;
     Ok(ItemPage {
         projects,
@@ -221,6 +229,7 @@ pub(crate) async fn item_page_data(
         item,
         comments,
         label_suggestions,
+        work_item_states,
         automation_runs,
         codex_status,
     })
