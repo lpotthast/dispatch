@@ -195,6 +195,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
 
         find(driver, By::Css("section.project-settings")).await?;
         find(driver, By::Css("section.board")).await?;
+        assert_board_shell_uses_viewport_width(driver).await?;
         find(driver, By::Css(".workspace-panel .workspace-actions")).await?;
         assert_that!(driver.title().await.context("failed to read page title")?)
             .is_equal_to("Patchbay");
@@ -991,6 +992,43 @@ async fn assert_lane_add_button_count(driver: &WebDriver, expected: usize) -> Re
         .convert::<String>()
         .context("failed to read lane add button count")?;
     assert_that!(count).is_equal_to(expected.to_string());
+    Ok(())
+}
+
+async fn assert_board_shell_uses_viewport_width(driver: &WebDriver) -> Result<(), Report> {
+    driver
+        .set_window_rect(0, 0, 1800, 1000)
+        .await
+        .context("failed to widen browser test window")?;
+    let summary = driver
+        .execute(
+            r#"
+            const shell = document.querySelector('main.page-shell');
+            if (!shell) {
+                throw new Error('missing page shell');
+            }
+            const shellWidth = Math.round(shell.getBoundingClientRect().width);
+            const viewportWidth = document.documentElement.clientWidth;
+            return `${shellWidth}|${viewportWidth}`;
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect board shell width")?
+        .convert::<String>()
+        .context("failed to read board shell width")?;
+    let Some((shell_width, viewport_width)) = summary.split_once('|') else {
+        bail!("failed to parse board shell width summary {summary:?}");
+    };
+    let shell_width = shell_width
+        .parse::<i64>()
+        .context("failed to parse shell width")?;
+    let viewport_width = viewport_width
+        .parse::<i64>()
+        .context("failed to parse viewport width")?;
+    if shell_width < viewport_width - 1 {
+        bail!("board shell width {shell_width}px did not fill viewport width {viewport_width}px");
+    }
     Ok(())
 }
 

@@ -484,7 +484,11 @@ a {
   font-weight: 700;
 }
 
-.page-shell,
+.page-shell {
+  width: 100%;
+  padding: 24px;
+}
+
 .empty-state,
 .error {
   width: min(100%, 1320px);
