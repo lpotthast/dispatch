@@ -1802,9 +1802,6 @@ fn item_content(page: ItemPage) -> AnyView {
         agent_model_options(item.agent_model_override.clone(), "Project default");
     let reasoning_override_options =
         agent_reasoning_options(item.agent_reasoning_effort_override, "Project default");
-    let state_action = format!("/projects/{}/items/{}/move", encode_path(&project), item.id);
-    let current_state = item.state.clone().unwrap_or_default();
-    let state_options = work_item_state_select_options(&work_item_states, current_state.clone());
     let claim = item
         .claimed_by
         .clone()
@@ -1874,13 +1871,6 @@ fn item_content(page: ItemPage) -> AnyView {
                     </form>
                 </section>
                 <section class="actions">
-                    <form method="post" action=state_action>
-                        <input type="hidden" name="version" value=item.version.to_string()/>
-                        <select name="state">
-                            {state_options}
-                        </select>
-                        <button>"Set state"</button>
-                    </form>
                     <form method="post" action=delete_action>
                         <button class="danger">"Delete"</button>
                     </form>
@@ -2042,39 +2032,6 @@ fn state_suggestion_options(states: &[WorkItemStateView]) -> Vec<impl IntoView> 
         .map(|state| state.identifier.clone())
         .map(|value| view! { <option value=value></option> })
         .collect()
-}
-
-fn work_item_state_select_options(
-    states: &[WorkItemStateView],
-    selected_state: String,
-) -> Vec<AnyView> {
-    let mut options = states
-        .iter()
-        .map(|state| {
-            let selected = state.identifier == selected_state;
-            view! {
-                <option value=state.identifier.clone() selected=selected>
-                    {state.name.clone()}
-                </option>
-            }
-            .into_any()
-        })
-        .collect::<Vec<_>>();
-    if !selected_state.is_empty()
-        && !states
-            .iter()
-            .any(|state| state.identifier == selected_state)
-    {
-        let label = format!("{selected_state} (unknown)");
-        options.insert(
-            0,
-            view! {
-                <option value=selected_state selected=true>{label}</option>
-            }
-            .into_any(),
-        );
-    }
-    options
 }
 
 fn patchbay_labels_panel() -> impl IntoView {

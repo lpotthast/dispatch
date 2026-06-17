@@ -365,6 +365,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         find(driver, By::Css("section.comments")).await?;
         assert_source_contains(driver, "Item details").await?;
         assert_source_does_not_contain(driver, "automation can claim this item").await?;
+        assert_source_does_not_contain(driver, "Set state").await?;
         assert_source_contains(driver, "Start agent").await?;
         assert_source_contains(driver, "Comments").await?;
         add_agent_comment(driver).await?;
