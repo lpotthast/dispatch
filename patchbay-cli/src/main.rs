@@ -4,9 +4,10 @@ use clap::{Args, Parser, Subcommand};
 use patchbay_api_client::PatchbayClient;
 use patchbay_types::{
     AddCommentRequest, AgentGitRuntimePolicy, AgentReasoningEffort, AgentRunOutputPiece,
-    AgentRunView, AuthorType, ClaimWorkItemRequest, CreateWorkItemLabelRequest,
-    CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
-    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemView,
+    AgentRunTokenUsageView, AgentRunView, AuthorType, ClaimWorkItemRequest,
+    CreateWorkItemLabelRequest, CreateWorkItemRequest, FinishWorkItemRequest,
+    ProgressWorkItemRequest, ReleaseWorkItemRequest, UpdateProjectMemoryRequest,
+    UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemView,
 };
 use rootcause::{Result, option_ext::OptionExt, prelude::*};
 use serde::Serialize;
@@ -871,8 +872,13 @@ async fn run_automation(command: AutomationCommand, context: ResolvedContext) ->
             output(args.json, &runs, || {
                 for run in &runs {
                     println!(
-                        "#{}\t{}\t{}\t{}\t{}",
-                        run.id, run.status, run.mode, run.tool_name, run.result_summary
+                        "#{}\t{}\t{}\t{}\t{}\t{}",
+                        run.id,
+                        run.status,
+                        run.mode,
+                        run.tool_name,
+                        run_token_usage_text(run),
+                        run.result_summary
                     );
                 }
             })
@@ -882,6 +888,7 @@ async fn run_automation(command: AutomationCommand, context: ResolvedContext) ->
             output(args.json, &log, || {
                 println!("run #{} {}", log.run.id, log.run.status);
                 println!("summary: {}", log.run.result_summary);
+                println!("tokens: {}", run_token_usage_text(&log.run));
                 println!("commit: {}", run_commit_outcome_text(&log.run));
                 println!();
                 println!("output:");
@@ -1147,6 +1154,43 @@ fn run_commit_outcome_text(run: &AgentRunView) -> String {
         patchbay_types::AgentCommitOutcome::Unknown => "unknown".to_owned(),
     };
     format!("{base} ({requirement})")
+}
+
+fn run_token_usage_text(run: &AgentRunView) -> String {
+    run.token_usage
+        .map(run_token_usage_label)
+        .unwrap_or_else(|| "not reported".to_owned())
+}
+
+fn run_token_usage_label(usage: AgentRunTokenUsageView) -> String {
+    format!(
+        "{} total ({} input, {} cached input, {} output)",
+        format_number(usage.total_tokens),
+        format_number(usage.input_tokens),
+        format_number(usage.cached_input_tokens),
+        format_number(usage.output_tokens)
+    )
+}
+
+fn format_number(value: i64) -> String {
+    let absolute = if value < 0 {
+        -(value as i128)
+    } else {
+        value as i128
+    };
+    let mut chars = absolute.to_string().chars().rev().collect::<Vec<_>>();
+    let mut formatted = String::new();
+    for (index, ch) in chars.drain(..).enumerate() {
+        if index > 0 && index % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+    let mut formatted = formatted.chars().rev().collect::<String>();
+    if value < 0 {
+        formatted.insert(0, '-');
+    }
+    formatted
 }
 
 fn print_output_pieces(output: &[AgentRunOutputPiece]) {

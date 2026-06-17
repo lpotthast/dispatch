@@ -37,8 +37,8 @@ use crate::{
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentCommitOutcome, AgentGitRuntimePolicy,
         AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece,
-        AgentRunStatus, AgentRunView, AgentSandboxMode, AgentToolName, AutomationMode,
-        AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
+        AgentRunStatus, AgentRunTokenUsageView, AgentRunView, AgentSandboxMode, AgentToolName,
+        AutomationMode, AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
         FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView,
         RevertStrategy, RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
@@ -117,6 +117,7 @@ struct AgentProcessOutput {
     process_id: Option<i64>,
     output: Vec<AgentRunOutputPiece>,
     final_response: String,
+    token_usage: Option<AgentRunTokenUsageView>,
 }
 
 struct AgentProcessStart {
@@ -747,6 +748,9 @@ async fn complete_started_automation_run(
     match output {
         Ok(output) => {
             run = update_run_process_id(store, run, output.process_id).await?;
+            if let Some(token_usage) = output.token_usage {
+                run = update_run_token_usage(store, run, token_usage).await?;
+            }
             write_run_output_log(&log_path, &output.output).context_with(|| {
                 format!("failed to write automation log {}", log_path.display())
             })?;
@@ -1027,7 +1031,11 @@ pub async fn list_runs(
         .all(store.db().as_ref())
         .await
         .context("failed to list agent runs")?;
-    runs.into_iter().map(model_to_view).collect()
+    let mut views = Vec::with_capacity(runs.len());
+    for run in runs {
+        views.push(model_to_view_with_log_usage(run).await?);
+    }
+    Ok(views)
 }
 
 pub async fn list_runs_for_item(
@@ -1050,7 +1058,11 @@ pub async fn list_runs_for_item(
         .all(store.db().as_ref())
         .await
         .context("failed to list item agent runs")?;
-    runs.into_iter().map(model_to_view).collect()
+    let mut views = Vec::with_capacity(runs.len());
+    for run in runs {
+        views.push(model_to_view_with_log_usage(run).await?);
+    }
+    Ok(views)
 }
 
 pub async fn list_runs_for_trigger(
@@ -1073,7 +1085,11 @@ pub async fn list_runs_for_trigger(
         .all(store.db().as_ref())
         .await
         .context("failed to list trigger agent runs")?;
-    runs.into_iter().map(model_to_view).collect()
+    let mut views = Vec::with_capacity(runs.len());
+    for run in runs {
+        views.push(model_to_view_with_log_usage(run).await?);
+    }
+    Ok(views)
 }
 
 pub async fn get_run(store: &Store, project_name: &str, run_id: i64) -> Result<AgentRunView> {
@@ -1084,7 +1100,7 @@ pub async fn get_run(store: &Store, project_name: &str, run_id: i64) -> Result<A
         .await
         .context("failed to load agent run")?
         .ok_or_else(|| report!("agent run {run_id} does not exist in this project"))?;
-    model_to_view(run)
+    model_to_view_with_log_usage(run).await
 }
 
 pub async fn read_run_log(store: &Store, project_name: &str, run_id: i64) -> Result<RunLogView> {
@@ -1137,9 +1153,12 @@ pub async fn cleanup_worktrees(
         .context("failed to load agent runs for cleanup")?;
     let mut cleaned = Vec::new();
     for run in runs {
-        cleaned.push(model_to_view(
-            cleanup_worktree_for_run(store, run, &project_path).await?,
-        )?);
+        cleaned.push(
+            model_to_view_with_log_usage(
+                cleanup_worktree_for_run(store, run, &project_path).await?,
+            )
+            .await?,
+        );
     }
     Ok(cleaned)
 }
@@ -1236,6 +1255,9 @@ async fn create_run(
         prompt_path: Set(None),
         agent_model: Set(None),
         agent_reasoning_effort: Set(None),
+        input_tokens: Set(None),
+        cached_input_tokens: Set(None),
+        output_tokens: Set(None),
         commit_required: Set(false),
         commit_outcome: Set(AgentCommitOutcome::NotEvaluated.as_storage().to_owned()),
         commit_shas: Set("[]".to_owned()),
@@ -1345,6 +1367,24 @@ async fn update_run_process_id(
         .update(store.db().as_ref())
         .await
         .context("failed to update agent run process id")?;
+    publish_run_model_event(store, &updated).await;
+    Ok(updated)
+}
+
+async fn update_run_token_usage(
+    store: &Store,
+    run: AgentRunModel,
+    usage: AgentRunTokenUsageView,
+) -> Result<AgentRunModel> {
+    let mut active: AgentRunActiveModel = run.into();
+    active.input_tokens = Set(Some(usage.input_tokens));
+    active.cached_input_tokens = Set(Some(usage.cached_input_tokens));
+    active.output_tokens = Set(Some(usage.output_tokens));
+    active.updated_at = Set(utc_now());
+    let updated = active
+        .update(store.db().as_ref())
+        .await
+        .context("failed to update agent run token usage")?;
     publish_run_model_event(store, &updated).await;
     Ok(updated)
 }
@@ -2085,6 +2125,7 @@ async fn run_codex_app_server_turn(
     let mut saw_terminal = false;
     let mut final_answer = None;
     let mut fallback_answer = None;
+    let mut token_usage = None;
     while let Some(event) = streamed.next_event().await {
         let event = event.context("Codex app-server stream failed")?;
         if let Some(piece) = thread_event_output_piece(&event) {
@@ -2095,7 +2136,13 @@ async fn run_codex_app_server_turn(
             ThreadEvent::ItemCompleted { item } => {
                 update_response_candidates(item, &mut final_answer, &mut fallback_answer);
             }
-            ThreadEvent::TurnCompleted { .. } => {
+            ThreadEvent::TurnCompleted { usage } => {
+                token_usage = usage.as_ref().map(|usage| AgentRunTokenUsageView {
+                    input_tokens: usage.input_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
+                    output_tokens: usage.output_tokens,
+                    total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
+                });
                 saw_terminal = true;
                 break;
             }
@@ -2120,6 +2167,7 @@ async fn run_codex_app_server_turn(
         process_id: None,
         output,
         final_response: final_answer.or(fallback_answer).unwrap_or_default(),
+        token_usage,
     })
 }
 
@@ -2527,6 +2575,53 @@ async fn read_run_output(path: Option<&str>) -> Result<Vec<AgentRunOutputPiece>>
         body,
         serde_json::json!({ "format": "plain_text" }),
     )])
+}
+
+async fn model_to_view_with_log_usage(run: AgentRunModel) -> Result<AgentRunView> {
+    let log_path = run.log_path.clone();
+    let mut view = model_to_view(run)?;
+    if view.token_usage.is_none() {
+        view.token_usage = read_run_token_usage(log_path.as_deref()).await;
+    }
+    Ok(view)
+}
+
+async fn read_run_token_usage(path: Option<&str>) -> Option<AgentRunTokenUsageView> {
+    let path = path?;
+    let Ok(body) = tokio::fs::read_to_string(path).await else {
+        return None;
+    };
+    let Ok(log) = serde_json::from_str::<AgentRunOutputLog>(&body) else {
+        return None;
+    };
+    token_usage_from_output_pieces(&log.pieces)
+}
+
+fn token_usage_from_output_pieces(
+    pieces: &[AgentRunOutputPiece],
+) -> Option<AgentRunTokenUsageView> {
+    pieces
+        .iter()
+        .rev()
+        .find_map(|piece| token_usage_from_metadata(&piece.metadata))
+}
+
+fn token_usage_from_metadata(metadata: &serde_json::Value) -> Option<AgentRunTokenUsageView> {
+    let usage = metadata.get("usage")?;
+    let input_tokens = usage_i64(usage, &["input_tokens", "inputTokens"])?;
+    let cached_input_tokens =
+        usage_i64(usage, &["cached_input_tokens", "cachedInputTokens"]).unwrap_or_default();
+    let output_tokens = usage_i64(usage, &["output_tokens", "outputTokens"])?;
+    Some(AgentRunTokenUsageView {
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        total_tokens: input_tokens.saturating_add(output_tokens),
+    })
+}
+
+fn usage_i64(value: &serde_json::Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| value.get(*key)?.as_i64())
 }
 
 fn write_run_output_log(path: &Path, pieces: &[AgentRunOutputPiece]) -> Result<()> {
@@ -2985,6 +3080,11 @@ fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
             .as_deref()
             .map(str::parse::<AgentReasoningEffort>)
             .transpose()?,
+        token_usage: token_usage_from_columns(
+            run.input_tokens,
+            run.cached_input_tokens,
+            run.output_tokens,
+        ),
         commit_required: run.commit_required,
         commit_outcome: AgentCommitOutcome::from_str(&run.commit_outcome)?,
         commit_shas: parse_commit_shas(&run.commit_shas)?,
@@ -2997,6 +3097,22 @@ fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
         finished_at: run.finished_at,
         created_at: run.created_at,
         updated_at: run.updated_at,
+    })
+}
+
+fn token_usage_from_columns(
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+) -> Option<AgentRunTokenUsageView> {
+    let input_tokens = input_tokens?;
+    let cached_input_tokens = cached_input_tokens.unwrap_or_default();
+    let output_tokens = output_tokens?;
+    Some(AgentRunTokenUsageView {
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        total_tokens: input_tokens.saturating_add(output_tokens),
     })
 }
 
@@ -3199,6 +3315,52 @@ mod tests {
         assert_eq!(evaluation.outcome, AgentCommitOutcome::NotRequired);
         assert!(evaluation.shas.is_empty());
         assert!(!evaluation.validation_failed);
+    }
+
+    #[test]
+    fn token_usage_reads_latest_run_output_metadata() {
+        let pieces = vec![
+            new_output_piece(
+                1,
+                AgentRunOutputKind::System,
+                None,
+                "turn completed",
+                "",
+                serde_json::json!({
+                    "usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 4
+                    }
+                }),
+            ),
+            new_output_piece(
+                2,
+                AgentRunOutputKind::System,
+                None,
+                "turn completed",
+                "",
+                serde_json::json!({
+                    "usage": {
+                        "input_tokens": 20,
+                        "cached_input_tokens": 5,
+                        "output_tokens": 7
+                    }
+                }),
+            ),
+        ];
+
+        let usage = token_usage_from_output_pieces(&pieces).unwrap();
+
+        assert_eq!(
+            usage,
+            AgentRunTokenUsageView {
+                input_tokens: 20,
+                cached_input_tokens: 5,
+                output_tokens: 7,
+                total_tokens: 27,
+            }
+        );
     }
 
     #[tokio::test]

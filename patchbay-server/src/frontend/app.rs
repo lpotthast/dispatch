@@ -34,12 +34,12 @@ use crate::{
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentCommitOutcome, AgentGitHardResetPolicy,
         AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece, AgentRunStatus,
-        AgentRunView, AuthorType, AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY,
-        CodexAgentModel, CodexAppServerStatusView, CodexAuthSetupView, CodexRateLimitView,
-        CodexUsageSummaryView, CommentView, ProjectLabelView, ProjectMemoryEventRefView,
-        ProjectMemoryEventView, ProjectSettingsView, ProjectView, RevertStrategy, RunLogView,
-        STATE_LABEL_KEY, SwimLaneView, UiEvent, WorkItemLabelView, WorkItemStateView, WorkItemView,
-        WorkspaceMode,
+        AgentRunTokenUsageView, AgentRunView, AuthorType, AutomationStatusView,
+        CLAIMED_FROM_STATE_LABEL_KEY, CodexAgentModel, CodexAppServerStatusView,
+        CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
+        ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
+        ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY, SwimLaneView, UiEvent,
+        WorkItemLabelView, WorkItemStateView, WorkItemView, WorkspaceMode,
     },
 };
 #[cfg(not(feature = "ssr"))]
@@ -2114,6 +2114,7 @@ fn automation_runs_view(project: &str, runs: Vec<AgentRunView>) -> AnyView {
                 encode_path(project),
                 run.id
             );
+            let tokens = run.token_usage.map(run_token_usage_label);
             view! {
                 <li>
                     <a href=href>"#" {run.id}</a>
@@ -2121,6 +2122,12 @@ fn automation_runs_view(project: &str, runs: Vec<AgentRunView>) -> AnyView {
                     {run.status.to_string()}
                     " · "
                     {run.mode.to_string()}
+                    {tokens.map(|tokens| view! {
+                        <>
+                            " · "
+                            {tokens}
+                        </>
+                    })}
                     " · "
                     {run.result_summary}
                 </li>
@@ -2166,6 +2173,7 @@ fn run_log_content(page: RunLogPage) -> AnyView {
     let working_dir = run_workspace_actions(&project, &run_log.run, run_href);
     let status_class = run_status_class(run_log.run.status);
     let memory_event = run_log.memory_event.as_ref().map(memory_event_ref_label);
+    let token_usage = run_token_usage_text(&run_log.run);
     let commit_outcome = run_commit_outcome_label(&run_log.run);
     let pr_url = run_log.run.pr_url.clone().map(|pr_url| {
         let href = pr_url.clone();
@@ -2213,6 +2221,8 @@ fn run_log_content(page: RunLogPage) -> AnyView {
                         <dd>{working_dir}</dd>
                         <dt>"cleanup"</dt>
                         <dd>{run_log.run.cleanup_status}</dd>
+                        <dt>"tokens"</dt>
+                        <dd>{token_usage}</dd>
                         <dt>"commit"</dt>
                         <dd>{commit_outcome}</dd>
                         {memory_event.map(|memory_event| view! {
@@ -4892,6 +4902,7 @@ fn RunSessionsPanel(
                 let is_active = session.active;
                 let summary = run_result_summary(&session.run);
                 let origin = run_origin_label(&session.run);
+                let tokens = session.run.token_usage.map(run_token_usage_label);
                 let status_class = run_status_class(session.run.status);
                 let selected_signal = selected_run_id;
                 view! {
@@ -4912,6 +4923,7 @@ fn RunSessionsPanel(
                             <span>{session.run.status.to_string()}</span>
                             <span>{session.run.mode.to_string()}</span>
                             {origin.map(|origin| view! { <span>{origin}</span> })}
+                            {tokens.map(|tokens| view! { <span>{tokens}</span> })}
                             {is_active.then(|| view! { <span class="live-badge">"active"</span> })}
                         </div>
                         <p>{summary}</p>
@@ -4997,6 +5009,22 @@ fn run_commit_outcome_label(run: &AgentRunView) -> String {
     format!("{base} ({requirement})")
 }
 
+fn run_token_usage_text(run: &AgentRunView) -> String {
+    run.token_usage
+        .map(run_token_usage_label)
+        .unwrap_or_else(|| "not reported".to_owned())
+}
+
+fn run_token_usage_label(usage: AgentRunTokenUsageView) -> String {
+    format!(
+        "{} total ({} input, {} cached input, {} output)",
+        format_number(usage.total_tokens),
+        format_number(usage.input_tokens),
+        format_number(usage.cached_input_tokens),
+        format_number(usage.output_tokens)
+    )
+}
+
 fn run_origin_label(run: &AgentRunView) -> Option<String> {
     run.trigger_id.map(|trigger_id| {
         let trigger_name = run
@@ -5039,6 +5067,7 @@ fn run_session_detail(project: &str, session: BoardRunSessionView) -> AnyView {
         .run
         .memory_event_id
         .map(|event_id| format!("MemoryChanged #{event_id}"));
+    let token_usage = run_token_usage_text(&session.run);
     let summary = run_result_summary(&session.run);
     let origin = run_origin_label(&session.run);
     let command = recorded_field(&session.run.command);
@@ -5075,6 +5104,8 @@ fn run_session_detail(project: &str, session: BoardRunSessionView) -> AnyView {
                 <dd>{model}</dd>
                 <dt>"reasoning"</dt>
                 <dd>{reasoning}</dd>
+                <dt>"tokens"</dt>
+                <dd>{token_usage}</dd>
                 {memory_event.map(|memory_event| view! {
                     <>
                         <dt>"memory"</dt>

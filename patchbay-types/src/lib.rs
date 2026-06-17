@@ -943,6 +943,7 @@ pub struct AgentRunView {
     pub prompt_path: Option<String>,
     pub agent_model: Option<String>,
     pub agent_reasoning_effort: Option<AgentReasoningEffort>,
+    pub token_usage: Option<AgentRunTokenUsageView>,
     pub commit_required: bool,
     pub commit_outcome: AgentCommitOutcome,
     pub commit_shas: Vec<String>,
@@ -955,6 +956,14 @@ pub struct AgentRunView {
     pub finished_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentRunTokenUsageView {
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

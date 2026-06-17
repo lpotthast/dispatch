@@ -101,6 +101,18 @@ pub struct Model {
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
+    pub input_tokens: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub cached_input_tokens: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub output_tokens: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
     pub commit_required: bool,
 
     #[ck_create_model(exclude)]

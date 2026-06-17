@@ -162,6 +162,9 @@ enum AgentRuns {
     PromptPath,
     AgentModel,
     AgentReasoningEffort,
+    InputTokens,
+    CachedInputTokens,
+    OutputTokens,
     CommitRequired,
     CommitOutcome,
     CommitShas,
@@ -239,6 +242,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddProjectCommitPolicy),
             Box::new(AddProjectAgentGitCommandPolicy),
             Box::new(AddAutomationRunCommitOutcomes),
+            Box::new(AddAutomationRunTokenUsage),
         ]
     }
 }
@@ -869,6 +873,13 @@ async fn create_agent_runs(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                         .string()
                         .null(),
                 )
+                .col(ColumnDef::new(AgentRuns::InputTokens).big_integer().null())
+                .col(
+                    ColumnDef::new(AgentRuns::CachedInputTokens)
+                        .big_integer()
+                        .null(),
+                )
+                .col(ColumnDef::new(AgentRuns::OutputTokens).big_integer().null())
                 .col(
                     ColumnDef::new(AgentRuns::CommitRequired)
                         .boolean()
@@ -2184,6 +2195,33 @@ impl MigrationTrait for AddAutomationRunCommitOutcomes {
         drop_column_if_present(manager, "agent_runs", "commit_shas").await?;
         drop_column_if_present(manager, "agent_runs", "commit_outcome").await?;
         drop_column_if_present(manager, "agent_runs", "commit_required").await?;
+        create_read_view(manager, "agent_runs", "agent_runs_read_view").await
+    }
+}
+
+struct AddAutomationRunTokenUsage;
+
+impl MigrationName for AddAutomationRunTokenUsage {
+    fn name(&self) -> &str {
+        "m20260617_000029_add_automation_run_token_usage"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddAutomationRunTokenUsage {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "agent_runs_read_view").await?;
+        add_column_if_missing(manager, "agent_runs", "input_tokens", "BIGINT").await?;
+        add_column_if_missing(manager, "agent_runs", "cached_input_tokens", "BIGINT").await?;
+        add_column_if_missing(manager, "agent_runs", "output_tokens", "BIGINT").await?;
+        create_read_view(manager, "agent_runs", "agent_runs_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "agent_runs_read_view").await?;
+        drop_column_if_present(manager, "agent_runs", "output_tokens").await?;
+        drop_column_if_present(manager, "agent_runs", "cached_input_tokens").await?;
+        drop_column_if_present(manager, "agent_runs", "input_tokens").await?;
         create_read_view(manager, "agent_runs", "agent_runs_read_view").await
     }
 }

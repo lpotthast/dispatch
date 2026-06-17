@@ -57,6 +57,8 @@ GET /api/projects/{project}/automation/runs/{run_id}/log
 GET /api/projects/{project}/automation/sessions
 ```
 
+Automation run responses use `AgentRunView`, which includes reported Codex token usage for the run when available. Usage is reported as input tokens, cached input tokens, output tokens, and a derived total.
+
 Event endpoints:
 
 ```text
