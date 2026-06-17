@@ -1,18 +1,19 @@
-use std::{env, process::Command as StdCommand, time::Duration};
+mod context;
+mod git_guard;
+
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
-use patchbay_api_client::PatchbayClient;
+use context::{ContextOverrides, ResolvedContext, resolve_context};
+use git_guard::run_git;
 use patchbay_types::{
-    AddCommentRequest, AgentGitRuntimePolicy, AgentReasoningEffort, AgentRunOutputPiece,
-    AgentRunTokenUsageView, AgentRunView, AuthorType, ClaimWorkItemRequest,
-    CreateWorkItemLabelRequest, CreateWorkItemRequest, FinishWorkItemRequest,
-    ProgressWorkItemRequest, ReleaseWorkItemRequest, UpdateProjectMemoryRequest,
-    UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemView,
+    AddCommentRequest, AgentReasoningEffort, AgentRunOutputPiece, AgentRunTokenUsageView,
+    AgentRunView, AuthorType, ClaimWorkItemRequest, CreateWorkItemLabelRequest,
+    CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
+    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemView,
 };
-use rootcause::{Result, option_ext::OptionExt, prelude::*};
+use rootcause::{Result, prelude::*};
 use serde::Serialize;
-
-const DEFAULT_API_URL: &str = "http://127.0.0.1:4000";
 
 #[derive(Debug, Parser)]
 #[command(name = "patchbay")]
@@ -32,6 +33,16 @@ struct Cli {
 
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    fn context_overrides(&self) -> ContextOverrides {
+        ContextOverrides {
+            api_url: self.api_url.clone(),
+            project: self.project.clone(),
+            agent_id: self.agent.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -433,45 +444,11 @@ struct MemoryWriteArgs {
     json: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ResolvedContext {
-    api_url: String,
-    project: Option<String>,
-    agent_id: Option<String>,
-    claimed_item_id: Option<i64>,
-}
-
-impl ResolvedContext {
-    fn client(&self) -> PatchbayClient {
-        PatchbayClient::new(self.api_url.clone())
-    }
-
-    fn project(&self) -> Result<&str> {
-        Ok(self
-            .project
-            .as_deref()
-            .context("missing Patchbay project; pass --project or set PATCHBAY_PROJECT")?)
-    }
-
-    fn agent_id(&self) -> Result<&str> {
-        Ok(self
-            .agent_id
-            .as_deref()
-            .context("missing Patchbay agent id; pass --agent or set PATCHBAY_AGENT_ID")?)
-    }
-
-    fn item_id(&self, explicit: Option<i64>) -> Result<i64> {
-        Ok(explicit
-            .or(self.claimed_item_id)
-            .context("missing item id; pass an item id or set PATCHBAY_CLAIMED_ITEM_ID")?)
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let context =
-        resolve_context(&cli, |key| env::var(key)).context("failed to resolve Patchbay context")?;
+    let context = resolve_context(&cli.context_overrides(), |key| std::env::var(key))
+        .context("failed to resolve Patchbay context")?;
     run(cli.command, context).await
 }
 
@@ -482,7 +459,7 @@ async fn run(command: Command, context: ResolvedContext) -> Result<()> {
         Command::Label { command } => run_label(command, context).await,
         Command::Memory { command } => run_memory(command, context).await,
         Command::Automation { command } => run_automation(command, context).await,
-        Command::Git(args) => run_git(args),
+        Command::Git(args) => run_git(args.args),
     }
 }
 
@@ -903,218 +880,6 @@ async fn run_automation(command: AutomationCommand, context: ResolvedContext) ->
     }
 }
 
-fn run_git(args: GitArgs) -> Result<()> {
-    let policy_path = env::var("PATCHBAY_GIT_POLICY_PATH")
-        .context("PATCHBAY_GIT_POLICY_PATH is required for patchbay git")?;
-    let real_git =
-        env::var("PATCHBAY_REAL_GIT").context("PATCHBAY_REAL_GIT is required for patchbay git")?;
-    let policy_json = std::fs::read_to_string(&policy_path)
-        .context_with(|| format!("failed to read git policy {policy_path}"))?;
-    let runtime_policy: AgentGitRuntimePolicy =
-        serde_json::from_str(&policy_json).context("failed to parse git policy")?;
-    let checked_args = checked_git_args(args.args, &runtime_policy)?;
-    let status = StdCommand::new(&real_git)
-        .args(&checked_args)
-        .status()
-        .context_with(|| format!("failed to run real git at {real_git}"))?;
-    if !status.success() {
-        bail!("git exited with status {status}");
-    }
-    Ok(())
-}
-
-fn checked_git_args(
-    args: Vec<String>,
-    runtime_policy: &AgentGitRuntimePolicy,
-) -> Result<Vec<String>> {
-    let Some(command_index) = protected_git_command_index(&args) else {
-        if args.is_empty() {
-            bail!("git command is required");
-        }
-        return Ok(args);
-    };
-    let Some(command) = args.get(command_index).map(String::as_str) else {
-        bail!("git command is required");
-    };
-    match command {
-        "add" => {
-            if !runtime_policy.policy.add {
-                bail!("git add is not allowed by this Patchbay project policy");
-            }
-            Ok(args)
-        }
-        "commit" => checked_git_commit_args(args, runtime_policy, command_index),
-        "push" => checked_git_push_args(args, runtime_policy, command_index),
-        "reset" => checked_git_reset_args(args, runtime_policy, command_index),
-        _ => Ok(args),
-    }
-}
-
-fn protected_git_command_index(args: &[String]) -> Option<usize> {
-    let mut index = 0;
-    while index < args.len() {
-        let arg = args[index].as_str();
-        if matches!(arg, "add" | "commit" | "push" | "reset") {
-            return Some(index);
-        }
-        if arg == "--" {
-            return None;
-        }
-        if git_global_option_takes_separate_value(arg) {
-            index += 2;
-            continue;
-        }
-        if git_global_option_with_inline_value(arg) || arg.starts_with('-') {
-            index += 1;
-            continue;
-        }
-        return None;
-    }
-    None
-}
-
-fn git_global_option_takes_separate_value(arg: &str) -> bool {
-    matches!(
-        arg,
-        "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--exec-path" | "--config-env"
-    )
-}
-
-fn git_global_option_with_inline_value(arg: &str) -> bool {
-    [
-        "--git-dir=",
-        "--work-tree=",
-        "--namespace=",
-        "--exec-path=",
-        "--config-env=",
-    ]
-    .iter()
-    .any(|prefix| arg.starts_with(prefix))
-}
-
-fn checked_git_commit_args(
-    mut args: Vec<String>,
-    runtime_policy: &AgentGitRuntimePolicy,
-    command_index: usize,
-) -> Result<Vec<String>> {
-    if !runtime_policy.policy.commit {
-        bail!("git commit is not allowed by this Patchbay project policy");
-    }
-    if args
-        .iter()
-        .skip(command_index + 1)
-        .any(|arg| arg == "--verify")
-    {
-        bail!("git commit --verify is blocked; Patchbay requires --no-verify");
-    }
-    if !args
-        .iter()
-        .skip(command_index + 1)
-        .any(|arg| arg == "--no-verify")
-    {
-        args.insert(command_index + 1, "--no-verify".to_owned());
-    }
-    Ok(args)
-}
-
-fn checked_git_push_args(
-    args: Vec<String>,
-    runtime_policy: &AgentGitRuntimePolicy,
-    command_index: usize,
-) -> Result<Vec<String>> {
-    if !runtime_policy.policy.push {
-        bail!("git push is not allowed by this Patchbay project policy");
-    }
-    for arg in args.iter().skip(command_index + 1) {
-        if arg == "-f"
-            || is_short_force_push_flag(arg)
-            || arg.starts_with("--force")
-            || arg == "--mirror"
-            || arg.starts_with("--mirror=")
-            || arg == "--delete"
-            || arg.starts_with("--delete=")
-            || arg == "--prune"
-            || arg.starts_with("--prune=")
-            || arg.starts_with(':')
-            || arg.starts_with('+')
-        {
-            bail!(
-                "force, mirror, prune, delete, empty-source delete-refspec, and +ref pushes are blocked by Patchbay"
-            );
-        }
-    }
-    Ok(args)
-}
-
-fn is_short_force_push_flag(arg: &str) -> bool {
-    arg.starts_with('-') && !arg.starts_with("--") && arg.chars().skip(1).any(|ch| ch == 'f')
-}
-
-fn checked_git_reset_args(
-    args: Vec<String>,
-    runtime_policy: &AgentGitRuntimePolicy,
-    command_index: usize,
-) -> Result<Vec<String>> {
-    if !runtime_policy.policy.reset {
-        bail!("git reset is not allowed by this Patchbay project policy");
-    }
-    for arg in args.iter().skip(command_index + 1) {
-        if (arg == "--hard" || arg.starts_with("--hard="))
-            && !runtime_policy
-                .policy
-                .allows_hard_reset(runtime_policy.workspace_mode)
-        {
-            bail!("git reset --hard is blocked for this Patchbay workspace mode");
-        }
-        if arg == "--merge"
-            || arg.starts_with("--merge=")
-            || arg == "--keep"
-            || arg.starts_with("--keep=")
-            || arg == "--recurse-submodules"
-            || arg.starts_with("--recurse-submodules=")
-        {
-            bail!("git reset mode '{arg}' is blocked by Patchbay");
-        }
-    }
-    Ok(args)
-}
-
-fn resolve_context(
-    cli: &Cli,
-    env_value: impl Fn(&str) -> std::result::Result<String, env::VarError>,
-) -> Result<ResolvedContext> {
-    let api_url = cli
-        .api_url
-        .clone()
-        .or_else(|| env_value("PATCHBAY_API_URL").ok())
-        .or_else(|| env_value("PATCHBAY_URL").ok())
-        .unwrap_or_else(|| DEFAULT_API_URL.to_owned());
-    if api_url.trim().is_empty() {
-        bail!("Patchbay API URL cannot be empty");
-    }
-
-    let claimed_item_id = match env_value("PATCHBAY_CLAIMED_ITEM_ID").ok() {
-        Some(raw) if !raw.trim().is_empty() => Some(
-            raw.parse::<i64>()
-                .context_with(|| format!("invalid PATCHBAY_CLAIMED_ITEM_ID '{raw}'"))?,
-        ),
-        _ => None,
-    };
-
-    Ok(ResolvedContext {
-        api_url,
-        project: cli
-            .project
-            .clone()
-            .or_else(|| env_value("PATCHBAY_PROJECT").ok()),
-        agent_id: cli
-            .agent
-            .clone()
-            .or_else(|| env_value("PATCHBAY_AGENT_ID").ok()),
-        claimed_item_id,
-    })
-}
-
 fn optional_override<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
     if clear { Some(None) } else { value.map(Some) }
 }
@@ -1241,102 +1006,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use patchbay_types::{AgentGitCommandPolicy, WorkspaceMode};
-
     use super::*;
-
-    fn env_from<'a>(
-        entries: &'a [(&'a str, &'a str)],
-    ) -> impl Fn(&str) -> std::result::Result<String, env::VarError> + 'a {
-        move |key| {
-            entries
-                .iter()
-                .find(|(entry_key, _)| *entry_key == key)
-                .map(|(_, value)| value.to_string())
-                .ok_or(env::VarError::NotPresent)
-        }
-    }
-
-    fn cli() -> Cli {
-        Cli {
-            api_url: None,
-            project: None,
-            agent: None,
-            command: Command::Item {
-                command: ItemCommand::List(ItemListArgs {
-                    state: None,
-                    json: false,
-                }),
-            },
-        }
-    }
-
-    #[test]
-    fn context_uses_api_url_project_agent_and_claimed_item_env() {
-        let context = resolve_context(
-            &cli(),
-            env_from(&[
-                ("PATCHBAY_API_URL", "http://127.0.0.1:4100"),
-                ("PATCHBAY_PROJECT", "demo"),
-                ("PATCHBAY_AGENT_ID", "patchbay-run-1"),
-                ("PATCHBAY_CLAIMED_ITEM_ID", "42"),
-            ]),
-        )
-        .unwrap();
-
-        assert_eq!(context.api_url, "http://127.0.0.1:4100");
-        assert_eq!(context.project.as_deref(), Some("demo"));
-        assert_eq!(context.agent_id.as_deref(), Some("patchbay-run-1"));
-        assert_eq!(context.claimed_item_id, Some(42));
-    }
-
-    #[test]
-    fn explicit_context_overrides_environment() {
-        let mut cli = cli();
-        cli.api_url = Some("http://127.0.0.1:5000".to_owned());
-        cli.project = Some("override".to_owned());
-        cli.agent = Some("human".to_owned());
-
-        let context = resolve_context(
-            &cli,
-            env_from(&[
-                ("PATCHBAY_API_URL", "http://127.0.0.1:4100"),
-                ("PATCHBAY_PROJECT", "demo"),
-                ("PATCHBAY_AGENT_ID", "patchbay-run-1"),
-            ]),
-        )
-        .unwrap();
-
-        assert_eq!(context.api_url, "http://127.0.0.1:5000");
-        assert_eq!(context.project.as_deref(), Some("override"));
-        assert_eq!(context.agent_id.as_deref(), Some("human"));
-    }
-
-    #[test]
-    fn item_id_prefers_explicit_value_over_claimed_item_env() {
-        let context = ResolvedContext {
-            api_url: DEFAULT_API_URL.to_owned(),
-            project: Some("demo".to_owned()),
-            agent_id: Some("patchbay-run-1".to_owned()),
-            claimed_item_id: Some(42),
-        };
-
-        assert_eq!(context.item_id(Some(124)).unwrap(), 124);
-        assert_eq!(context.item_id(None).unwrap(), 42);
-    }
-
-    #[test]
-    fn api_url_falls_back_to_patchbay_url_then_local_default() {
-        let context = resolve_context(
-            &cli(),
-            env_from(&[("PATCHBAY_URL", "http://127.0.0.1:4200")]),
-        )
-        .unwrap();
-        assert_eq!(context.api_url, "http://127.0.0.1:4200");
-
-        let context = resolve_context(&cli(), env_from(&[])).unwrap();
-        assert_eq!(context.api_url, DEFAULT_API_URL);
-    }
 
     fn help_output(args: &[&str]) -> String {
         let error = Cli::try_parse_from(args).expect_err("help should stop parsing");
@@ -1459,139 +1129,5 @@ mod tests {
 
         let automation = help_output(&["patchbay", "automation", "log", "--help"]);
         assert!(automation.contains("Automation run id"));
-    }
-
-    fn git_runtime_policy(
-        policy: AgentGitCommandPolicy,
-        workspace_mode: WorkspaceMode,
-    ) -> AgentGitRuntimePolicy {
-        AgentGitRuntimePolicy {
-            policy,
-            workspace_mode,
-        }
-    }
-
-    #[test]
-    fn git_commit_policy_injects_no_verify_and_rejects_verify() {
-        let policy = git_runtime_policy(Default::default(), WorkspaceMode::CurrentBranch);
-
-        let args = checked_git_args(
-            vec![
-                "commit".to_owned(),
-                "-m".to_owned(),
-                "Update docs".to_owned(),
-            ],
-            &policy,
-        )
-        .unwrap();
-        assert_eq!(args[0], "commit");
-        assert_eq!(args[1], "--no-verify");
-
-        let err = checked_git_args(vec!["commit".to_owned(), "--verify".to_owned()], &policy)
-            .unwrap_err();
-        assert!(err.to_string().contains("--verify is blocked"));
-    }
-
-    #[test]
-    fn git_policy_detects_protected_commands_after_global_options() {
-        let policy = git_runtime_policy(Default::default(), WorkspaceMode::GitWorktree);
-
-        let args = checked_git_args(
-            vec![
-                "-C".to_owned(),
-                "/tmp/repo".to_owned(),
-                "-c".to_owned(),
-                "user.name=Patchbay".to_owned(),
-                "commit".to_owned(),
-                "-m".to_owned(),
-                "Update docs".to_owned(),
-            ],
-            &policy,
-        )
-        .unwrap();
-        assert_eq!(args[4], "commit");
-        assert_eq!(args[5], "--no-verify");
-
-        let err = checked_git_args(
-            vec![
-                "--git-dir=/tmp/repo/.git".to_owned(),
-                "--work-tree".to_owned(),
-                "/tmp/repo".to_owned(),
-                "push".to_owned(),
-                "--force".to_owned(),
-            ],
-            &policy,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("blocked by Patchbay"));
-    }
-
-    #[test]
-    fn git_push_policy_rejects_force_delete_and_plus_ref_pushes() {
-        let policy = git_runtime_policy(Default::default(), WorkspaceMode::GitWorktree);
-
-        for args in [
-            vec!["push", "-f"],
-            vec!["push", "--force-with-lease"],
-            vec!["push", "--mirror"],
-            vec!["push", "--delete"],
-            vec!["push", "--prune"],
-            vec!["push", "origin", "+HEAD:main"],
-            vec!["push", "origin", ":obsolete"],
-        ] {
-            let err = checked_git_args(args.into_iter().map(str::to_owned).collect(), &policy)
-                .unwrap_err();
-            assert!(err.to_string().contains("blocked by Patchbay"));
-        }
-
-        checked_git_args(
-            vec!["push".to_owned(), "origin".to_owned(), "HEAD".to_owned()],
-            &policy,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn git_reset_policy_allows_hard_only_for_isolated_workspaces() {
-        let current_branch = git_runtime_policy(Default::default(), WorkspaceMode::CurrentBranch);
-        let err = checked_git_args(
-            vec!["reset".to_owned(), "--hard".to_owned(), "HEAD".to_owned()],
-            &current_branch,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("blocked for this Patchbay workspace mode")
-        );
-
-        let worktree = git_runtime_policy(Default::default(), WorkspaceMode::GitWorktree);
-        checked_git_args(
-            vec!["reset".to_owned(), "--hard".to_owned(), "HEAD".to_owned()],
-            &worktree,
-        )
-        .unwrap();
-
-        let err = checked_git_args(vec!["reset".to_owned(), "--merge".to_owned()], &worktree)
-            .unwrap_err();
-        assert!(err.to_string().contains("blocked by Patchbay"));
-    }
-
-    #[test]
-    fn disabled_git_commands_are_rejected() {
-        let policy = git_runtime_policy(
-            AgentGitCommandPolicy {
-                add: false,
-                commit: false,
-                push: false,
-                reset: false,
-                ..Default::default()
-            },
-            WorkspaceMode::GitBranch,
-        );
-
-        for command in ["add", "commit", "push", "reset"] {
-            let err = checked_git_args(vec![command.to_owned()], &policy).unwrap_err();
-            assert!(err.to_string().contains("not allowed"));
-        }
     }
 }
