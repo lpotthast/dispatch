@@ -63,6 +63,8 @@ use indexmap::indexmap;
 use leptonic::components::prelude::{
     LeptonicTheme, Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle, Root, Select,
 };
+#[cfg(not(feature = "ssr"))]
+use leptonic::components::prelude::{Toast, ToastTimeout, ToastVariant, Toasts};
 use leptos::prelude::LeptosOptions;
 use leptos::prelude::*;
 #[cfg(feature = "ssr")]
@@ -80,6 +82,10 @@ use leptos_use::{
     ReconnectLimit, UseWebSocketOptions, UseWebSocketReturn, use_websocket_with_options,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(not(feature = "ssr"))]
+use time::OffsetDateTime;
+#[cfg(not(feature = "ssr"))]
+use uuid::Uuid;
 
 const TOOL_OUTPUT_PREVIEW_CHARS: usize = 1200;
 const BOARD_ITEMS_REFRESH_INTERVAL_MS: u64 = 30_000;
@@ -317,7 +323,7 @@ pub fn PageBoard() -> impl IntoView {
 
     view! {
         <Title text="Patchbay"/>
-        {move || page_view(page.get(), board_content)}
+        {resilient_page_view(page, board_content)}
     }
 }
 
@@ -374,7 +380,7 @@ pub fn PageProjects() -> impl IntoView {
 
     view! {
         <Title text="Projects"/>
-        {move || page_view(page.get(), projects_content)}
+        {resilient_page_view(page, projects_content)}
         <div class="page-shell projects-page crudkit-tools-shell">
             {agent_tools_panel(api_base_url_for_panel)}
         </div>
@@ -409,7 +415,7 @@ pub fn PageTriggers() -> impl IntoView {
 
     view! {
         <Title text="Automation"/>
-        {move || page_view(page.get(), triggers_content)}
+        {resilient_page_view(page, triggers_content)}
     }
 }
 
@@ -450,7 +456,7 @@ pub fn PageCodex() -> impl IntoView {
 
     view! {
         <Title text="Codex automation"/>
-        {move || page_view(page.get(), codex_status_content)}
+        {resilient_page_view(page, codex_status_content)}
     }
 }
 
@@ -487,7 +493,7 @@ pub fn PageItem() -> impl IntoView {
 
     view! {
         <Title text="Patchbay"/>
-        {move || page_view(page.get(), item_content)}
+        {resilient_page_view(page, item_content)}
     }
 }
 
@@ -529,7 +535,7 @@ pub fn PageRunLog() -> impl IntoView {
 
     view! {
         <Title text="Run log"/>
-        {move || page_view(page.get(), run_log_content)}
+        {resilient_page_view(page, run_log_content)}
     }
 }
 
@@ -562,7 +568,7 @@ pub fn PageApiDocs() -> impl IntoView {
 
     view! {
         <Title text="Patchbay API"/>
-        {move || page_view(page.get(), api_docs_content)}
+        {resilient_page_view(page, api_docs_content)}
     }
 }
 
@@ -817,16 +823,90 @@ fn page_loading() -> impl IntoView {
     }
 }
 
-fn page_view<T>(
-    page: Option<Result<T, ServerFnError>>,
-    content: impl FnOnce(T) -> AnyView,
-) -> AnyView {
-    match page {
-        Some(Ok(page)) => content(page),
-        Some(Err(err)) => error_content(err.to_string()),
+#[derive(Clone)]
+enum ResilientPage<T> {
+    Content(T),
+    InitialError(String),
+}
+
+fn resilient_page_view<T>(
+    resource: LocalResource<Result<T, ServerFnError>>,
+    content: impl Fn(T) -> AnyView + Copy + Send + 'static,
+) -> impl IntoView
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let (displayed_page, set_displayed_page) = signal(None::<ResilientPage<T>>);
+    notify_resource_errors(resource, move || {
+        displayed_page.with_untracked(|page| matches!(page, Some(ResilientPage::Content(_))))
+    });
+
+    Effect::new(move |_| match resource.get() {
+        Some(Ok(page)) => set_displayed_page.set(Some(ResilientPage::Content(page))),
+        Some(Err(err)) => {
+            if displayed_page.with_untracked(Option::is_none) {
+                set_displayed_page.set(Some(ResilientPage::InitialError(err.to_string())));
+            }
+        }
+        None => {}
+    });
+
+    move || match displayed_page.get() {
+        Some(ResilientPage::Content(page)) => content(page),
+        Some(ResilientPage::InitialError(message)) => error_content(message),
         None => page_loading().into_any(),
     }
 }
+
+fn notify_resource_errors<T>(
+    resource: LocalResource<Result<T, ServerFnError>>,
+    should_notify: impl Fn() -> bool + Copy + 'static,
+) where
+    T: Clone + Send + Sync + 'static,
+{
+    #[cfg(not(feature = "ssr"))]
+    let toasts = use_context::<Toasts>();
+    let (last_notified_error, set_last_notified_error) = signal(None::<String>);
+    Effect::new(move |_| {
+        if let Some(result) = resource.get() {
+            match result {
+                Ok(_) => set_last_notified_error.set(None),
+                Err(err) if should_notify() => {
+                    let message = err.to_string();
+                    let already_notified = last_notified_error
+                        .with_untracked(|last| last.as_deref() == Some(message.as_str()));
+                    if !already_notified {
+                        #[cfg(not(feature = "ssr"))]
+                        show_request_error_toast(toasts, message.clone());
+                        #[cfg(feature = "ssr")]
+                        show_request_error_toast(message.clone());
+                        set_last_notified_error.set(Some(message));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    });
+}
+
+#[cfg(not(feature = "ssr"))]
+fn show_request_error_toast(toasts: Option<Toasts>, message: String) {
+    let Some(toasts) = toasts else {
+        return;
+    };
+    let body = message;
+    toasts.push(Toast {
+        id: Uuid::new_v4(),
+        created_at: OffsetDateTime::now_utc(),
+        variant: ToastVariant::Error,
+        header: ViewFn::from(|| "Request failed"),
+        body: ViewFn::from(move || body.clone()),
+        timeout: ToastTimeout::DefaultDelay,
+    });
+}
+
+#[cfg(feature = "ssr")]
+fn show_request_error_toast(_message: String) {}
 
 fn board_content(page: BoardPage) -> AnyView {
     let BoardPage {
@@ -4278,6 +4358,7 @@ fn LiveBoardItems(
         signal(initial_misconfigured_item_count);
     let project_for_loader = project.clone();
     let section = LocalResource::new(move || load_board_items_section(project_for_loader.clone()));
+    notify_resource_errors(section, || true);
     let _poll = use_interval_fn(move || section.refetch(), BOARD_ITEMS_REFRESH_INTERVAL_MS);
     let project_for_events = project.clone();
     refetch_on_live_event(section, move |event| {
@@ -4329,6 +4410,7 @@ fn LiveBoardAutomation(
     let project_for_loader = project.clone();
     let section =
         LocalResource::new(move || load_board_automation_section(project_for_loader.clone()));
+    notify_resource_errors(section, || true);
     let project_for_events = project.clone();
     refetch_on_live_event(section, move |event| {
         event_scopes_named_project(event, Some(project_for_events.as_str()))

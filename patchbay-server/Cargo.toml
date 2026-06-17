@@ -43,8 +43,10 @@ hydrate = [
     "dep:leptos-use",
     "dep:serde",
     "dep:serde_json",
+    "dep:time",
     "dep:typetag",
     "dep:urlencoding",
+    "dep:uuid",
     "dep:wasm-bindgen-futures",
     "leptos/hydrate",
     "leptonic/hydrate",
@@ -120,6 +122,7 @@ tracing-subscriber = { version = "0.3", features = ["json"], optional = true }
 typetag = { version = "0.2", optional = true }
 utoipa = { version = "5", optional = true }
 urlencoding = { version = "2", optional = true }
+uuid = { version = "1.19.0", features = ["js", "v4", "serde"], optional = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = { version = "0.4", optional = true }
 

@@ -186,6 +186,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_does_not_contain(driver, "relative URL without a base").await?;
 
         create_project(driver).await?;
+        create_alternate_project(driver).await?;
         seed_memory_history(driver).await?;
         driver
             .goto(app.url("/?project=demo"))
@@ -249,6 +250,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
             .await?;
         assert_crudkit_create_form_survives_live_event(driver).await?;
+        assert_request_error_toast_preserves_draft(driver).await?;
 
         driver
             .goto(app.url("/projects?project=demo"))
@@ -417,6 +419,31 @@ async fn create_project(driver: &WebDriver) -> Result<(), Report> {
         .context("failed to create project through browser-test setup request")?
         .convert::<bool>()
         .context("failed to read project setup response")?;
+    assert_that!(created).is_true();
+    Ok(())
+}
+
+async fn create_alternate_project(driver: &WebDriver) -> Result<(), Report> {
+    let created = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            fetch('/projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    name: 'demo-alt',
+                    display_name: 'Demo Alt',
+                    path: '.',
+                }),
+            }).then(response => done(response.ok)).catch(() => done(false));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to create alternate project through browser-test setup request")?
+        .convert::<bool>()
+        .context("failed to read alternate project setup response")?;
     assert_that!(created).is_true();
     Ok(())
 }
@@ -668,6 +695,146 @@ async fn assert_crudkit_create_form_survives_live_event(driver: &WebDriver) -> R
         .convert::<String>()
         .context("failed to read CrudKit live event result")?;
     assert_that!(result).is_equal_to("ok".to_owned());
+    Ok(())
+}
+
+async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Result<(), Report> {
+    let prepared = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const expectedDraft = 'Draft survives request failure';
+            const editableField = () => {
+                const panel = document.querySelector("[data-crudkit-leptos='work-items']");
+                const field = panel?.querySelector(".crud-input-field");
+                if (!field) {
+                    return null;
+                }
+                if (field.matches('input, textarea')) {
+                    return field;
+                }
+                return field.querySelector('input, textarea');
+            };
+            const draftInput = editableField();
+            if (!draftInput) {
+                done('missing work-item create input');
+                return;
+            }
+            draftInput.value = expectedDraft;
+            draftInput.dispatchEvent(new Event('input', { bubbles: true }));
+            draftInput.dispatchEvent(new Event('keyup', { bubbles: true }));
+            draftInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const originalFetch = window.__patchbayOriginalFetch ?? window.fetch.bind(window);
+            window.__patchbayOriginalFetch = originalFetch;
+            window.__patchbayFailedFetches = [];
+            window.__patchbayFailBoardPageRequest = true;
+            window.fetch = (input, init) => {
+                const rawUrl = typeof input === 'string' ? input : input?.url ?? String(input);
+                const url = new URL(rawUrl, window.location.href);
+                if (
+                    window.__patchbayFailBoardPageRequest &&
+                    url.pathname.startsWith('/leptos/load_board_page')
+                ) {
+                    window.__patchbayFailBoardPageRequest = false;
+                    window.__patchbayFailedFetches.push(url.href);
+                    return Promise.resolve(new Response('browser-test injected request failure', {
+                        status: 503,
+                        statusText: 'Browser Test Failure',
+                        headers: { 'content-type': 'text/plain' },
+                    }));
+                }
+                return originalFetch(input, init);
+            };
+            done('ok');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to prepare request-failure browser-test state")?
+        .convert::<String>()
+        .context("failed to read request-failure preparation result")?;
+    assert_that!(prepared).is_equal_to("ok".to_owned());
+
+    click(
+        driver,
+        By::Css(".project-switcher leptonic-select-selected"),
+    )
+    .await?;
+    click(
+        driver,
+        By::XPath(
+            "//div[contains(@class, 'project-switcher')]//leptonic-select-option[contains(., 'Demo Alt')]",
+        ),
+    )
+    .await?;
+
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const expectedDraft = 'Draft survives request failure';
+            const deadline = Date.now() + 5000;
+            const editableField = () => {
+                const panel = document.querySelector("[data-crudkit-leptos='work-items']");
+                const field = panel?.querySelector(".crud-input-field");
+                if (!field) {
+                    return null;
+                }
+                if (field.matches('input, textarea')) {
+                    return field;
+                }
+                return field.querySelector('input, textarea');
+            };
+            const restoreFetch = () => {
+                if (window.__patchbayOriginalFetch) {
+                    window.fetch = window.__patchbayOriginalFetch;
+                }
+                window.__patchbayFailBoardPageRequest = false;
+            };
+            const check = () => {
+                const failedFetches = window.__patchbayFailedFetches ?? [];
+                const draftInput = editableField();
+                const toast = document.querySelector('leptonic-toast[data-variant="error"]');
+                const toastText = toast?.textContent ?? '';
+                const errorPage = document.querySelector('main.error');
+                const board = document.querySelector('section.board');
+                if (
+                    failedFetches.length === 1 &&
+                    toastText.includes('Request failed') &&
+                    !errorPage &&
+                    board &&
+                    draftInput?.value === expectedDraft
+                ) {
+                    restoreFetch();
+                    done('ok');
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    const report = [
+                        `failedFetches=${failedFetches.join(',')}`,
+                        `toast=${toastText}`,
+                        `errorPage=${Boolean(errorPage)}`,
+                        `board=${Boolean(board)}`,
+                        `draft=${draftInput?.value ?? '<missing>'}`,
+                        `url=${window.location.href}`,
+                    ].join('; ');
+                    restoreFetch();
+                    done(report);
+                    return;
+                }
+                setTimeout(check, 100);
+            };
+            check();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to verify request error toast behaviour")?
+        .convert::<String>()
+        .context("failed to read request error toast result")?;
+    assert_that!(result).is_equal_to("ok".to_owned());
+
     Ok(())
 }
 

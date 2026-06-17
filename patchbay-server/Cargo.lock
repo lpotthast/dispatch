@@ -3942,6 +3942,7 @@ dependencies = [
  "typetag",
  "urlencoding",
  "utoipa",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
