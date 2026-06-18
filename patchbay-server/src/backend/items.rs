@@ -61,6 +61,79 @@ enum FinishedClaimPolicy {
     RejectFinished,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClaimReturnMode<'a> {
+    Release {
+        comment: Option<&'a str>,
+        automation_disposition: ReleaseAutomationDisposition,
+    },
+    FeedbackRequest {
+        body: &'a str,
+    },
+}
+
+impl ClaimReturnMode<'_> {
+    fn agent_comment_body(&self) -> Option<&str> {
+        match self {
+            Self::Release { comment, .. } => *comment,
+            Self::FeedbackRequest { body } => Some(*body),
+        }
+    }
+
+    fn blocks_automation(&self) -> bool {
+        match self {
+            Self::Release {
+                automation_disposition,
+                ..
+            } => *automation_disposition == ReleaseAutomationDisposition::Blocked,
+            Self::FeedbackRequest { .. } => true,
+        }
+    }
+
+    fn requests_feedback(&self) -> bool {
+        matches!(self, Self::FeedbackRequest { .. })
+    }
+
+    fn update_context(&self) -> &'static str {
+        match self {
+            Self::Release { .. } => "failed to release work item",
+            Self::FeedbackRequest { .. } => "failed to request item feedback",
+        }
+    }
+
+    fn start_context(&self) -> &'static str {
+        match self {
+            Self::Release { .. } => "failed to start item release",
+            Self::FeedbackRequest { .. } => "failed to start feedback request",
+        }
+    }
+
+    fn event_type(&self) -> &'static str {
+        match self {
+            Self::Release { .. } => "item_released",
+            Self::FeedbackRequest { .. } => "feedback_requested",
+        }
+    }
+
+    fn event_body(&self, agent_id: &str, release_state: &str) -> String {
+        match self {
+            Self::Release { .. } => {
+                format!("Released by {agent_id}; restored state to {release_state}")
+            }
+            Self::FeedbackRequest { .. } => {
+                format!("Feedback requested by {agent_id}; restored state to {release_state}")
+            }
+        }
+    }
+
+    fn commit_context(&self) -> &'static str {
+        match self {
+            Self::Release { .. } => "failed to commit item release",
+            Self::FeedbackRequest { .. } => "failed to commit feedback request",
+        }
+    }
+}
+
 pub async fn list_items(
     store: &Store,
     project_name: &str,
@@ -554,76 +627,17 @@ pub async fn release_item(
     automation_disposition: ReleaseAutomationDisposition,
 ) -> Result<WorkItemView> {
     validate_agent_id(agent_id)?;
-
-    let project_id = projects::project_id(store, project_name).await?;
-    let txn = store
-        .db()
-        .begin()
-        .await
-        .context("failed to start item release")?;
-    let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
-    ensure_active_claim(&existing, agent_id)?;
-    let labels = labels_for_item(&txn, project_id, item_id).await?;
-    let release_state = item_labels::release_state_from_claim_labels(&labels);
-
-    let now = utc_now();
-    let version = existing.version;
-    let mut active: WorkItemActiveModel = existing.into();
-    active.claimed_by = Set(None);
-    active.claimed_at = Set(None);
-    active.claim_expires_at = Set(None);
-    active.version = Set(version + 1);
-    active.updated_at = Set(now);
-    let updated = active
-        .update(&txn)
-        .await
-        .context("failed to release work item")?;
-    upsert_label_in_tx(
-        &txn,
-        project_id,
+    return_claim_to_source_state(
+        store,
+        project_name,
         item_id,
-        STATE_LABEL_KEY,
-        Some(release_state.as_str()),
+        agent_id,
+        ClaimReturnMode::Release {
+            comment: comment.as_deref(),
+            automation_disposition,
+        },
     )
-    .await?;
-    delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
-    if automation_disposition == ReleaseAutomationDisposition::Blocked {
-        upsert_label_in_tx(
-            &txn,
-            project_id,
-            item_id,
-            AUTOMATION_BLOCKED_LABEL_KEY,
-            None,
-        )
-        .await?;
-    }
-
-    if let Some(comment) = comment.filter(|body| !body.trim().is_empty()) {
-        insert_comment_in_tx(
-            &txn,
-            item_id,
-            AuthorType::Agent,
-            Some(agent_id.to_owned()),
-            comment.as_str(),
-        )
-        .await?;
-    }
-
-    let event_body = format!("Released by {agent_id}; restored state to {release_state}");
-    work_item_events::record_event_in_tx(
-        &txn,
-        project_id,
-        Some(item_id),
-        "item_released",
-        event_body.as_str(),
-    )
-    .await?;
-    txn.commit()
-        .await
-        .context("failed to commit item release")?;
-    events::publish_work_item_changed(project_name, item_id);
-
-    model_to_view(store, updated).await
+    .await
 }
 
 pub async fn request_feedback(
@@ -638,79 +652,14 @@ pub async fn request_feedback(
         bail!("feedback request body cannot be empty");
     }
 
-    let project_id = projects::project_id(store, project_name).await?;
-    let txn = store
-        .db()
-        .begin()
-        .await
-        .context("failed to start feedback request")?;
-    let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
-    ensure_active_claim(&existing, agent_id)?;
-    let labels = labels_for_item(&txn, project_id, item_id).await?;
-    let release_state = item_labels::release_state_from_claim_labels(&labels);
-
-    let now = utc_now();
-    insert_comment_in_tx(
-        &txn,
+    return_claim_to_source_state(
+        store,
+        project_name,
         item_id,
-        AuthorType::Agent,
-        Some(agent_id.to_owned()),
-        body,
+        agent_id,
+        ClaimReturnMode::FeedbackRequest { body },
     )
-    .await?;
-
-    let version = existing.version;
-    let mut active: WorkItemActiveModel = existing.into();
-    active.claimed_by = Set(None);
-    active.claimed_at = Set(None);
-    active.claim_expires_at = Set(None);
-    active.version = Set(version + 1);
-    active.updated_at = Set(now);
-    let updated = active
-        .update(&txn)
-        .await
-        .context("failed to request item feedback")?;
-    upsert_label_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        STATE_LABEL_KEY,
-        Some(release_state.as_str()),
-    )
-    .await?;
-    delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
-    upsert_label_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        AUTOMATION_BLOCKED_LABEL_KEY,
-        None,
-    )
-    .await?;
-    upsert_label_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        FEEDBACK_REQUESTED_LABEL_KEY,
-        None,
-    )
-    .await?;
-
-    let event_body = format!("Feedback requested by {agent_id}; restored state to {release_state}");
-    work_item_events::record_event_in_tx(
-        &txn,
-        project_id,
-        Some(item_id),
-        "feedback_requested",
-        &event_body,
-    )
-    .await?;
-    txn.commit()
-        .await
-        .context("failed to commit feedback request")?;
-    events::publish_work_item_changed(project_name, item_id);
-
-    model_to_view(store, updated).await
+    .await
 }
 
 pub async fn progress_item(
@@ -1147,6 +1096,89 @@ pub async fn recover_stale_claims(
     }
 
     Ok(recovered)
+}
+
+async fn return_claim_to_source_state(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    agent_id: &str,
+    mode: ClaimReturnMode<'_>,
+) -> Result<WorkItemView> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let txn = store.db().begin().await.context(mode.start_context())?;
+    let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    ensure_active_claim(&existing, agent_id)?;
+    let labels = labels_for_item(&txn, project_id, item_id).await?;
+    let release_state = item_labels::release_state_from_claim_labels(&labels);
+
+    let now = utc_now();
+    let version = existing.version;
+    let mut active: WorkItemActiveModel = existing.into();
+    active.claimed_by = Set(None);
+    active.claimed_at = Set(None);
+    active.claim_expires_at = Set(None);
+    active.version = Set(version + 1);
+    active.updated_at = Set(now);
+    let updated = active.update(&txn).await.context(mode.update_context())?;
+
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(release_state.as_str()),
+    )
+    .await?;
+    delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
+    if mode.blocks_automation() {
+        upsert_label_in_tx(
+            &txn,
+            project_id,
+            item_id,
+            AUTOMATION_BLOCKED_LABEL_KEY,
+            None,
+        )
+        .await?;
+    }
+    if mode.requests_feedback() {
+        upsert_label_in_tx(
+            &txn,
+            project_id,
+            item_id,
+            FEEDBACK_REQUESTED_LABEL_KEY,
+            None,
+        )
+        .await?;
+    }
+
+    if let Some(comment) = mode
+        .agent_comment_body()
+        .filter(|body| !body.trim().is_empty())
+    {
+        insert_comment_in_tx(
+            &txn,
+            item_id,
+            AuthorType::Agent,
+            Some(agent_id.to_owned()),
+            comment,
+        )
+        .await?;
+    }
+
+    let event_body = mode.event_body(agent_id, &release_state);
+    work_item_events::record_event_in_tx(
+        &txn,
+        project_id,
+        Some(item_id),
+        mode.event_type(),
+        event_body.as_str(),
+    )
+    .await?;
+    txn.commit().await.context(mode.commit_context())?;
+    events::publish_work_item_changed(project_name, item_id);
+
+    model_to_view(store, updated).await
 }
 
 pub(crate) async fn get_item_model(
@@ -2870,6 +2902,19 @@ mod tests {
 
         assert_eq!(released.state.as_deref(), Some("triage"));
         assert_eq!(released.claimed_by, None);
+        assert!(
+            released
+                .labels
+                .iter()
+                .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
+        );
+
+        let claimed_again = claim_item(&store, "demo", "agent-b", "triage")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_again.id, item.id);
+        assert_eq!(claimed_again.claimed_by.as_deref(), Some("agent-b"));
     }
 
     #[tokio::test]
