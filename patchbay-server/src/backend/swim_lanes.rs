@@ -9,7 +9,7 @@ use sea_orm::{
 use crate::{
     backend::{
         entities::swim_lane::{self, SwimLane, SwimLaneActiveModel, SwimLaneModel},
-        items, projects,
+        item_labels, projects,
         storage::{Store, utc_now},
     },
     shared::view_models::{STATE_LABEL_KEY, SwimLaneView},
@@ -114,7 +114,7 @@ pub fn normalize_filter_json(filter: impl Into<String>) -> Result<String> {
     }
     let condition = serde_json::from_str::<Condition>(filter)
         .context("swim-lane filter must be a CrudKit Condition JSON object")?;
-    items::validate_label_condition(&condition)?;
+    item_labels::validate_condition(&condition)?;
     condition_to_filter_json(&condition)
 }
 

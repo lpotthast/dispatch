@@ -19,7 +19,7 @@ use crate::{
             },
             project, work_item_event,
         },
-        events,
+        events, item_labels,
         items::{self, CreateWorkItem},
         process_sessions::ProcessSessionRegistry,
         projects,
@@ -944,7 +944,7 @@ pub(crate) fn validate_trigger_configuration(
 ) -> Result<()> {
     validate_trigger_fields(name, activation, schedule)?;
     if let Some(condition) = work_item_selector {
-        items::validate_label_condition(condition)?;
+        item_labels::validate_condition(condition)?;
     }
     if effect == AutomationEffect::ProduceWork {
         if matches!(
@@ -1089,7 +1089,7 @@ fn selector_for_activation(
 pub(crate) fn selector_to_storage(selector: Option<&Condition>) -> Result<Option<String>> {
     selector
         .map(|selector| -> Result<String> {
-            items::validate_label_condition(selector)?;
+            item_labels::validate_condition(selector)?;
             Ok(serde_json::to_string(selector).context("failed to encode work item selector")?)
         })
         .transpose()
@@ -1104,7 +1104,7 @@ pub(crate) fn selector_from_storage(selector: Option<&str>) -> Result<Option<Con
         .map(|selector| {
             let condition = serde_json::from_str::<Condition>(selector)
                 .context_with(|| format!("invalid work item selector JSON: {selector}"))?;
-            items::validate_label_condition(&condition)?;
+            item_labels::validate_condition(&condition)?;
             Ok(condition)
         })
         .transpose()

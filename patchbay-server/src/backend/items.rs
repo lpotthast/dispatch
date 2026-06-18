@@ -1,8 +1,6 @@
 use std::str::FromStr;
 
-use crudkit_core::condition::{
-    Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
-};
+use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait,
@@ -18,12 +16,12 @@ use crate::{
             work_item_event::{self, WorkItemEventActiveModel},
             work_item_label::{self, WorkItemLabel, WorkItemLabelActiveModel, WorkItemLabelModel},
         },
-        events, projects,
+        events, item_labels, projects,
         storage::{Store, utc_now},
     },
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AuthorType,
-        CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL, CommentView, DEFAULT_STATE_LABEL,
+        CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL, CommentView,
         DeleteWorkItemLabelResponse, FINISHED_STATE_LABEL, ProjectLabelView, RecoveredClaimView,
         STATE_LABEL_KEY, WorkItemEventView, WorkItemLabelView, WorkItemView,
     },
@@ -75,7 +73,7 @@ pub async fn list_items(
     let project_id = projects::project_id(store, project_name).await?;
     let item_ids = match state {
         Some(state) => {
-            let state = normalize_state_value(state)?;
+            let state = item_labels::normalize_state_value(state)?;
             let ids = item_ids_with_state(store.db().as_ref(), project_id, &state).await?;
             if ids.is_empty() {
                 return Ok(Vec::new());
@@ -140,7 +138,7 @@ pub async fn has_unclaimed_item_matching_condition(
     project_name: &str,
     condition: &Condition,
 ) -> Result<bool> {
-    validate_label_condition(condition)?;
+    item_labels::validate_condition(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
     let items = WorkItem::find()
         .filter(work_item::Column::ProjectId.eq(project_id))
@@ -153,10 +151,10 @@ pub async fn has_unclaimed_item_matching_condition(
 
     for item in items {
         let labels = labels_for_item(store.db().as_ref(), project_id, item.id).await?;
-        if automation_blocked(&labels) {
+        if item_labels::is_automation_blocked(&labels) {
             continue;
         }
-        if label_condition_matches(condition, &labels)? {
+        if item_labels::condition_matches(condition, &labels)? {
             return Ok(true);
         }
     }
@@ -170,14 +168,14 @@ pub async fn item_matches_condition(
     item_id: i64,
     condition: &Condition,
 ) -> Result<bool> {
-    validate_label_condition(condition)?;
+    item_labels::validate_condition(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
     let item = get_item_model(store, project_id, item_id).await?;
     let labels = labels_for_item(store.db().as_ref(), project_id, item.id).await?;
-    if automation_blocked(&labels) {
+    if item_labels::is_automation_blocked(&labels) {
         return Ok(false);
     }
-    label_condition_matches(condition, &labels)
+    item_labels::condition_matches(condition, &labels)
 }
 
 pub async fn get_item(store: &Store, project_name: &str, item_id: i64) -> Result<WorkItemView> {
@@ -192,7 +190,7 @@ pub async fn create_item(
     create: CreateWorkItem,
 ) -> Result<WorkItemView> {
     validate_item_text(&create.title, &create.description)?;
-    let state_label = normalize_state_value(create.state)?;
+    let state_label = item_labels::normalize_state_value(create.state)?;
     let agent_model_override = projects::normalize_optional(create.agent_model_override);
 
     let project_id = projects::project_id(store, project_name).await?;
@@ -250,7 +248,7 @@ pub async fn update_item(
 ) -> Result<WorkItemView> {
     let state = update
         .state
-        .map(normalize_state_value)
+        .map(item_labels::normalize_state_value)
         .transpose()
         .context("invalid item state")?;
     let has_item_update = update.title.is_some()
@@ -360,7 +358,7 @@ pub async fn claim_item(
     state_filter: &str,
 ) -> Result<Option<WorkItemView>> {
     validate_agent_id(agent_id)?;
-    let state_filter = normalize_state_value(state_filter)?;
+    let state_filter = item_labels::normalize_state_value(state_filter)?;
 
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -435,7 +433,7 @@ pub async fn claim_item_matching_condition(
     condition: &Condition,
 ) -> Result<Option<WorkItemView>> {
     validate_agent_id(agent_id)?;
-    validate_label_condition(condition)?;
+    item_labels::validate_condition(condition)?;
 
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -454,13 +452,13 @@ pub async fn claim_item_matching_condition(
 
     for candidate in candidates {
         let labels = labels_for_item(&txn, project_id, candidate.id).await?;
-        if automation_blocked(&labels) {
+        if item_labels::is_automation_blocked(&labels) {
             continue;
         }
-        if !label_condition_matches(condition, &labels)? {
+        if !item_labels::condition_matches(condition, &labels)? {
             continue;
         }
-        let source_state = source_state_for_new_claim(&labels);
+        let source_state = item_labels::source_state_for_new_claim(&labels);
 
         let now = utc_now();
         let claimed_id = claim_existing_item_in_tx(
@@ -510,7 +508,7 @@ pub async fn claim_specific_item(
         return Ok(None);
     }
     let labels = labels_for_item(&txn, project_id, item_id).await?;
-    let source_state = source_state_for_new_claim(&labels);
+    let source_state = item_labels::source_state_for_new_claim(&labels);
     let now = utc_now();
 
     let claimed_id = claim_existing_item_in_tx(
@@ -558,7 +556,7 @@ pub async fn release_item(
     let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
     ensure_active_claim(&existing, agent_id)?;
     let labels = labels_for_item(&txn, project_id, item_id).await?;
-    let release_state = release_state_from_claim_labels(&labels);
+    let release_state = item_labels::release_state_from_claim_labels(&labels);
 
     let now = utc_now();
     let version = existing.version;
@@ -810,9 +808,9 @@ pub async fn add_label(
     value: Option<String>,
     expect_version: Option<i64>,
 ) -> Result<WorkItemView> {
-    let key = normalize_label_key(key)?;
-    let value = normalize_label_value(value);
-    validate_label_pair(&key, value.as_deref())?;
+    let key = item_labels::normalize_key(key)?;
+    let value = item_labels::normalize_value(value);
+    item_labels::validate_pair(&key, value.as_deref())?;
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
         .db()
@@ -834,7 +832,10 @@ pub async fn add_label(
 
     insert_label_in_tx(&txn, project_id, item_id, &key, value.as_deref()).await?;
     let updated = touch_item_in_tx(&txn, item).await?;
-    let body = format!("Added label {}", format_label(&key, value.as_deref()));
+    let body = format!(
+        "Added label {}",
+        item_labels::format_label(&key, value.as_deref())
+    );
     record_event_in_tx(&txn, project_id, Some(item_id), "label_added", &body).await?;
     txn.commit().await.context("failed to commit label add")?;
     events::publish_work_item_changed(project_name, item_id);
@@ -864,14 +865,14 @@ pub async fn update_label(
     check_expected_version(expect_version, item.version)?;
     let existing = get_label_model_in_tx(&txn, project_id, item_id, label_id).await?;
     let key = match key {
-        Some(key) => normalize_label_key(key)?,
+        Some(key) => item_labels::normalize_key(key)?,
         None => existing.key.clone(),
     };
     let value = match value {
-        Some(value) => normalize_label_value(value),
+        Some(value) => item_labels::normalize_value(value),
         None => existing.value.clone(),
     };
-    validate_label_pair(&key, value.as_deref())?;
+    item_labels::validate_pair(&key, value.as_deref())?;
     if WorkItemLabel::find()
         .filter(work_item_label::Column::WorkItemId.eq(item_id))
         .filter(work_item_label::Column::Key.eq(&key))
@@ -893,7 +894,10 @@ pub async fn update_label(
         .await
         .context("failed to update label")?;
     let updated = touch_item_in_tx(&txn, item).await?;
-    let body = format!("Updated label {}", format_label(&key, value.as_deref()));
+    let body = format!(
+        "Updated label {}",
+        item_labels::format_label(&key, value.as_deref())
+    );
     record_event_in_tx(&txn, project_id, Some(item_id), "label_updated", &body).await?;
     txn.commit()
         .await
@@ -923,7 +927,7 @@ pub async fn delete_label(
     }
     let body = format!(
         "Deleted label {}",
-        format_label(&label.key, label.value.as_deref())
+        item_labels::format_label(&label.key, label.value.as_deref())
     );
     WorkItemLabel::delete_by_id(label_id)
         .exec(&txn)
@@ -1234,10 +1238,12 @@ where
         updated_at: Set(now),
         ..Default::default()
     };
-    Ok(active
-        .insert(conn)
-        .await
-        .context_with(|| format!("failed to add label '{}'", format_label(key, value)))?)
+    Ok(active.insert(conn).await.context_with(|| {
+        format!(
+            "failed to add label '{}'",
+            item_labels::format_label(key, value)
+        )
+    })?)
 }
 
 async fn upsert_label_in_tx<C>(
@@ -1287,32 +1293,6 @@ where
         .await
         .context_with(|| format!("failed to delete label '{key}'"))?;
     Ok(())
-}
-
-fn automation_blocked(labels: &[WorkItemLabelView]) -> bool {
-    labels
-        .iter()
-        .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
-}
-
-fn source_state_for_new_claim(labels: &[WorkItemLabelView]) -> String {
-    current_state_label(labels).unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
-}
-
-fn release_state_from_claim_labels(labels: &[WorkItemLabelView]) -> String {
-    labels
-        .iter()
-        .find(|label| label.key == CLAIMED_FROM_STATE_LABEL_KEY)
-        .and_then(|label| label.value.clone())
-        .or_else(|| current_state_label(labels))
-        .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
-}
-
-fn current_state_label(labels: &[WorkItemLabelView]) -> Option<String> {
-    labels
-        .iter()
-        .find(|label| label.key == STATE_LABEL_KEY)
-        .and_then(|label| label.value.clone())
 }
 
 async fn labels_for_item<C>(
@@ -1432,7 +1412,7 @@ async fn models_to_views(store: &Store, items: Vec<WorkItemModel>) -> Result<Vec
 
 async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemView> {
     let labels = labels_for_item(store.db().as_ref(), item.project_id, item.id).await?;
-    let state = current_state_label(&labels);
+    let state = item_labels::current_state(&labels);
     let comment_count = comment::Comment::find()
         .filter(comment::Column::WorkItemId.eq(item.id))
         .count(store.db().as_ref())
@@ -1485,174 +1465,6 @@ fn validate_item_text(title: &str, description: &str) -> Result<()> {
     Ok(())
 }
 
-fn normalize_state_value(value: impl Into<String>) -> Result<String> {
-    let value = value.into().trim().to_owned();
-    if value.is_empty() {
-        bail!("state label value cannot be empty");
-    }
-    if value.contains('=') {
-        bail!("state label value cannot contain '='");
-    }
-    Ok(value)
-}
-
-fn normalize_label_key(value: impl Into<String>) -> Result<String> {
-    let value = value.into().trim().to_owned();
-    if value.is_empty() {
-        bail!("label key cannot be empty");
-    }
-    if value.contains('=') {
-        bail!("label key cannot contain '='");
-    }
-    Ok(value)
-}
-
-fn normalize_label_value(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let value = value.trim();
-        (!value.is_empty()).then(|| value.to_owned())
-    })
-}
-
-fn validate_label_pair(key: &str, value: Option<&str>) -> Result<()> {
-    if key == STATE_LABEL_KEY && value.is_none() {
-        bail!("state label requires a value");
-    }
-    Ok(())
-}
-
-pub fn validate_label_condition(condition: &Condition) -> Result<()> {
-    match condition {
-        Condition::All(elements) | Condition::Any(elements) => {
-            for element in elements {
-                match element {
-                    ConditionElement::Clause(clause) => validate_label_clause(clause)?,
-                    ConditionElement::Condition(condition) => validate_label_condition(condition)?,
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_label_clause(clause: &ConditionClause) -> Result<()> {
-    normalize_label_key(clause.column_name.clone())?;
-    match clause.operator {
-        Operator::Equal | Operator::NotEqual => match &clause.value {
-            ConditionClauseValue::Bool(_)
-            | ConditionClauseValue::String(_)
-            | ConditionClauseValue::Json(serde_json::Value::Null) => Ok(()),
-            other => bail!(
-                "label condition '{}' with operator '{}' requires a string, bool, or null value; got {other:?}",
-                clause.column_name,
-                label_operator_name(clause.operator)
-            ),
-        },
-        Operator::IsIn => match &clause.value {
-            ConditionClauseValue::Json(serde_json::Value::Array(values))
-                if values.iter().all(|value| value.as_str().is_some()) =>
-            {
-                Ok(())
-            }
-            _ => bail!(
-                "label condition '{}' with is_in requires a JSON array of strings",
-                clause.column_name
-            ),
-        },
-        operator => bail!(
-            "label condition '{}' uses unsupported operator '{}'",
-            clause.column_name,
-            label_operator_name(operator)
-        ),
-    }
-}
-
-fn label_condition_matches(condition: &Condition, labels: &[WorkItemLabelView]) -> Result<bool> {
-    match condition {
-        Condition::All(elements) => {
-            for element in elements {
-                if !label_condition_element_matches(element, labels)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        Condition::Any(elements) => {
-            for element in elements {
-                if label_condition_element_matches(element, labels)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-    }
-}
-
-fn label_condition_element_matches(
-    element: &ConditionElement,
-    labels: &[WorkItemLabelView],
-) -> Result<bool> {
-    match element {
-        ConditionElement::Clause(clause) => label_clause_matches(clause, labels),
-        ConditionElement::Condition(condition) => label_condition_matches(condition, labels),
-    }
-}
-
-fn label_clause_matches(clause: &ConditionClause, labels: &[WorkItemLabelView]) -> Result<bool> {
-    validate_label_clause(clause)?;
-    let key = clause.column_name.trim();
-    let label = labels.iter().find(|label| label.key == key);
-    let label_value = label.and_then(|label| label.value.as_deref());
-
-    match (&clause.operator, &clause.value) {
-        (Operator::Equal, ConditionClauseValue::Bool(expected)) => Ok(label.is_some() == *expected),
-        (Operator::NotEqual, ConditionClauseValue::Bool(expected)) => {
-            Ok(label.is_some() != *expected)
-        }
-        (Operator::Equal, ConditionClauseValue::String(expected)) => {
-            Ok(label_value == Some(expected.as_str()))
-        }
-        (Operator::NotEqual, ConditionClauseValue::String(expected)) => {
-            Ok(label_value != Some(expected.as_str()))
-        }
-        (Operator::Equal, ConditionClauseValue::Json(serde_json::Value::Null)) => {
-            Ok(label.is_some() && label_value.is_none())
-        }
-        (Operator::NotEqual, ConditionClauseValue::Json(serde_json::Value::Null)) => {
-            Ok(label.is_none() || label_value.is_some())
-        }
-        (Operator::IsIn, ConditionClauseValue::Json(serde_json::Value::Array(values))) => {
-            let Some(label_value) = label_value else {
-                return Ok(false);
-            };
-            Ok(values
-                .iter()
-                .filter_map(|value| value.as_str())
-                .any(|expected| expected == label_value))
-        }
-        _ => bail!("invalid label condition clause"),
-    }
-}
-
-fn label_operator_name(operator: Operator) -> &'static str {
-    match operator {
-        Operator::Equal => "=",
-        Operator::NotEqual => "!=",
-        Operator::Less => "<",
-        Operator::LessOrEqual => "<=",
-        Operator::Greater => ">",
-        Operator::GreaterOrEqual => ">=",
-        Operator::IsIn => "is_in",
-    }
-}
-
-fn format_label(key: &str, value: Option<&str>) -> String {
-    match value {
-        Some(value) => format!("{key}={value}"),
-        None => key.to_owned(),
-    }
-}
-
 fn validate_agent_id(agent_id: &str) -> Result<()> {
     if agent_id.trim().is_empty() {
         bail!("agent id cannot be empty");
@@ -1696,6 +1508,9 @@ fn comment_to_view(comment: CommentModel) -> Result<CommentView> {
 
 #[cfg(test)]
 mod tests {
+    use crudkit_core::condition::{
+        Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+    };
     use tempfile::TempDir;
 
     use super::*;

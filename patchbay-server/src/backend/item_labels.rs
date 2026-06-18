@@ -1,0 +1,302 @@
+use crudkit_core::condition::{
+    Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+};
+use rootcause::{Result, prelude::*};
+
+use crate::shared::view_models::{
+    AUTOMATION_BLOCKED_LABEL_KEY, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
+    STATE_LABEL_KEY, WorkItemLabelView,
+};
+
+pub(crate) fn is_automation_blocked(labels: &[WorkItemLabelView]) -> bool {
+    labels
+        .iter()
+        .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+}
+
+pub(crate) fn source_state_for_new_claim(labels: &[WorkItemLabelView]) -> String {
+    current_state(labels).unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
+}
+
+pub(crate) fn release_state_from_claim_labels(labels: &[WorkItemLabelView]) -> String {
+    labels
+        .iter()
+        .find(|label| label.key == CLAIMED_FROM_STATE_LABEL_KEY)
+        .and_then(|label| label.value.clone())
+        .or_else(|| current_state(labels))
+        .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
+}
+
+pub(crate) fn current_state(labels: &[WorkItemLabelView]) -> Option<String> {
+    labels
+        .iter()
+        .find(|label| label.key == STATE_LABEL_KEY)
+        .and_then(|label| label.value.clone())
+}
+
+pub(crate) fn normalize_state_value(value: impl Into<String>) -> Result<String> {
+    let value = value.into().trim().to_owned();
+    if value.is_empty() {
+        bail!("state label value cannot be empty");
+    }
+    if value.contains('=') {
+        bail!("state label value cannot contain '='");
+    }
+    Ok(value)
+}
+
+pub(crate) fn normalize_key(value: impl Into<String>) -> Result<String> {
+    let value = value.into().trim().to_owned();
+    if value.is_empty() {
+        bail!("label key cannot be empty");
+    }
+    if value.contains('=') {
+        bail!("label key cannot contain '='");
+    }
+    Ok(value)
+}
+
+pub(crate) fn normalize_value(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+pub(crate) fn validate_pair(key: &str, value: Option<&str>) -> Result<()> {
+    if key == STATE_LABEL_KEY && value.is_none() {
+        bail!("state label requires a value");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_condition(condition: &Condition) -> Result<()> {
+    match condition {
+        Condition::All(elements) | Condition::Any(elements) => {
+            for element in elements {
+                match element {
+                    ConditionElement::Clause(clause) => validate_clause(clause)?,
+                    ConditionElement::Condition(condition) => validate_condition(condition)?,
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn condition_matches(
+    condition: &Condition,
+    labels: &[WorkItemLabelView],
+) -> Result<bool> {
+    match condition {
+        Condition::All(elements) => {
+            for element in elements {
+                if !element_matches(element, labels)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        Condition::Any(elements) => {
+            for element in elements {
+                if element_matches(element, labels)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+pub(crate) fn format_label(key: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{key}={value}"),
+        None => key.to_owned(),
+    }
+}
+
+fn validate_clause(clause: &ConditionClause) -> Result<()> {
+    normalize_key(clause.column_name.clone())?;
+    match clause.operator {
+        Operator::Equal | Operator::NotEqual => match &clause.value {
+            ConditionClauseValue::Bool(_)
+            | ConditionClauseValue::String(_)
+            | ConditionClauseValue::Json(serde_json::Value::Null) => Ok(()),
+            other => bail!(
+                "label condition '{}' with operator '{}' requires a string, bool, or null value; got {other:?}",
+                clause.column_name,
+                operator_name(clause.operator)
+            ),
+        },
+        Operator::IsIn => match &clause.value {
+            ConditionClauseValue::Json(serde_json::Value::Array(values))
+                if values.iter().all(|value| value.as_str().is_some()) =>
+            {
+                Ok(())
+            }
+            _ => bail!(
+                "label condition '{}' with is_in requires a JSON array of strings",
+                clause.column_name
+            ),
+        },
+        operator => bail!(
+            "label condition '{}' uses unsupported operator '{}'",
+            clause.column_name,
+            operator_name(operator)
+        ),
+    }
+}
+
+fn element_matches(element: &ConditionElement, labels: &[WorkItemLabelView]) -> Result<bool> {
+    match element {
+        ConditionElement::Clause(clause) => clause_matches(clause, labels),
+        ConditionElement::Condition(condition) => condition_matches(condition, labels),
+    }
+}
+
+fn clause_matches(clause: &ConditionClause, labels: &[WorkItemLabelView]) -> Result<bool> {
+    validate_clause(clause)?;
+    let key = clause.column_name.trim();
+    let label = labels.iter().find(|label| label.key == key);
+    let label_value = label.and_then(|label| label.value.as_deref());
+
+    match (&clause.operator, &clause.value) {
+        (Operator::Equal, ConditionClauseValue::Bool(expected)) => Ok(label.is_some() == *expected),
+        (Operator::NotEqual, ConditionClauseValue::Bool(expected)) => {
+            Ok(label.is_some() != *expected)
+        }
+        (Operator::Equal, ConditionClauseValue::String(expected)) => {
+            Ok(label_value == Some(expected.as_str()))
+        }
+        (Operator::NotEqual, ConditionClauseValue::String(expected)) => {
+            Ok(label_value != Some(expected.as_str()))
+        }
+        (Operator::Equal, ConditionClauseValue::Json(serde_json::Value::Null)) => {
+            Ok(label.is_some() && label_value.is_none())
+        }
+        (Operator::NotEqual, ConditionClauseValue::Json(serde_json::Value::Null)) => {
+            Ok(label.is_none() || label_value.is_some())
+        }
+        (Operator::IsIn, ConditionClauseValue::Json(serde_json::Value::Array(values))) => {
+            let Some(label_value) = label_value else {
+                return Ok(false);
+            };
+            Ok(values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .any(|expected| expected == label_value))
+        }
+        _ => bail!("invalid label condition clause"),
+    }
+}
+
+fn operator_name(operator: Operator) -> &'static str {
+    match operator {
+        Operator::Equal => "=",
+        Operator::NotEqual => "!=",
+        Operator::Less => "<",
+        Operator::LessOrEqual => "<=",
+        Operator::Greater => ">",
+        Operator::GreaterOrEqual => ">=",
+        Operator::IsIn => "is_in",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crudkit_core::condition::{
+        Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+    };
+    use serde_json::json;
+
+    use super::*;
+
+    fn label(key: &str, value: Option<&str>) -> WorkItemLabelView {
+        WorkItemLabelView {
+            id: 1,
+            project_id: 1,
+            work_item_id: 1,
+            key: key.to_owned(),
+            value: value.map(ToOwned::to_owned),
+            created_at: "2026-06-18T00:00:00Z".to_owned(),
+            updated_at: "2026-06-18T00:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn conditions_match_nested_label_presence_and_values() {
+        let labels = vec![
+            label(STATE_LABEL_KEY, Some("open")),
+            label("severity", Some("high")),
+            label("bug", None),
+        ];
+        let selector = Condition::All(vec![
+            ConditionElement::Clause(ConditionClause {
+                column_name: STATE_LABEL_KEY.to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String("open".to_owned()),
+            }),
+            ConditionElement::Condition(Box::new(Condition::Any(vec![
+                ConditionElement::Clause(ConditionClause {
+                    column_name: "severity".to_owned(),
+                    operator: Operator::IsIn,
+                    value: ConditionClauseValue::Json(json!(["critical", "high"])),
+                }),
+                ConditionElement::Clause(ConditionClause {
+                    column_name: "bug".to_owned(),
+                    operator: Operator::Equal,
+                    value: ConditionClauseValue::Bool(true),
+                }),
+            ]))),
+        ]);
+
+        assert!(condition_matches(&selector, &labels).unwrap());
+    }
+
+    #[test]
+    fn conditions_can_match_absent_labels() {
+        let labels = vec![label(STATE_LABEL_KEY, Some("open"))];
+        let selector = Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: "needs-verification".to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::Bool(false),
+        })]);
+
+        assert!(condition_matches(&selector, &labels).unwrap());
+    }
+
+    #[test]
+    fn conditions_reject_non_label_operators() {
+        let selector = Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: STATE_LABEL_KEY.to_owned(),
+            operator: Operator::Greater,
+            value: ConditionClauseValue::String("open".to_owned()),
+        })]);
+
+        let err = validate_condition(&selector).unwrap_err();
+
+        assert!(err.to_string().contains("unsupported operator"));
+    }
+
+    #[test]
+    fn release_state_prefers_claim_source_then_current_state_then_default() {
+        let labels = vec![
+            label(STATE_LABEL_KEY, Some("in_progress")),
+            label(CLAIMED_FROM_STATE_LABEL_KEY, Some("review")),
+        ];
+        assert_eq!(release_state_from_claim_labels(&labels), "review");
+
+        let labels = vec![label(STATE_LABEL_KEY, Some("triage"))];
+        assert_eq!(release_state_from_claim_labels(&labels), "triage");
+
+        assert_eq!(release_state_from_claim_labels(&[]), DEFAULT_STATE_LABEL);
+    }
+
+    #[test]
+    fn normalization_rejects_empty_or_composite_keys() {
+        assert_eq!(normalize_key(" priority ").unwrap(), "priority");
+        assert!(normalize_key("severity=high").is_err());
+        assert!(normalize_state_value(" ").is_err());
+        assert!(validate_pair(STATE_LABEL_KEY, None).is_err());
+    }
+}
