@@ -75,7 +75,7 @@ pub(crate) async fn set_project_memory(
             &state.store,
             &project,
             request.body,
-            projects::MemoryChangeSource::Agent {
+            projects::ProjectChangeSource::Agent {
                 agent_id: request.agent_id,
                 agent_run_id: request.agent_run_id,
             },
@@ -94,7 +94,7 @@ pub(crate) async fn append_project_memory(
             &state.store,
             &project,
             request.body,
-            projects::MemoryChangeSource::Agent {
+            projects::ProjectChangeSource::Agent {
                 agent_id: request.agent_id,
                 agent_run_id: request.agent_run_id,
             },
@@ -266,7 +266,15 @@ pub(crate) async fn get_run_log(
     Extension(state): Extension<AppState>,
     Path((project, run_id)): Path<(String, i64)>,
 ) -> Response {
-    json_result(automation::read_run_log(&state.store, &project, run_id).await)
+    json_result(
+        automation::read_run_log_with_active_session(
+            &state.store,
+            &state.sessions,
+            &project,
+            run_id,
+        )
+        .await,
+    )
 }
 
 async fn update_item_inner(

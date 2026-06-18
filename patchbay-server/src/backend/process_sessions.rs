@@ -80,6 +80,19 @@ impl ProcessSessionRegistry {
         sessions
     }
 
+    pub async fn get_for_project(
+        &self,
+        project_name: &str,
+        run_id: i64,
+    ) -> Option<ProcessSessionView> {
+        self.sessions
+            .lock()
+            .await
+            .get(&run_id)
+            .filter(|session| session.project_name == project_name)
+            .map(ProcessSessionView::from)
+    }
+
     pub async fn list_all(&self) -> Vec<ProcessSessionView> {
         let mut sessions = self
             .sessions
@@ -119,6 +132,21 @@ impl ProcessSessionRegistry {
             let _ = sender.send(true);
         }
         senders.len()
+    }
+
+    pub async fn cancel_run(&self, project_name: &str, run_id: i64) -> bool {
+        let sender = self
+            .sessions
+            .lock()
+            .await
+            .get(&run_id)
+            .filter(|session| session.project_name == project_name)
+            .map(|session| session.cancel_tx.clone());
+        let Some(sender) = sender else {
+            return false;
+        };
+        let _ = sender.send(true);
+        true
     }
 }
 
@@ -226,5 +254,27 @@ mod tests {
         assert_eq!(active[0].output.len(), 1);
         assert_eq!(active[0].output[0].kind, AgentRunOutputKind::ModelMessage);
         assert_eq!(active[0].output[0].body, "line one");
+    }
+
+    #[tokio::test]
+    async fn session_can_be_looked_up_and_cancelled_by_run() {
+        let sessions = ProcessSessionRegistry::new();
+        let mut cancellation = sessions
+            .begin(ProcessSessionStart {
+                run_id: 7,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: "codex app-server turn prompt.md".to_owned(),
+                working_dir: "/tmp/demo".to_owned(),
+            })
+            .await;
+
+        assert!(sessions.get_for_project("demo", 7).await.is_some());
+        assert!(sessions.get_for_project("other", 7).await.is_none());
+        assert!(sessions.cancel_run("demo", 7).await);
+        assert!(!sessions.cancel_run("other", 7).await);
+
+        cancellation.changed().await.unwrap();
+        assert!(*cancellation.borrow());
     }
 }

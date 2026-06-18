@@ -910,6 +910,48 @@ a {
     background: $danger-soft;
     color: $danger;
   }
+
+  &.workspace-status-neutral {
+    border: 1px solid $border;
+    background: $surface-raised;
+    color: $muted;
+  }
+}
+
+.workspace-git-status {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.workspace-git-branch,
+.workspace-git-diff {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid $border;
+  border-radius: 999px;
+  background: $surface-raised;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.workspace-git-branch {
+  color: $ink-soft;
+}
+
+.workspace-git-diff {
+  gap: 6px;
+}
+
+.workspace-git-added {
+  color: $green;
+}
+
+.workspace-git-deleted {
+  color: $danger;
 }
 
 .workspace-buttons {
@@ -924,9 +966,18 @@ a {
 }
 
 .workspace-button {
+  display: inline-flex;
   min-height: 31px;
+  align-items: center;
+  gap: 6px;
   padding: 5px 9px;
   font-size: 12px;
+}
+
+.workspace-button-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
 }
 
 .workspace-copy-status {
@@ -1456,7 +1507,7 @@ a.claim-badge {
   flex-direction: column;
 }
 
-.memory-history {
+.project-text-history {
   display: grid;
   gap: 6px;
 
@@ -1468,6 +1519,7 @@ a.claim-badge {
   }
 }
 
+.project-system-prompt-text.dirty,
 .project-memory-text.dirty {
   border-color: rgba($amber, 0.85);
   box-shadow: 0 0 0 3px rgba($amber, 0.22);

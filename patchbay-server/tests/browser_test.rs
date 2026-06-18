@@ -187,6 +187,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
 
         create_project(driver).await?;
         create_alternate_project(driver).await?;
+        seed_system_prompt_history(driver).await?;
         seed_memory_history(driver).await?;
         driver
             .goto(app.url("/?project=demo"))
@@ -201,7 +202,10 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             .is_equal_to("Patchbay");
         assert_source_contains(driver, "Copy path").await?;
         assert_source_contains(driver, "Open folder").await?;
-        assert_source_contains(driver, "Open IDE").await?;
+        assert_source_contains(driver, "Git repository").await?;
+        find(driver, By::Css(".workspace-git-status")).await?;
+        find(driver, By::Css(".workspace-git-diff")).await?;
+        assert_source_does_not_contain(driver, "Open IDE").await?;
         assert_source_contains(driver, "System prompt").await?;
         assert_source_does_not_contain(driver, "project-option-key").await?;
         assert_source_contains(driver, "Memory").await?;
@@ -214,6 +218,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             By::Css("#project-revert-strategy option[value='git_reset']"),
         )
         .await?;
+        assert_source_contains(driver, "system prompt history").await?;
         assert_source_contains(driver, "memory history").await?;
         assert_source_does_not_contain(driver, "Compact history").await?;
         assert_source_does_not_contain(driver, "Append memory").await?;
@@ -221,6 +226,9 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_does_not_contain(driver, "/memory/append").await?;
         assert_source_does_not_contain(driver, "memory-history-entry").await?;
         assert_source_does_not_contain(driver, "memory-snapshot").await?;
+        find(driver, By::Css("#project-system-prompt-version")).await?;
+        find(driver, By::Css("textarea.project-system-prompt-text")).await?;
+        assert_system_prompt_history_selector_behaviour(driver).await?;
         find(driver, By::Css("#project-memory-version")).await?;
         find(driver, By::Css("textarea.project-memory-text")).await?;
         assert_memory_history_selector_behaviour(driver).await?;
@@ -501,6 +509,34 @@ async fn seed_memory_history(driver: &WebDriver) -> Result<(), Report> {
     Ok(())
 }
 
+async fn seed_system_prompt_history(driver: &WebDriver) -> Result<(), Report> {
+    let seeded = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            async function setSystemPrompt(body) {
+                return await fetch('/projects/demo/system-prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ body }),
+                });
+            }
+            (async () => {
+                const first = await setSystemPrompt('Initial project prompt');
+                const second = await setSystemPrompt('Current project prompt');
+                done(first.ok && second.ok ? 'ok' : `failed: ${first.status} ${second.status}`);
+            })().catch(error => done(String(error)));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to seed project system prompt through browser-test setup request")?
+        .convert::<String>()
+        .context("failed to read system prompt seed response")?;
+    assert_that!(seeded).is_equal_to("ok".to_owned());
+    Ok(())
+}
+
 async fn add_agent_comment(driver: &WebDriver) -> Result<(), Report> {
     let created = driver
         .execute_async(
@@ -693,6 +729,118 @@ async fn assert_memory_history_selector_behaviour(driver: &WebDriver) -> Result<
         .context("failed to verify memory history selector behaviour")?
         .convert::<String>()
         .context("failed to read memory history selector result")?;
+    assert_that!(result).is_equal_to("ok".to_owned());
+    Ok(())
+}
+
+async fn assert_system_prompt_history_selector_behaviour(driver: &WebDriver) -> Result<(), Report> {
+    let mut ready = false;
+    for _ in 0..20 {
+        let status = driver
+            .execute_async(
+                r#"
+                const done = arguments[0];
+                const textarea = document.querySelector('textarea.project-system-prompt-text');
+                if (!textarea) {
+                    done('missing textarea');
+                    return;
+                }
+                textarea.value = 'Unsaved current prompt';
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                setTimeout(() => {
+                    done(textarea.classList.contains('dirty') ? 'ready' : 'waiting');
+                }, 100);
+                "#,
+                Vec::new(),
+            )
+            .await
+            .context("failed to probe system prompt history hydration state")?
+            .convert::<String>()
+            .context("failed to read system prompt history hydration status")?;
+
+        if status == "ready" {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    if !ready {
+        bail!("system prompt history selector did not become interactive");
+    }
+
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const select = document.querySelector('#project-system-prompt-version');
+            const textarea = document.querySelector('textarea.project-system-prompt-text');
+            const save = document.querySelector("form[action='/projects/demo/system-prompt'] button");
+            if (!select || !textarea || !save) {
+                done('missing system prompt controls');
+                return;
+            }
+            if (select.value !== 'current') {
+                done(`expected current selection, got ${select.value}`);
+                return;
+            }
+            if (select.options.length < 3) {
+                done(`expected current plus history options, got ${select.options.length}`);
+                return;
+            }
+            if (textarea.value !== 'Unsaved current prompt') {
+                done(`expected cached draft before switch, got ${textarea.value}`);
+                return;
+            }
+
+            select.value = select.options[2].value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            setTimeout(() => {
+                if (textarea.value !== 'Initial project prompt') {
+                    done(`expected historical prompt, got ${textarea.value}`);
+                    return;
+                }
+                if (!textarea.readOnly) {
+                    done('historical system prompt textarea was editable');
+                    return;
+                }
+                if (textarea.classList.contains('dirty')) {
+                    done('historical system prompt textarea was highlighted');
+                    return;
+                }
+                if (!save.disabled) {
+                    done('save button was enabled for historical system prompt');
+                    return;
+                }
+
+                select.value = 'current';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+                setTimeout(() => {
+                    if (textarea.value !== 'Unsaved current prompt') {
+                        done(`expected cached current draft, got ${textarea.value}`);
+                        return;
+                    }
+                    if (textarea.readOnly) {
+                        done('current system prompt textarea stayed read-only');
+                        return;
+                    }
+                    if (!textarea.classList.contains('dirty')) {
+                        done('current system prompt draft was not highlighted');
+                        return;
+                    }
+                    if (save.disabled) {
+                        done('save button stayed disabled for current system prompt');
+                        return;
+                    }
+                    done('ok');
+                }, 100);
+            }, 100);
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to verify system prompt history selector behaviour")?
+        .convert::<String>()
+        .context("failed to read system prompt history selector result")?;
     assert_that!(result).is_equal_to("ok".to_owned());
     Ok(())
 }

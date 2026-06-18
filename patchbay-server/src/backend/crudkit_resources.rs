@@ -175,7 +175,7 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
                 &context.store,
                 &model.name,
                 "initial",
-                projects::MemoryChangeSource::User,
+                projects::ProjectChangeSource::User,
             )
             .await
             .map_err(|err| ProjectHookError(err.to_string()))
@@ -281,7 +281,7 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
                 &context.store,
                 &model.name,
                 "set",
-                projects::MemoryChangeSource::User,
+                projects::ProjectChangeSource::User,
             )
             .await
             .map_err(|err| ProjectHookError(err.to_string()))

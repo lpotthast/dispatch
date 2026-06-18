@@ -37,9 +37,10 @@ use crate::{
         AgentRunTokenUsageView, AgentRunView, AuthorType, AutomationStatusView,
         CLAIMED_FROM_STATE_LABEL_KEY, CodexAgentModel, CodexAppServerStatusView,
         CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
-        ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
-        ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY, SwimLaneView, UiEvent,
-        WorkItemLabelView, WorkItemStateView, WorkItemView, WorkspaceMode,
+        ProjectGitStatusView, ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView,
+        ProjectSettingsView, ProjectSystemPromptEventView, ProjectView, RevertStrategy, RunLogView,
+        STATE_LABEL_KEY, SwimLaneView, UiEvent, WorkItemLabelView, WorkItemStateView, WorkItemView,
+        WorkspaceEditorView, WorkspaceMode,
     },
 };
 #[cfg(not(feature = "ssr"))]
@@ -110,6 +111,8 @@ pub struct BoardPage {
     pub selected_project: Option<String>,
     pub selected_project_view: Option<ProjectView>,
     pub settings: Option<ProjectSettingsView>,
+    pub workspace_editors: Vec<WorkspaceEditorView>,
+    pub system_prompt_events: Vec<ProjectSystemPromptEventView>,
     pub memory_events: Vec<ProjectMemoryEventView>,
     pub automation_status: Option<AutomationStatusView>,
     pub automation_running: bool,
@@ -138,6 +141,7 @@ pub struct RunsPage {
     pub automation_status: Option<AutomationStatusView>,
     pub automation_running: bool,
     pub run_sessions: Vec<BoardRunSessionView>,
+    pub workspace_editors: Vec<WorkspaceEditorView>,
     pub codex_status: CodexAppServerStatusView,
 }
 
@@ -192,6 +196,7 @@ pub struct RunLogPage {
     pub active_project_names: Vec<String>,
     pub project: String,
     pub run_log: RunLogView,
+    pub workspace_editors: Vec<WorkspaceEditorView>,
     pub codex_status: CodexAppServerStatusView,
 }
 
@@ -201,6 +206,7 @@ pub struct TriggersPage {
     pub active_project_names: Vec<String>,
     pub selected_project: Option<String>,
     pub selected_project_view: Option<ProjectView>,
+    pub workspace_editors: Vec<WorkspaceEditorView>,
     pub api_base_url: String,
     pub codex_status: CodexAppServerStatusView,
 }
@@ -584,6 +590,7 @@ async fn load_run_log_page(
     match (project, run_id) {
         (Some(project), Some(run_id)) => page_data::run_log_page_data(
             &state.store,
+            &state.sessions,
             &state.automation_controller,
             &project,
             run_id,
@@ -746,6 +753,7 @@ fn item_event_matches(event: &UiEvent, project: Option<String>, item_id: Option<
         } => Some(*changed_item_id) == item_id,
         UiEvent::AgentRunChanged { item_id: None, .. }
         | UiEvent::AgentOutputChanged { item_id: None, .. }
+        | UiEvent::SystemPromptChanged { .. }
         | UiEvent::MemoryChanged { .. }
         | UiEvent::SwimLaneChanged { .. }
         | UiEvent::WorkItemStateChanged { .. } => false,
@@ -772,6 +780,7 @@ fn run_log_event_matches(event: &UiEvent, project: Option<String>, run_id: Optio
         | UiEvent::AgentToolChanged { .. } => true,
         UiEvent::WorkItemChanged { .. }
         | UiEvent::CommentChanged { .. }
+        | UiEvent::SystemPromptChanged { .. }
         | UiEvent::MemoryChanged { .. }
         | UiEvent::SwimLaneChanged { .. }
         | UiEvent::WorkItemStateChanged { .. } => false,
@@ -789,6 +798,7 @@ fn event_scopes_named_project(event: &UiEvent, project: Option<&str>) -> bool {
 fn event_project(event: &UiEvent) -> Option<&str> {
     match event {
         UiEvent::ProjectChanged { project, .. }
+        | UiEvent::SystemPromptChanged { project, .. }
         | UiEvent::WorkItemChanged { project, .. }
         | UiEvent::CommentChanged { project, .. }
         | UiEvent::MemoryChanged { project, .. }
@@ -960,6 +970,8 @@ fn board_content(page: BoardPage) -> AnyView {
         selected_project,
         selected_project_view,
         settings,
+        workspace_editors,
+        system_prompt_events,
         memory_events,
         automation_status,
         automation_running,
@@ -996,8 +1008,12 @@ fn board_content(page: BoardPage) -> AnyView {
         );
         let page_title = project_view.display_name.clone();
         let board_return_to = format!("/?project={}", encode_path(&project));
-        let project_workspace =
-            project_workspace_panel(&project, &project_view, board_return_to.clone());
+        let project_workspace = project_workspace_panel(
+            &project,
+            &project_view,
+            workspace_editors.clone(),
+            board_return_to.clone(),
+        );
         let (show_create_item_modal, set_show_create_item_modal) = signal(false);
         let initial_create_item_state_options = creatable_state_options(&work_item_states);
         let initial_create_item_state =
@@ -1043,6 +1059,7 @@ fn board_content(page: BoardPage) -> AnyView {
             &project,
             project_view,
             settings,
+            system_prompt_events,
             memory_events,
             auto_commit,
             set_auto_commit,
@@ -1119,6 +1136,7 @@ fn runs_content(page: RunsPage) -> AnyView {
         automation_status,
         automation_running,
         run_sessions,
+        workspace_editors,
         codex_status,
     } = page;
     let topbar = top_bar(
@@ -1143,6 +1161,7 @@ fn runs_content(page: RunsPage) -> AnyView {
                         initial_status=automation_status
                         initial_running=automation_running
                         initial_run_sessions=run_sessions
+                        workspace_editors=workspace_editors
                     />
                 </main>
             </div>
@@ -1181,6 +1200,7 @@ fn triggers_content(page: TriggersPage) -> AnyView {
         active_project_names,
         selected_project,
         selected_project_view,
+        workspace_editors,
         api_base_url,
         codex_status,
     } = page;
@@ -1220,7 +1240,11 @@ fn triggers_content(page: TriggersPage) -> AnyView {
             AutomationTableKind::Producing,
             Callback::new(move |context| set_producer_context.set(Some(context))),
         );
-        let trigger_runs = trigger_runs_panel(project.clone(), selected_trigger_id);
+        let trigger_runs = trigger_runs_panel(
+            project.clone(),
+            selected_trigger_id,
+            workspace_editors.clone(),
+        );
         view! {
             <div>
                 {topbar}
@@ -2107,6 +2131,7 @@ fn run_log_content(page: RunLogPage) -> AnyView {
         active_project_names,
         project,
         run_log,
+        workspace_editors,
         codex_status,
     } = page;
     let topbar = top_bar(
@@ -2127,7 +2152,7 @@ fn run_log_content(page: RunLogPage) -> AnyView {
         encode_path(&project),
         run_log.run.id
     );
-    let working_dir = run_workspace_actions(&project, &run_log.run, run_href);
+    let working_dir = run_workspace_actions(&project, &run_log.run, workspace_editors, run_href);
     let status_class = run_status_class(run_log.run.status);
     let memory_event = run_log.memory_event.as_ref().map(memory_event_ref_label);
     let token_usage = run_token_usage_text(&run_log.run);
@@ -4120,27 +4145,37 @@ fn automation_effect_condition(project_id: i64, effect: &str) -> Condition {
 fn project_workspace_panel(
     project: &str,
     project_view: &ProjectView,
+    workspace_editors: Vec<WorkspaceEditorView>,
     return_to: String,
 ) -> AnyView {
     workspace_actions(
         "Path",
         project_view.path.clone(),
         Some(project_view.path_exists),
+        project_view.git_status.clone(),
         Some(format!("/projects/{}/workspace/open", encode_path(project))),
+        workspace_editors,
         return_to,
     )
 }
 
-fn run_workspace_actions(project: &str, run: &AgentRunView, return_to: String) -> AnyView {
+fn run_workspace_actions(
+    project: &str,
+    run: &AgentRunView,
+    workspace_editors: Vec<WorkspaceEditorView>,
+    return_to: String,
+) -> AnyView {
     workspace_actions(
         "working dir",
         non_empty_string(run.working_dir.clone()),
+        None,
         None,
         Some(format!(
             "/projects/{}/automation/runs/{}/workspace/open",
             encode_path(project),
             run.id
         )),
+        workspace_editors,
         return_to,
     )
 }
@@ -4149,7 +4184,9 @@ fn workspace_actions(
     label: &'static str,
     path: Option<String>,
     path_exists: Option<bool>,
+    git_status: Option<ProjectGitStatusView>,
     open_action: Option<String>,
+    workspace_editors: Vec<WorkspaceEditorView>,
     return_to: String,
 ) -> AnyView {
     let path = path.and_then(non_empty_string);
@@ -4170,10 +4207,30 @@ fn workspace_actions(
             </span>
         }
     });
+    let git_status = git_status.map(workspace_git_status);
     let open_controls = open_action.map(|action| {
         let folder_action = action.clone();
         let folder_return = return_to.clone();
-        let ide_return = return_to.clone();
+        let editor_controls = workspace_editors
+            .into_iter()
+            .map(|editor| {
+                let editor_action = action.clone();
+                let editor_return = return_to.clone();
+                let target = editor.target.clone();
+                let label = format!("Open {}", editor.label);
+                let icon_target = editor.target.clone();
+                view! {
+                    <form method="post" action=editor_action>
+                        <input type="hidden" name="target" value=target/>
+                        <input type="hidden" name="return_to" value=editor_return/>
+                        <button type="submit" class="secondary workspace-button" disabled=!open_available>
+                            {workspace_editor_icon(&icon_target)}
+                            <span>{label}</span>
+                        </button>
+                    </form>
+                }
+            })
+            .collect::<Vec<_>>();
         view! {
             <>
                 <form method="post" action=folder_action>
@@ -4183,13 +4240,7 @@ fn workspace_actions(
                         "Open folder"
                     </button>
                 </form>
-                <form method="post" action=action>
-                    <input type="hidden" name="target" value="ide"/>
-                    <input type="hidden" name="return_to" value=ide_return/>
-                    <button type="submit" class="secondary workspace-button" disabled=!open_available>
-                        "Open IDE"
-                    </button>
-                </form>
+                {editor_controls}
             </>
         }
     });
@@ -4203,6 +4254,7 @@ fn workspace_actions(
                 <code>{display_path}</code>
                 {status}
             </div>
+            {git_status}
             <div class="workspace-buttons">
                 <button
                     type="button"
@@ -4242,6 +4294,72 @@ fn workspace_actions(
         </div>
     }
     .into_any()
+}
+
+fn workspace_git_status(status: ProjectGitStatusView) -> AnyView {
+    if !status.is_repository {
+        let message = match status.error {
+            Some(error) => view! {
+                <span class="workspace-status workspace-status-missing" title=error>
+                    "Git unavailable"
+                </span>
+            }
+            .into_any(),
+            None => view! {
+                <span class="workspace-status workspace-status-neutral">
+                    "Not a Git repository"
+                </span>
+            }
+            .into_any(),
+        };
+        return view! { <div class="workspace-git-status">{message}</div> }.into_any();
+    }
+
+    let branch = status.branch.unwrap_or_else(|| "unknown branch".to_owned());
+    let additions = format!("+{}", status.added_lines);
+    let deletions = format!("-{}", status.deleted_lines);
+    let diff_status = status.error.map(|error| {
+        view! {
+            <span class="workspace-status workspace-status-missing" title=error>
+                "Diff unavailable"
+            </span>
+        }
+    });
+
+    view! {
+        <div class="workspace-git-status">
+            <span class="workspace-status workspace-status-ok">"Git repository"</span>
+            <span class="workspace-git-branch">{branch}</span>
+            <span class="workspace-git-diff" aria-label="Git line diff">
+                <span class="workspace-git-added">{additions}</span>
+                <span class="workspace-git-deleted">{deletions}</span>
+            </span>
+            {diff_status}
+        </div>
+    }
+    .into_any()
+}
+
+fn workspace_editor_icon(target: &str) -> AnyView {
+    match target {
+        "rustrover" => view! {
+            <svg class="workspace-button-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+                <rect width="18" height="18" rx="4" fill="#111318"/>
+                <rect x="2" y="2" width="14" height="14" rx="3" fill="#6d3df5"/>
+                <rect x="4" y="4" width="10" height="10" rx="1.5" fill="#111318"/>
+                <text x="9" y="11.5" text-anchor="middle" font-size="6.3" font-weight="800" fill="#ffffff">"RR"</text>
+            </svg>
+        }
+        .into_any(),
+        "vscode" => view! {
+            <svg class="workspace-button-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+                <path fill="#007acc" d="M14.4 2.1 6.7 7.9 3.7 5.4 2 6.6l2.8 2.4L2 11.4l1.7 1.2 3-2.5 7.7 5.8c.7.5 1.6 0 1.6-.8V2.9c0-.8-.9-1.3-1.6-.8z"/>
+                <path fill="#2aa7f4" d="M14.6 4.2v9.6L8.3 9l6.3-4.8z"/>
+            </svg>
+        }
+        .into_any(),
+        _ => view! { <span class="workspace-button-icon"></span> }.into_any(),
+    }
 }
 
 fn runtime_panel(runtime: RuntimeConfigView, return_to: String) -> AnyView {
@@ -4460,6 +4578,7 @@ fn LiveRunsSection(
     initial_status: AutomationStatusView,
     initial_running: bool,
     initial_run_sessions: Vec<BoardRunSessionView>,
+    workspace_editors: Vec<WorkspaceEditorView>,
 ) -> impl IntoView + 'static {
     let (automation_status, set_automation_status) = signal(initial_status);
     let (automation_running, set_automation_running) = signal(initial_running);
@@ -4504,6 +4623,7 @@ fn LiveRunsSection(
             title="Runs"
             status_note=status_note
             run_sessions=run_sessions
+            workspace_editors=workspace_editors
             empty_message="No runs yet."
         />
     }
@@ -4513,6 +4633,7 @@ fn project_settings_view(
     project: &str,
     project_view: ProjectView,
     settings: ProjectSettingsView,
+    system_prompt_events: Vec<ProjectSystemPromptEventView>,
     memory_events: Vec<ProjectMemoryEventView>,
     auto_commit: ReadSignal<bool>,
     set_auto_commit: WriteSignal<bool>,
@@ -4527,17 +4648,57 @@ fn project_settings_view(
     let hard_reset_never_selected = git_policy.hard_reset == AgentGitHardResetPolicy::Never;
     let hard_reset_isolated_selected =
         git_policy.hard_reset == AgentGitHardResetPolicy::IsolatedWorkspaces;
-    let initial_memory = project_view.memory.clone();
-    let dirty_baseline = initial_memory.clone();
-    let history_for_options = memory_events.clone();
-    let history_for_memory = memory_events.clone();
-    let (selected_event_id, set_selected_event_id) = signal(None::<i64>);
-    let (memory_draft, set_memory_draft) = signal(initial_memory.clone());
-    let memory_value = move || {
-        selected_event_id
+    let initial_system_prompt = project_view.system_prompt.clone();
+    let system_prompt_dirty_baseline = initial_system_prompt.clone();
+    let system_prompt_history_for_options = system_prompt_events.clone();
+    let system_prompt_history_for_prompt = system_prompt_events;
+    let (selected_system_prompt_event_id, set_selected_system_prompt_event_id) =
+        signal(None::<i64>);
+    let (system_prompt_draft, set_system_prompt_draft) = signal(initial_system_prompt.clone());
+    let system_prompt_value = move || {
+        selected_system_prompt_event_id
             .get()
             .and_then(|event_id| {
-                history_for_memory
+                system_prompt_history_for_prompt
+                    .iter()
+                    .find(|event| event.id == event_id)
+                    .map(|event| event.system_prompt.clone())
+                    .or_else(|| {
+                        Some(format!(
+                            "System prompt event #{event_id} is no longer available."
+                        ))
+                    })
+            })
+            .unwrap_or_else(|| system_prompt_draft.get())
+    };
+    let system_prompt_textarea_class = move || {
+        if selected_system_prompt_event_id.get().is_none()
+            && system_prompt_draft.get() != system_prompt_dirty_baseline
+        {
+            "project-system-prompt-text dirty"
+        } else {
+            "project-system-prompt-text"
+        }
+    };
+    let system_prompt_event_options = system_prompt_history_for_options
+        .into_iter()
+        .map(|event| {
+            view! {
+                <option value=event.id.to_string()>{system_prompt_event_select_label(&event)}</option>
+            }
+        })
+        .collect::<Vec<_>>();
+    let initial_memory = project_view.memory.clone();
+    let memory_dirty_baseline = initial_memory.clone();
+    let memory_history_for_options = memory_events.clone();
+    let memory_history_for_memory = memory_events.clone();
+    let (selected_memory_event_id, set_selected_memory_event_id) = signal(None::<i64>);
+    let (memory_draft, set_memory_draft) = signal(initial_memory.clone());
+    let memory_value = move || {
+        selected_memory_event_id
+            .get()
+            .and_then(|event_id| {
+                memory_history_for_memory
                     .iter()
                     .find(|event| event.id == event_id)
                     .map(|event| event.memory.clone())
@@ -4546,13 +4707,13 @@ fn project_settings_view(
             .unwrap_or_else(|| memory_draft.get())
     };
     let memory_textarea_class = move || {
-        if selected_event_id.get().is_none() && memory_draft.get() != dirty_baseline {
+        if selected_memory_event_id.get().is_none() && memory_draft.get() != memory_dirty_baseline {
             "project-memory-text dirty"
         } else {
             "project-memory-text"
         }
     };
-    let event_options = history_for_options
+    let memory_event_options = memory_history_for_options
         .into_iter()
         .map(|event| {
             view! {
@@ -4566,21 +4727,12 @@ fn project_settings_view(
             <div>
                 <h2>"System prompt"</h2>
                 <form method="post" action=prompt_action>
-                    <textarea name="body" placeholder="Project system prompt">
-                        {project_view.system_prompt}
-                    </textarea>
-                    <button>"Save prompt"</button>
-                </form>
-            </div>
-            <div>
-                <h2>"Memory"</h2>
-                <form method="post" action=memory_action>
-                    <div class="memory-history">
-                        <label for="project-memory-version">"memory history"</label>
+                    <div class="project-text-history">
+                        <label for="project-system-prompt-version">"system prompt history"</label>
                         <select
-                            id="project-memory-version"
+                            id="project-system-prompt-version"
                             prop:value=move || {
-                                selected_event_id
+                                selected_system_prompt_event_id
                                     .get()
                                     .map(|event_id| event_id.to_string())
                                     .unwrap_or_else(|| "current".to_owned())
@@ -4588,14 +4740,59 @@ fn project_settings_view(
                             on:change=move |event| {
                                 let selected = event_target_value(&event);
                                 if selected == "current" {
-                                    set_selected_event_id.set(None);
+                                    set_selected_system_prompt_event_id.set(None);
                                 } else if let Ok(event_id) = selected.parse::<i64>() {
-                                    set_selected_event_id.set(Some(event_id));
+                                    set_selected_system_prompt_event_id.set(Some(event_id));
                                 }
                             }
                         >
                             <option value="current">"Current"</option>
-                            {event_options}
+                            {system_prompt_event_options}
+                        </select>
+                    </div>
+                    <textarea
+                        name="body"
+                        class=system_prompt_textarea_class
+                        placeholder="Project system prompt"
+                        prop:value=system_prompt_value
+                        readonly=move || selected_system_prompt_event_id.get().is_some()
+                        on:input=move |event| {
+                            if selected_system_prompt_event_id.get().is_none() {
+                                set_system_prompt_draft.set(event_target_value(&event));
+                            }
+                        }
+                    >
+                        {initial_system_prompt}
+                    </textarea>
+                    <button disabled=move || selected_system_prompt_event_id.get().is_some()>
+                        "Save prompt"
+                    </button>
+                </form>
+            </div>
+            <div>
+                <h2>"Memory"</h2>
+                <form method="post" action=memory_action>
+                    <div class="project-text-history">
+                        <label for="project-memory-version">"memory history"</label>
+                        <select
+                            id="project-memory-version"
+                            prop:value=move || {
+                                selected_memory_event_id
+                                    .get()
+                                    .map(|event_id| event_id.to_string())
+                                    .unwrap_or_else(|| "current".to_owned())
+                            }
+                            on:change=move |event| {
+                                let selected = event_target_value(&event);
+                                if selected == "current" {
+                                    set_selected_memory_event_id.set(None);
+                                } else if let Ok(event_id) = selected.parse::<i64>() {
+                                    set_selected_memory_event_id.set(Some(event_id));
+                                }
+                            }
+                        >
+                            <option value="current">"Current"</option>
+                            {memory_event_options}
                         </select>
                     </div>
                     <textarea
@@ -4603,16 +4800,18 @@ fn project_settings_view(
                         class=memory_textarea_class
                         placeholder="Project memory"
                         prop:value=memory_value
-                        readonly=move || selected_event_id.get().is_some()
+                        readonly=move || selected_memory_event_id.get().is_some()
                         on:input=move |event| {
-                            if selected_event_id.get().is_none() {
+                            if selected_memory_event_id.get().is_none() {
                                 set_memory_draft.set(event_target_value(&event));
                             }
                         }
                     >
                         {initial_memory}
                     </textarea>
-                    <button disabled=move || selected_event_id.get().is_some()>"Save memory"</button>
+                    <button disabled=move || selected_memory_event_id.get().is_some()>
+                        "Save memory"
+                    </button>
                 </form>
             </div>
             <div class="commit-policy">
@@ -4699,6 +4898,10 @@ fn memory_event_select_label(event: &ProjectMemoryEventView) -> String {
     format!("#{} {}", event.id, event.created_at)
 }
 
+fn system_prompt_event_select_label(event: &ProjectSystemPromptEventView) -> String {
+    format!("#{} {}", event.id, event.created_at)
+}
+
 fn memory_event_ref_label(event: &ProjectMemoryEventRefView) -> String {
     if event.available {
         match event.created_at.as_deref() {
@@ -4713,6 +4916,7 @@ fn memory_event_ref_label(event: &ProjectMemoryEventRefView) -> String {
 fn trigger_runs_panel(
     project: String,
     selected_trigger_id: Memo<Option<i64>>,
+    workspace_editors: Vec<WorkspaceEditorView>,
 ) -> impl IntoView + 'static {
     let project_for_loader = project.clone();
     let project_for_view = project.clone();
@@ -4800,6 +5004,7 @@ fn trigger_runs_panel(
                                 title="Runs for selected automation"
                                 status_note=Signal::derive(|| None::<String>)
                                 run_sessions=run_sessions
+                                workspace_editors=workspace_editors.clone()
                                 empty_message="No runs for this automation yet."
                             />
                         }.into_any()
@@ -4826,6 +5031,7 @@ fn RunSessionsPanel(
     title: &'static str,
     #[prop(into)] status_note: Signal<Option<String>>,
     #[prop(into)] run_sessions: ReadSignal<Vec<BoardRunSessionView>>,
+    workspace_editors: Vec<WorkspaceEditorView>,
     empty_message: &'static str,
 ) -> impl IntoView + 'static {
     let (selected_run_id, set_selected_run_id) = signal(None::<i64>);
@@ -4891,6 +5097,7 @@ fn RunSessionsPanel(
         view! { <div class="run-session-list">{sessions}</div> }.into_any()
     };
     let detail_project = project.clone();
+    let detail_workspace_editors = workspace_editors.clone();
     let run_detail = move || {
         let detail_sessions = run_sessions.get();
         let selected = selected_run_id
@@ -4903,7 +5110,9 @@ fn RunSessionsPanel(
             })
             .or_else(|| detail_sessions.first().cloned());
         match selected {
-            Some(session) => run_session_detail(&detail_project, session),
+            Some(session) => {
+                run_session_detail(&detail_project, session, detail_workspace_editors.clone())
+            }
             None => view! { <p class="muted">"No run selected."</p> }.into_any(),
         }
     };
@@ -5004,7 +5213,11 @@ fn recorded_field(value: &str) -> String {
     }
 }
 
-fn run_session_detail(project: &str, session: BoardRunSessionView) -> AnyView {
+fn run_session_detail(
+    project: &str,
+    session: BoardRunSessionView,
+    workspace_editors: Vec<WorkspaceEditorView>,
+) -> AnyView {
     let href = format!(
         "/projects/{}/automation/runs/{}/log",
         encode_path(project),
@@ -5028,7 +5241,7 @@ fn run_session_detail(project: &str, session: BoardRunSessionView) -> AnyView {
     let summary = run_result_summary(&session.run);
     let origin = run_origin_label(&session.run);
     let command = recorded_field(&session.run.command);
-    let working_dir = run_workspace_actions(project, &session.run, href.clone());
+    let working_dir = run_workspace_actions(project, &session.run, workspace_editors, href.clone());
     let status_class = run_status_class(session.run.status);
     let output = run_output_view(session.output.clone());
     let prompt = session

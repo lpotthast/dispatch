@@ -1120,10 +1120,27 @@ pub async fn read_run_log(store: &Store, project_name: &str, run_id: i64) -> Res
     };
     Ok(RunLogView {
         run,
+        active: false,
         memory_event,
         prompt,
         output,
     })
+}
+
+pub async fn read_run_log_with_active_session(
+    store: &Store,
+    sessions: &ProcessSessionRegistry,
+    project_name: &str,
+    run_id: i64,
+) -> Result<RunLogView> {
+    let mut run_log = read_run_log(store, project_name, run_id).await?;
+    if let Some(session) = sessions.get_for_project(project_name, run_id).await {
+        run_log.active = true;
+        if !session.output.is_empty() {
+            run_log.output = session.output;
+        }
+    }
+    Ok(run_log)
 }
 
 pub async fn cleanup_worktrees(

@@ -6,7 +6,7 @@ use crate::{
     backend::{
         automation, automation_controller::AutomationController, codex_app_server, comments, items,
         process_sessions::ProcessSessionRegistry, projects, storage::Store, swim_lanes,
-        work_item_states,
+        work_item_states, workspace,
     },
     frontend::{
         ApiDocsPage, BoardItemsSection, BoardPage, BoardRunSessionView, CodexStatusPage, ItemPage,
@@ -34,6 +34,7 @@ pub(crate) async fn board_page_data(
         .cloned();
 
     let mut settings = None;
+    let mut system_prompt_events = Vec::new();
     let mut memory_events = Vec::new();
     let mut automation_status = None;
     let mut automation_running = false;
@@ -46,6 +47,7 @@ pub(crate) async fn board_page_data(
         .map(|project| project.name.as_str())
     {
         settings = Some(projects::get_settings(store, project).await?);
+        system_prompt_events = projects::list_system_prompt_events(store, project).await?;
         memory_events = projects::list_memory_events(store, project).await?;
         let status = automation::automation_status(store, project).await?;
         automation_running = automation_controller.is_project_running(project).await;
@@ -63,6 +65,8 @@ pub(crate) async fn board_page_data(
         selected_project,
         selected_project_view,
         settings,
+        workspace_editors: workspace::available_workspace_editors(),
+        system_prompt_events,
         memory_events,
         automation_status,
         automation_running,
@@ -123,6 +127,7 @@ pub(crate) async fn runs_page_data(
         automation_status,
         automation_running,
         run_sessions,
+        workspace_editors: workspace::available_workspace_editors(),
         codex_status,
     })
 }
@@ -272,6 +277,7 @@ pub(crate) async fn item_page_data(
 
 pub(crate) async fn run_log_page_data(
     store: &Store,
+    sessions: &ProcessSessionRegistry,
     automation_controller: &AutomationController,
     project: &str,
     run_id: i64,
@@ -279,12 +285,14 @@ pub(crate) async fn run_log_page_data(
 ) -> Result<RunLogPage> {
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
-    let run_log = automation::read_run_log(store, project, run_id).await?;
+    let run_log = automation::read_run_log_with_active_session(store, sessions, project, run_id)
+        .await?;
     Ok(RunLogPage {
         projects,
         active_project_names,
         project: project.to_owned(),
         run_log,
+        workspace_editors: workspace::available_workspace_editors(),
         codex_status,
     })
 }
@@ -333,6 +341,7 @@ pub(crate) async fn triggers_page_data(
         active_project_names,
         selected_project,
         selected_project_view,
+        workspace_editors: workspace::available_workspace_editors(),
         api_base_url,
         codex_status,
     })

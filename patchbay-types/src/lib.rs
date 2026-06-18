@@ -17,6 +17,11 @@ pub enum UiEvent {
         timestamp: String,
         project: String,
     },
+    SystemPromptChanged {
+        sequence: u64,
+        timestamp: String,
+        project: String,
+    },
     WorkItemChanged {
         sequence: u64,
         timestamp: String,
@@ -92,6 +97,7 @@ pub struct ProjectView {
     pub path: Option<String>,
     pub path_exists: bool,
     pub path_checked_at: Option<String>,
+    pub git_status: Option<ProjectGitStatusView>,
     pub system_prompt: String,
     pub memory: String,
     pub workspace_mode: WorkspaceMode,
@@ -111,6 +117,21 @@ pub struct ProjectView {
     pub agent_git_command_policy: AgentGitCommandPolicy,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectGitStatusView {
+    pub is_repository: bool,
+    pub branch: Option<String>,
+    pub added_lines: u64,
+    pub deleted_lines: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspaceEditorView {
+    pub target: String,
+    pub label: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -143,6 +164,41 @@ pub struct ProjectMemoryUpdateView {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProjectMemoryCompactionView {
+    pub project_id: i64,
+    pub project_name: String,
+    pub deleted_events: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectSystemPromptView {
+    pub project_id: i64,
+    pub project_name: String,
+    pub system_prompt: String,
+    pub last_event: Option<ProjectSystemPromptEventView>,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectSystemPromptEventView {
+    pub id: i64,
+    pub project_id: i64,
+    pub project_name: String,
+    pub operation: String,
+    pub system_prompt: String,
+    pub actor_type: Option<String>,
+    pub actor_id: Option<String>,
+    pub agent_run_id: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectSystemPromptUpdateView {
+    pub project: ProjectView,
+    pub event: ProjectSystemPromptEventView,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectSystemPromptCompactionView {
     pub project_id: i64,
     pub project_name: String,
     pub deleted_events: u64,
@@ -969,6 +1025,8 @@ pub struct AgentRunTokenUsageView {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunLogView {
     pub run: AgentRunView,
+    #[serde(default)]
+    pub active: bool,
     pub memory_event: Option<ProjectMemoryEventRefView>,
     pub prompt: Option<String>,
     pub output: Vec<AgentRunOutputPiece>,

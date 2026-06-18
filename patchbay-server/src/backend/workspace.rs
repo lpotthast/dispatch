@@ -5,6 +5,7 @@ use std::{
     process::Stdio,
 };
 
+use patchbay_types::WorkspaceEditorView;
 use rootcause::{Result, prelude::*};
 
 use crate::backend::{projects, storage::Store};
@@ -12,15 +13,19 @@ use crate::backend::{projects, storage::Store};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkspaceOpenTarget {
     Folder,
-    Ide,
+    RustRover,
+    VsCode,
 }
 
 impl WorkspaceOpenTarget {
     pub(crate) fn parse(value: &str) -> Result<Self> {
         match value.trim() {
             "folder" => Ok(Self::Folder),
-            "ide" => Ok(Self::Ide),
-            other => bail!("workspace open target must be folder or ide, got '{other}'"),
+            "ide" | "rustrover" | "rust_rover" => Ok(Self::RustRover),
+            "vscode" | "vs_code" | "code" => Ok(Self::VsCode),
+            other => {
+                bail!("workspace open target must be folder, rustrover, or vscode, got '{other}'")
+            }
         }
     }
 }
@@ -28,17 +33,16 @@ impl WorkspaceOpenTarget {
 #[derive(Clone, Debug)]
 struct WorkspaceOpenConfig {
     os: String,
-    ide_name: String,
+    path_env: Option<OsString>,
+    home: Option<OsString>,
 }
 
 impl WorkspaceOpenConfig {
     fn from_env() -> Self {
         Self {
             os: env::consts::OS.to_owned(),
-            ide_name: env::var("PATCHBAY_WORKSPACE_IDE")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(default_ide_name),
+            path_env: env::var_os("PATH"),
+            home: env::var_os("HOME"),
         }
     }
 
@@ -49,7 +53,55 @@ impl WorkspaceOpenConfig {
     ) -> Result<WorkspaceOpenCommand> {
         match target {
             WorkspaceOpenTarget::Folder => folder_open_command(&self.os, path),
-            WorkspaceOpenTarget::Ide => ide_open_command(&self.os, &self.ide_name, path),
+            WorkspaceOpenTarget::RustRover | WorkspaceOpenTarget::VsCode => {
+                editor_open_command(self, target, path)
+            }
+        }
+    }
+
+    fn available_editors(&self) -> Vec<WorkspaceEditorView> {
+        [
+            (
+                WorkspaceOpenTarget::RustRover,
+                "RustRover",
+                self.rustrover_available(),
+            ),
+            (
+                WorkspaceOpenTarget::VsCode,
+                "VS Code",
+                self.vscode_available(),
+            ),
+        ]
+        .into_iter()
+        .filter(|(_, _, available)| *available)
+        .map(|(target, label, _)| WorkspaceEditorView {
+            target: workspace_editor_target_value(target).to_owned(),
+            label: label.to_owned(),
+        })
+        .collect()
+    }
+
+    fn rustrover_available(&self) -> bool {
+        match self.os.as_str() {
+            "macos" => {
+                macos_application_exists("RustRover", self.home.as_deref())
+                    || program_in_path("rustrover", self.path_env.as_deref())
+            }
+            "windows" => program_in_path("rustrover64.exe", self.path_env.as_deref()),
+            _ => program_in_path("rustrover", self.path_env.as_deref()),
+        }
+    }
+
+    fn vscode_available(&self) -> bool {
+        match self.os.as_str() {
+            "macos" => {
+                macos_application_exists("Visual Studio Code", self.home.as_deref())
+                    || program_in_path("code", self.path_env.as_deref())
+            }
+            "windows" => {
+                first_program_in_path(["code.cmd", "code.exe"], self.path_env.as_deref()).is_some()
+            }
+            _ => program_in_path("code", self.path_env.as_deref()),
         }
     }
 }
@@ -122,6 +174,10 @@ pub(crate) async fn open_workspace_path(
     command.run().await
 }
 
+pub(crate) fn available_workspace_editors() -> Vec<WorkspaceEditorView> {
+    WorkspaceOpenConfig::from_env().available_editors()
+}
+
 fn folder_open_command(os: &str, path: &Path) -> Result<WorkspaceOpenCommand> {
     match os {
         "macos" => Ok(command("open", [path.as_os_str()])),
@@ -131,18 +187,65 @@ fn folder_open_command(os: &str, path: &Path) -> Result<WorkspaceOpenCommand> {
     }
 }
 
-fn ide_open_command(os: &str, ide_name: &str, path: &Path) -> Result<WorkspaceOpenCommand> {
-    let ide_name = ide_name.trim();
-    if ide_name.is_empty() {
-        bail!("PATCHBAY_WORKSPACE_IDE cannot be empty");
+fn editor_open_command(
+    config: &WorkspaceOpenConfig,
+    target: WorkspaceOpenTarget,
+    path: &Path,
+) -> Result<WorkspaceOpenCommand> {
+    match target {
+        WorkspaceOpenTarget::RustRover if !config.rustrover_available() => {
+            bail!("RustRover is not available on this system")
+        }
+        WorkspaceOpenTarget::VsCode if !config.vscode_available() => {
+            bail!("VS Code is not available on this system")
+        }
+        _ => {}
     }
 
-    match os {
-        "macos" => Ok(command(
+    match target {
+        WorkspaceOpenTarget::RustRover => rustrover_open_command(config, path),
+        WorkspaceOpenTarget::VsCode => vscode_open_command(config, path),
+        WorkspaceOpenTarget::Folder => folder_open_command(&config.os, path),
+    }
+}
+
+fn rustrover_open_command(
+    config: &WorkspaceOpenConfig,
+    path: &Path,
+) -> Result<WorkspaceOpenCommand> {
+    match config.os.as_str() {
+        "macos" if macos_application_exists("RustRover", config.home.as_deref()) => Ok(command(
             "open",
-            [OsStr::new("-a"), OsStr::new(ide_name), path.as_os_str()],
+            [OsStr::new("-a"), OsStr::new("RustRover"), path.as_os_str()],
         )),
-        _ => Ok(command(ide_name, [path.as_os_str()])),
+        "windows" => {
+            let program = first_program_in_path(["rustrover64.exe"], config.path_env.as_deref())
+                .unwrap_or("rustrover64.exe");
+            Ok(command(program, [path.as_os_str()]))
+        }
+        _ => Ok(command("rustrover", [path.as_os_str()])),
+    }
+}
+
+fn vscode_open_command(config: &WorkspaceOpenConfig, path: &Path) -> Result<WorkspaceOpenCommand> {
+    match config.os.as_str() {
+        "macos" if macos_application_exists("Visual Studio Code", config.home.as_deref()) => {
+            Ok(command(
+                "open",
+                [
+                    OsStr::new("-a"),
+                    OsStr::new("Visual Studio Code"),
+                    path.as_os_str(),
+                ],
+            ))
+        }
+        "windows" => {
+            let program =
+                first_program_in_path(["code.cmd", "code.exe"], config.path_env.as_deref())
+                    .unwrap_or("code.cmd");
+            Ok(command(program, [path.as_os_str()]))
+        }
+        _ => Ok(command("code", [path.as_os_str()])),
     }
 }
 
@@ -153,27 +256,90 @@ fn command<const N: usize>(program: impl AsRef<OsStr>, args: [&OsStr; N]) -> Wor
     }
 }
 
-fn default_ide_name() -> String {
-    match env::consts::OS {
-        "macos" => "RustRover".to_owned(),
-        "windows" => "rustrover64.exe".to_owned(),
-        _ => "rustrover".to_owned(),
+fn workspace_editor_target_value(target: WorkspaceOpenTarget) -> &'static str {
+    match target {
+        WorkspaceOpenTarget::Folder => "folder",
+        WorkspaceOpenTarget::RustRover => "rustrover",
+        WorkspaceOpenTarget::VsCode => "vscode",
     }
+}
+
+fn program_in_path(program: &str, path_env: Option<&OsStr>) -> bool {
+    path_env.is_some_and(|path_env| {
+        env::split_paths(path_env).any(|directory| is_runnable_file(&directory.join(program)))
+    })
+}
+
+fn first_program_in_path<'a, const N: usize>(
+    programs: [&'a str; N],
+    path_env: Option<&OsStr>,
+) -> Option<&'a str> {
+    programs
+        .into_iter()
+        .find(|program| program_in_path(program, path_env))
+}
+
+fn is_runnable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        path.metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn macos_application_exists(app_name: &str, home: Option<&OsStr>) -> bool {
+    let bundle_name = format!("{app_name}.app");
+    let system_app = Path::new("/Applications").join(&bundle_name);
+    if system_app.is_dir() {
+        return true;
+    }
+    home.is_some_and(|home| {
+        PathBuf::from(home)
+            .join("Applications")
+            .join(bundle_name)
+            .is_dir()
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn create_path_program(directory: &Path, program: &str) {
+        std::fs::write(directory.join(program), "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+
+            std::fs::set_permissions(directory.join(program), Permissions::from_mode(0o755))
+                .unwrap();
+        }
+    }
+
     #[test]
-    fn macos_ide_command_uses_open_application() {
+    fn macos_rustrover_command_uses_open_application_when_bundle_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("Applications/RustRover.app")).unwrap();
         let path = Path::new("/tmp/demo");
         let config = WorkspaceOpenConfig {
             os: "macos".to_owned(),
-            ide_name: "RustRover".to_owned(),
+            path_env: None,
+            home: Some(temp.path().as_os_str().to_owned()),
         };
 
-        let command = config.command_for(WorkspaceOpenTarget::Ide, path).unwrap();
+        let command = config
+            .command_for(WorkspaceOpenTarget::RustRover, path)
+            .unwrap();
 
         assert_eq!(command.program, OsString::from("open"));
         assert_eq!(
@@ -184,6 +350,78 @@ mod tests {
                 OsString::from("/tmp/demo"),
             ]
         );
+    }
+
+    #[test]
+    fn available_editors_are_limited_to_detected_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        create_path_program(temp.path(), "code");
+        let config = WorkspaceOpenConfig {
+            os: "linux".to_owned(),
+            path_env: Some(temp.path().as_os_str().to_owned()),
+            home: None,
+        };
+
+        let editors = config.available_editors();
+
+        assert_eq!(editors.len(), 1);
+        assert_eq!(editors[0].target, "vscode");
+        assert_eq!(editors[0].label, "VS Code");
+    }
+
+    #[test]
+    fn linux_rustrover_command_uses_fixed_program() {
+        let temp = tempfile::tempdir().unwrap();
+        create_path_program(temp.path(), "rustrover");
+        let path = Path::new("/tmp/demo");
+        let config = WorkspaceOpenConfig {
+            os: "linux".to_owned(),
+            path_env: Some(temp.path().as_os_str().to_owned()),
+            home: None,
+        };
+
+        let command = config
+            .command_for(WorkspaceOpenTarget::RustRover, path)
+            .unwrap();
+
+        assert_eq!(command.program, OsString::from("rustrover"));
+        assert_eq!(command.args, vec![OsString::from("/tmp/demo")]);
+    }
+
+    #[test]
+    fn editor_command_rejects_unavailable_targets() {
+        let path = Path::new("/tmp/demo");
+        let config = WorkspaceOpenConfig {
+            os: "linux".to_owned(),
+            path_env: None,
+            home: None,
+        };
+
+        let err = config
+            .command_for(WorkspaceOpenTarget::RustRover, path)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("RustRover is not available"));
+    }
+
+    #[test]
+    fn windows_vscode_command_uses_detected_program() {
+        let temp = tempfile::tempdir().unwrap();
+        create_path_program(temp.path(), "code.exe");
+        let path = Path::new("C:/demo");
+        let config = WorkspaceOpenConfig {
+            os: "windows".to_owned(),
+            path_env: Some(temp.path().as_os_str().to_owned()),
+            home: None,
+        };
+
+        let command = config
+            .command_for(WorkspaceOpenTarget::VsCode, path)
+            .unwrap();
+
+        assert_eq!(command.program, OsString::from("code.exe"));
+        assert_eq!(command.args, vec![OsString::from("C:/demo")]);
     }
 
     #[test]

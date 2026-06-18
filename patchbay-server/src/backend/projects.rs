@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use git2::{DiffOptions, ErrorCode as GitErrorCode, Oid, Repository};
 use rootcause::{Result, prelude::*};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
@@ -26,13 +27,16 @@ use crate::{
     },
     shared::view_models::{
         AgentGitCommandPolicy, AgentReasoningEffort, AgentSandboxMode, AgentToolName,
-        CodexAgentModel, ProjectMemoryCompactionView, ProjectMemoryEventView,
-        ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView, ProjectView,
-        RevertStrategy, WorkspaceMode, WorktreeCleanupPolicy,
+        CodexAgentModel, ProjectGitStatusView, ProjectMemoryCompactionView, ProjectMemoryEventView,
+        ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView,
+        ProjectSystemPromptCompactionView, ProjectSystemPromptEventView,
+        ProjectSystemPromptUpdateView, ProjectView, RevertStrategy, WorkspaceMode,
+        WorktreeCleanupPolicy,
     },
 };
 
 const PROJECT_PATH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+const SYSTEM_PROMPT_CHANGED_EVENT_TYPE: &str = "SystemPromptChanged";
 const MEMORY_CHANGED_EVENT_TYPE: &str = "MemoryChanged";
 
 #[derive(Clone, Debug)]
@@ -72,7 +76,7 @@ pub struct UpdateProjectSettings {
 }
 
 #[derive(Clone, Debug)]
-pub enum MemoryChangeSource {
+pub enum ProjectChangeSource {
     Agent {
         agent_id: String,
         agent_run_id: Option<i64>,
@@ -87,7 +91,13 @@ struct MemoryChangedBody {
     memory: String,
 }
 
-impl MemoryChangeSource {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SystemPromptChangedBody {
+    operation: String,
+    system_prompt: String,
+}
+
+impl ProjectChangeSource {
     fn actor_type(&self) -> &'static str {
         match self {
             Self::Agent { .. } => "agent",
@@ -116,6 +126,7 @@ impl MemoryChangeSource {
 
 impl From<ProjectModel> for ProjectView {
     fn from(project: ProjectModel) -> Self {
+        let git_status = inspect_project_git_status(project.path.as_deref(), project.path_exists);
         Self {
             id: project.id,
             name: project.name,
@@ -123,6 +134,7 @@ impl From<ProjectModel> for ProjectView {
             path: project.path,
             path_exists: project.path_exists,
             path_checked_at: project.path_checked_at,
+            git_status,
             system_prompt: project.system_prompt,
             memory: project.memory,
             workspace_mode: project
@@ -201,6 +213,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
     let default_agent_reasoning_effort = create
         .default_agent_reasoning_effort
         .unwrap_or_else(AgentReasoningEffort::highest);
+    let system_prompt = create.system_prompt.unwrap_or_default();
     let memory = create.memory.unwrap_or_default();
 
     let now = utc_now();
@@ -210,7 +223,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         path: Set(Some(path)),
         path_exists: Set(path_exists),
         path_checked_at: Set(Some(now.clone())),
-        system_prompt: Set(create.system_prompt.unwrap_or_default()),
+        system_prompt: Set(system_prompt),
         memory: Set(memory),
         workspace_mode: Set(WorkspaceMode::CurrentBranch.as_storage().to_owned()),
         max_code_edit_agents: Set(1),
@@ -251,8 +264,17 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         &project.default_agent_tool,
     )
     .await?;
+    if !project.system_prompt.trim().is_empty() {
+        record_system_prompt_changed_event_in_tx(
+            &txn,
+            &project,
+            "initial",
+            &ProjectChangeSource::System,
+        )
+        .await?;
+    }
     if !project.memory.trim().is_empty() {
-        record_memory_changed_event_in_tx(&txn, &project, "initial", &MemoryChangeSource::System)
+        record_memory_changed_event_in_tx(&txn, &project, "initial", &ProjectChangeSource::System)
             .await?;
     }
     txn.commit()
@@ -317,25 +339,90 @@ pub async fn update_project(
 }
 
 pub async fn update_system_prompt(store: &Store, name: &str, body: String) -> Result<ProjectView> {
+    Ok(
+        update_system_prompt_with_source(store, name, body, ProjectChangeSource::User)
+            .await?
+            .project,
+    )
+}
+
+pub async fn update_system_prompt_with_source(
+    store: &Store,
+    name: &str,
+    body: String,
+    source: ProjectChangeSource,
+) -> Result<ProjectSystemPromptUpdateView> {
     let existing = find_project_by_name(store, name).await?;
+    let now = utc_now();
+    let txn = store
+        .db()
+        .begin()
+        .await
+        .context("failed to start project system prompt update")?;
+
     let mut active: ProjectActiveModel = existing.into();
     active.system_prompt = Set(body);
-    active.updated_at = Set(utc_now());
+    active.updated_at = Set(now);
 
     let updated = active
-        .update(store.db().as_ref())
+        .update(&txn)
         .await
         .context_with(|| format!("failed to update system prompt for project '{name}'"))?;
-    let view = ProjectView::from(updated);
-    events::publish_project_changed(&view.name);
-    Ok(view)
+    let event = record_system_prompt_changed_event_in_tx(&txn, &updated, "set", &source).await?;
+    txn.commit()
+        .await
+        .context("failed to commit project system prompt update")?;
+    events::publish_system_prompt_changed(name);
+
+    Ok(ProjectSystemPromptUpdateView {
+        project: updated.clone().into(),
+        event: system_prompt_event_to_view(name, event),
+    })
+}
+
+pub async fn list_system_prompt_events(
+    store: &Store,
+    project_name: &str,
+) -> Result<Vec<ProjectSystemPromptEventView>> {
+    let project = find_project_by_name(store, project_name).await?;
+    let events = work_item_event::Entity::find()
+        .filter(work_item_event::Column::ProjectId.eq(project.id))
+        .filter(work_item_event::Column::EventType.eq(SYSTEM_PROMPT_CHANGED_EVENT_TYPE))
+        .order_by_desc(work_item_event::Column::Id)
+        .all(store.db().as_ref())
+        .await
+        .context("failed to list project system prompt events")?;
+
+    Ok(events
+        .into_iter()
+        .map(|event| system_prompt_event_to_view(project_name, event))
+        .collect())
+}
+
+pub async fn compact_system_prompt_events(
+    store: &Store,
+    project_name: &str,
+) -> Result<ProjectSystemPromptCompactionView> {
+    let project_id = project_id(store, project_name).await?;
+    let deleted = work_item_event::Entity::delete_many()
+        .filter(work_item_event::Column::ProjectId.eq(project_id))
+        .filter(work_item_event::Column::EventType.eq(SYSTEM_PROMPT_CHANGED_EVENT_TYPE))
+        .exec(store.db().as_ref())
+        .await
+        .context("failed to compact project system prompt events")?;
+    events::publish_system_prompt_changed(project_name);
+    Ok(ProjectSystemPromptCompactionView {
+        project_id,
+        project_name: project_name.to_owned(),
+        deleted_events: deleted.rows_affected,
+    })
 }
 
 pub async fn update_memory_with_source(
     store: &Store,
     name: &str,
     body: String,
-    source: MemoryChangeSource,
+    source: ProjectChangeSource,
 ) -> Result<ProjectMemoryUpdateView> {
     change_memory(store, name, body, "set", source).await
 }
@@ -344,7 +431,7 @@ pub async fn append_memory_with_source(
     store: &Store,
     name: &str,
     body: String,
-    source: MemoryChangeSource,
+    source: ProjectChangeSource,
 ) -> Result<ProjectMemoryUpdateView> {
     if body.trim().is_empty() {
         bail!("project memory append body cannot be empty");
@@ -415,7 +502,7 @@ pub async fn snapshot_current_memory_event(
     store: &Store,
     project_name: &str,
     operation: &str,
-    source: MemoryChangeSource,
+    source: ProjectChangeSource,
 ) -> Result<ProjectMemoryEventView> {
     let project = find_project_by_name(store, project_name).await?;
     let db = store.db();
@@ -444,7 +531,7 @@ async fn change_memory(
     name: &str,
     body: String,
     operation: &str,
-    source: MemoryChangeSource,
+    source: ProjectChangeSource,
 ) -> Result<ProjectMemoryUpdateView> {
     let existing = find_project_by_name(store, name).await?;
     let memory = if operation == "append" && !existing.memory.trim().is_empty() {
@@ -492,11 +579,40 @@ async fn latest_memory_event(
         .context("failed to load latest project memory event")?)
 }
 
+async fn record_system_prompt_changed_event_in_tx<C>(
+    conn: &C,
+    project: &ProjectModel,
+    operation: &str,
+    source: &ProjectChangeSource,
+) -> Result<work_item_event::Model>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let body = serde_json::to_string(&SystemPromptChangedBody {
+        operation: operation.to_owned(),
+        system_prompt: project.system_prompt.clone(),
+    })
+    .context("failed to encode project system prompt event")?;
+    items::record_event_with_attribution_in_tx(
+        conn,
+        project.id,
+        None,
+        SYSTEM_PROMPT_CHANGED_EVENT_TYPE,
+        &body,
+        items::EventAttribution {
+            actor_type: Some(source.actor_type()),
+            actor_id: source.actor_id(),
+            agent_run_id: source.agent_run_id(),
+        },
+    )
+    .await
+}
+
 async fn record_memory_changed_event_in_tx<C>(
     conn: &C,
     project: &ProjectModel,
     operation: &str,
-    source: &MemoryChangeSource,
+    source: &ProjectChangeSource,
 ) -> Result<work_item_event::Model>
 where
     C: sea_orm::ConnectionTrait,
@@ -519,6 +635,29 @@ where
         },
     )
     .await
+}
+
+fn system_prompt_event_to_view(
+    project_name: &str,
+    event: work_item_event::Model,
+) -> ProjectSystemPromptEventView {
+    let parsed = serde_json::from_str::<SystemPromptChangedBody>(&event.body).ok();
+    ProjectSystemPromptEventView {
+        id: event.id,
+        project_id: event.project_id,
+        project_name: project_name.to_owned(),
+        operation: parsed
+            .as_ref()
+            .map(|body| body.operation.clone())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        system_prompt: parsed
+            .map(|body| body.system_prompt)
+            .unwrap_or_else(|| event.body.clone()),
+        actor_type: event.actor_type,
+        actor_id: event.actor_id,
+        agent_run_id: event.agent_run_id,
+        created_at: event.created_at,
+    }
 }
 
 fn memory_event_to_view(
@@ -797,6 +936,86 @@ fn project_path_exists(path: Option<&str>) -> bool {
         .is_some_and(|path| Path::new(&path).is_dir())
 }
 
+fn inspect_project_git_status(
+    path: Option<&str>,
+    path_exists: bool,
+) -> Option<ProjectGitStatusView> {
+    let path = path.map(str::trim).filter(|path| !path.is_empty())?;
+    if !path_exists {
+        return None;
+    }
+
+    let expanded = expand_home_path(path);
+    let repository = match Repository::discover(Path::new(&expanded)) {
+        Ok(repository) => repository,
+        Err(err) if err.code() == GitErrorCode::NotFound => {
+            return Some(ProjectGitStatusView {
+                is_repository: false,
+                branch: None,
+                added_lines: 0,
+                deleted_lines: 0,
+                error: None,
+            });
+        }
+        Err(err) => {
+            return Some(ProjectGitStatusView {
+                is_repository: false,
+                branch: None,
+                added_lines: 0,
+                deleted_lines: 0,
+                error: Some(err.message().to_owned()),
+            });
+        }
+    };
+
+    let branch = current_git_branch(&repository);
+    let (added_lines, deleted_lines, error) = match git_diff_line_counts(&repository) {
+        Ok((added_lines, deleted_lines)) => (added_lines, deleted_lines, None),
+        Err(err) => (0, 0, Some(err.to_string())),
+    };
+
+    Some(ProjectGitStatusView {
+        is_repository: true,
+        branch,
+        added_lines,
+        deleted_lines,
+        error,
+    })
+}
+
+fn current_git_branch(repository: &Repository) -> Option<String> {
+    let head = repository.head().ok()?;
+    if head.is_branch() {
+        return head.shorthand().map(ToOwned::to_owned);
+    }
+    head.target()
+        .map(|oid| format!("detached {}", short_oid(oid)))
+}
+
+fn short_oid(oid: Oid) -> String {
+    oid.to_string().chars().take(7).collect()
+}
+
+fn git_diff_line_counts(repository: &Repository) -> Result<(u64, u64)> {
+    let tree = repository
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_tree().ok());
+    let mut diff_options = DiffOptions::new();
+    diff_options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
+        .ignore_submodules(true);
+    let diff = repository
+        .diff_tree_to_workdir_with_index(tree.as_ref(), Some(&mut diff_options))
+        .context("failed to diff project git workspace")?;
+    let stats = diff
+        .stats()
+        .context("failed to summarize project git diff")?;
+    Ok((stats.insertions() as u64, stats.deletions() as u64))
+}
+
 fn expand_home_path(path: &str) -> String {
     expand_home_path_with(path.trim(), env::var_os("HOME").as_ref())
 }
@@ -989,6 +1208,7 @@ fn infer_agent_run_id(agent_id: &str) -> Option<i64> {
 mod tests {
     use std::fs;
 
+    use git2::Signature;
     use tempfile::TempDir;
 
     use super::*;
@@ -1005,6 +1225,28 @@ mod tests {
         let path = temp.path().join(name);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn commit_all(repository: &Repository, message: &str) {
+        let mut index = repository.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        let tree_id = index.write_tree().unwrap();
+        index.write().unwrap();
+        let tree = repository.find_tree(tree_id).unwrap();
+        let signature = Signature::now("Patchbay Test", "patchbay@example.com").unwrap();
+        repository
+            .commit(
+                Some("refs/heads/main"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &[],
+            )
+            .unwrap();
+        repository.set_head("refs/heads/main").unwrap();
     }
 
     async fn create_demo_project(store: &Store, path: PathBuf) {
@@ -1064,6 +1306,36 @@ mod tests {
             "/Users/example/dev/vibetest"
         );
         assert_eq!(expand_home_path_with("~", Some(&home)), "/Users/example");
+    }
+
+    #[test]
+    fn project_git_status_reports_branch_and_diff_counts() {
+        let temp = TempDir::new().unwrap();
+        let repository = Repository::init(temp.path()).unwrap();
+        fs::write(temp.path().join("notes.txt"), "one\ntwo\n").unwrap();
+        commit_all(&repository, "Initial commit");
+        fs::write(temp.path().join("notes.txt"), "one\nthree\nfour\n").unwrap();
+
+        let status = inspect_project_git_status(Some(temp.path().to_str().unwrap()), true).unwrap();
+
+        assert!(status.is_repository);
+        assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!(status.added_lines, 2);
+        assert_eq!(status.deleted_lines, 1);
+        assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn project_git_status_reports_existing_non_repository() {
+        let temp = TempDir::new().unwrap();
+
+        let status = inspect_project_git_status(Some(temp.path().to_str().unwrap()), true).unwrap();
+
+        assert!(!status.is_repository);
+        assert!(status.branch.is_none());
+        assert_eq!(status.added_lines, 0);
+        assert_eq!(status.deleted_lines, 0);
+        assert!(status.error.is_none());
     }
 
     #[tokio::test]
@@ -1152,7 +1424,7 @@ mod tests {
             &store,
             "demo",
             "Shared project memory".to_owned(),
-            MemoryChangeSource::User,
+            ProjectChangeSource::User,
         )
         .await
         .unwrap()
@@ -1160,6 +1432,62 @@ mod tests {
 
         assert_eq!(prompted.system_prompt, "User-controlled prompt");
         assert_eq!(remembered.memory, "Shared project memory");
+    }
+
+    #[tokio::test]
+    async fn system_prompt_history_snapshots_initial_and_updated_values() {
+        let (temp, store) = test_store().await;
+        create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: project_path(&temp, "demo"),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: Some("Initial prompt.".to_owned()),
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let initial_events = list_system_prompt_events(&store, "demo").await.unwrap();
+        assert_eq!(initial_events.len(), 1);
+        assert_eq!(initial_events[0].operation, "initial");
+        assert_eq!(initial_events[0].system_prompt, "Initial prompt.");
+        assert_eq!(initial_events[0].actor_type.as_deref(), Some("system"));
+
+        let updated = update_system_prompt_with_source(
+            &store,
+            "demo",
+            "Updated prompt.".to_owned(),
+            ProjectChangeSource::User,
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.project.system_prompt, "Updated prompt.");
+        assert_eq!(updated.event.operation, "set");
+        assert_eq!(updated.event.system_prompt, "Updated prompt.");
+        assert_eq!(updated.event.actor_type.as_deref(), Some("user"));
+
+        let current = get_project(&store, "demo").await.unwrap();
+        assert_eq!(current.system_prompt, "Updated prompt.");
+
+        let events = list_system_prompt_events(&store, "demo").await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, updated.event.id);
+
+        let compacted = compact_system_prompt_events(&store, "demo").await.unwrap();
+        assert_eq!(compacted.deleted_events, 2);
+        assert!(
+            list_system_prompt_events(&store, "demo")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let current = get_project(&store, "demo").await.unwrap();
+        assert_eq!(current.system_prompt, "Updated prompt.");
     }
 
     #[tokio::test]

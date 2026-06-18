@@ -105,6 +105,7 @@ The Leptos UI uses server form handlers for operator actions such as:
 - creating, updating, moving, deleting, and commenting on work items;
 - starting, stopping, and recovering automation;
 - cleaning up worktrees;
+- opening workspace folders or fixed editor targets such as RustRover and VS Code;
 - creating, updating, deleting, and queueing evaluations for automation rules;
 - discovering agent tools;
 - picking folders on the local system.
@@ -112,6 +113,8 @@ The Leptos UI uses server form handlers for operator actions such as:
 These endpoints are UI integration points, not the stable agent-facing API.
 
 Hydrated UI controls that save data in the background may post to these same form handlers with an internal background-request marker. Those requests should return a non-navigating success response while ordinary form posts keep their redirect fallback.
+
+Project system prompt form writes create `SystemPromptChanged` events containing the full post-write prompt snapshot. System prompt history compaction deletes only old prompt events; the current project system prompt remains on the project record.
 
 ## Errors
 

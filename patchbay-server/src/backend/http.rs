@@ -37,8 +37,9 @@ use crate::{
     frontend,
     shared::view_models::{
         AgentGitCommandPolicy, AgentGitHardResetPolicy, AgentReasoningEffort, AgentToolName,
-        AuthorType, AutomationActivation, AutomationEffect, AutomationMode, DEFAULT_STATE_LABEL,
-        ProcessSessionView, RevertStrategy, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentRunStatus, AuthorType, AutomationActivation, AutomationEffect, AutomationMode,
+        DEFAULT_STATE_LABEL, ProcessSessionView, RevertStrategy, WorkspaceMode,
+        WorktreeCleanupPolicy,
     },
 };
 
@@ -106,6 +107,10 @@ pub(crate) fn router(
             "/projects/{project}/system-prompt",
             post(update_system_prompt),
         )
+        .route(
+            "/projects/{project}/system-prompt/events/compact",
+            post(compact_system_prompt_events),
+        )
         .route("/projects/{project}/memory", post(update_memory))
         .route("/projects/{project}/memory/append", post(append_memory))
         .route(
@@ -141,6 +146,10 @@ pub(crate) fn router(
         .route(
             "/projects/{project}/automation/runs/{run_id}/workspace/open",
             post(open_run_workspace),
+        )
+        .route(
+            "/projects/{project}/automation/runs/{run_id}/cancel",
+            post(cancel_run),
         )
         .route(
             "/projects/{project}/automation/triggers",
@@ -490,6 +499,18 @@ async fn update_system_prompt(
     }
 }
 
+async fn compact_system_prompt_events(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+) -> Response {
+    match projects::compact_system_prompt_events(&state.store, &project).await {
+        Ok(_) => {
+            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
+        }
+        Err(err) => error_response(err).await,
+    }
+}
+
 async fn update_memory(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
@@ -499,7 +520,7 @@ async fn update_memory(
         &state.store,
         &project,
         form.body,
-        projects::MemoryChangeSource::User,
+        projects::ProjectChangeSource::User,
     )
     .await
     {
@@ -519,7 +540,7 @@ async fn append_memory(
         &state.store,
         &project,
         form.body,
-        projects::MemoryChangeSource::User,
+        projects::ProjectChangeSource::User,
     )
     .await
     {
@@ -741,6 +762,11 @@ struct OpenDirectoryForm {
     return_to: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct CancelRunForm {
+    return_to: Option<String>,
+}
+
 async fn open_database_directory(
     Extension(state): Extension<AppState>,
     Form(form): Form<OpenDirectoryForm>,
@@ -808,6 +834,37 @@ async fn open_run_workspace(
     let result = async {
         let run = automation::get_run(&state.store, &project, run_id).await?;
         workspace::open_workspace_path(target, run.working_dir).await
+    }
+    .await;
+
+    match result {
+        Ok(()) => Redirect::to(&return_to).into_response(),
+        Err(err) => error_response(err).await,
+    }
+}
+
+async fn cancel_run(
+    Extension(state): Extension<AppState>,
+    Path((project, run_id)): Path<(String, i64)>,
+    Form(form): Form<CancelRunForm>,
+) -> Response {
+    let return_to = safe_return_to(
+        form.return_to,
+        format!(
+            "/projects/{}/automation/runs/{}/log",
+            urlencoding::encode(&project),
+            run_id
+        ),
+    );
+    let result = async {
+        let run = automation::get_run(&state.store, &project, run_id).await?;
+        if run.status != AgentRunStatus::Running {
+            bail!("automation run {run_id} is not running");
+        }
+        if !state.sessions.cancel_run(&project, run_id).await {
+            bail!("automation run {run_id} does not have an active session");
+        }
+        Ok(())
     }
     .await;
 

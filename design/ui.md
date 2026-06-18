@@ -61,10 +61,10 @@ of relying on users to reconstruct the command from server logs.
 
 Project settings should expose:
 
-- filesystem path and path health;
-- copy/open actions for the project folder and IDE;
+- filesystem path, path health, and Git repository status;
+- copy/open actions for the project folder and available RustRover or VS Code editor targets;
 - system prompt and memory;
-- memory history snapshots and manual memory-history compaction;
+- system prompt and memory history snapshots, with manual history compaction;
 - workspace mode;
 - agent concurrency;
 - refinement policy;
@@ -85,7 +85,7 @@ When a selected project uses the current-branch workspace mode, the top bar shou
 
 Quick settings controls such as the top-bar Auto-Commit toggle should update optimistically in the hydrated UI and send the persistence request in the background. If the request fails, the control should roll back to its previous state instead of navigating or reloading the page.
 
-The board and run detail views should make workspaces directly reachable. Project-level actions use the configured project path; run-level actions use the recorded run working directory so Git worktree runs can be opened in the exact folder the agent edited. IDE opening is a server-local action controlled by `PATCHBAY_WORKSPACE_IDE` and must not accept arbitrary commands from browser requests.
+The board and run detail views should make workspaces directly reachable. Project-level actions use the configured project path; run-level actions use the recorded run working directory so Git worktree runs can be opened in the exact folder the agent edited. Editor opening is a server-local fixed allowlist for RustRover and VS Code; unavailable editors should not be shown, and browser requests must not accept arbitrary commands. The board workspace panel should state whether the project path is in a Git repository and, when it is, show the current branch plus added/deleted line counts.
 
 ## Live Updates
 

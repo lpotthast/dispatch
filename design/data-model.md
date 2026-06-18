@@ -20,6 +20,8 @@ Project data includes:
 
 All item and automation API calls are project-scoped. Missing project context is an error for agent-facing operations.
 
+The project system prompt is the project-owned instruction text included in automation prompts. Every project system prompt write creates a project-level `SystemPromptChanged` event with the full prompt snapshot after the write. System prompt events carry optional actor and agent-run attribution so a prompt change can be traced back to the Patchbay user or agent/session that wrote it.
+
 Project memory is the project-owned shared memory for agents. Every project memory write creates a project-level `MemoryChanged` event with the full memory snapshot after the write. Memory events carry optional actor and agent-run attribution so a memory change can be traced back to the Patchbay agent/session that wrote it.
 
 ## Work Items
@@ -57,6 +59,8 @@ Comment authors include user, agent, and system author types. The server records
 Patchbay records workflow and automation events for live UI updates and auditability. Event streams are project-scoped and can also be filtered to a work item.
 
 Events are used by item watch commands, live board updates, and automation visibility. They are not a substitute for the current state stored on projects, work item labels, comments, and runs.
+
+System prompt history is reconstructable from `SystemPromptChanged` event snapshots until a user compacts system prompt history. Compaction removes old system prompt events but does not change the current `projects.system_prompt` value.
 
 Memory history is reconstructable from `MemoryChanged` event snapshots until a user compacts memory history. Compaction removes old memory events but does not change the current `projects.memory` value. Agent runs may keep a memory event id reference; readers must tolerate the referenced event being unavailable after compaction.
 
