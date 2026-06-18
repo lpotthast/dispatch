@@ -36,8 +36,8 @@ use crate::{
     },
     frontend,
     shared::view_models::{
-        AgentGitCommandPolicy, AgentGitHardResetPolicy, AgentReasoningEffort, AgentToolName,
-        AgentRunStatus, AuthorType, AutomationActivation, AutomationEffect, AutomationMode,
+        AgentGitCommandPolicy, AgentGitHardResetPolicy, AgentReasoningEffort, AgentRunStatus,
+        AgentToolName, AuthorType, AutomationActivation, AutomationEffect, AutomationMode,
         DEFAULT_STATE_LABEL, ProcessSessionView, RevertStrategy, WorkspaceMode,
         WorktreeCleanupPolicy,
     },
@@ -856,7 +856,7 @@ async fn cancel_run(
             run_id
         ),
     );
-    let result = async {
+    let result: Result<()> = async {
         let run = automation::get_run(&state.store, &project, run_id).await?;
         if run.status != AgentRunStatus::Running {
             bail!("automation run {run_id} is not running");

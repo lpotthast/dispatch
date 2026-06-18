@@ -57,7 +57,7 @@ GET /api/projects/{project}/automation/runs/{run_id}/log
 GET /api/projects/{project}/automation/sessions
 ```
 
-Automation run responses use `AgentRunView`, which includes reported Codex token usage for the run when available. Usage is reported as input tokens, cached input tokens, output tokens, and a derived total.
+Automation run responses use `AgentRunView`, which includes reported Codex token usage for the run when available. Usage is reported as input tokens, cached input tokens, output tokens, and a derived total. Run-log responses include active in-memory session output while a run is still ongoing and fall back to the persisted output log when no active session is present.
 
 Event endpoints:
 
@@ -104,6 +104,7 @@ The Leptos UI uses server form handlers for operator actions such as:
 - toggling project auto-commit and updating project commit, revert, and mutable Git command policy;
 - creating, updating, moving, deleting, and commenting on work items;
 - starting, stopping, and recovering automation;
+- canceling an individual active automation run;
 - cleaning up worktrees;
 - opening workspace folders or fixed editor targets such as RustRover and VS Code;
 - creating, updating, deleting, and queueing evaluations for automation rules;

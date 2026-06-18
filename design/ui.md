@@ -29,7 +29,7 @@ The main workflow surface should make these states easy to inspect:
 - recent comments and progress;
 - automation status;
 - stale or blocked work;
-- run logs and run outcomes, including commit outcome and created commit SHA visibility.
+- run logs and run outcomes, including live output for active runs, active-run cancellation, commit outcome, and created commit SHA visibility.
 - per-run Codex token usage when reported by the agent runtime.
 - Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, and `patchbay:automation-blocked`.
 

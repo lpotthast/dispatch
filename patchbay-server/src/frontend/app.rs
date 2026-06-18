@@ -2152,11 +2152,27 @@ fn run_log_content(page: RunLogPage) -> AnyView {
         encode_path(&project),
         run_log.run.id
     );
-    let working_dir = run_workspace_actions(&project, &run_log.run, workspace_editors, run_href);
+    let working_dir =
+        run_workspace_actions(&project, &run_log.run, workspace_editors, run_href.clone());
     let status_class = run_status_class(run_log.run.status);
     let memory_event = run_log.memory_event.as_ref().map(memory_event_ref_label);
     let token_usage = run_token_usage_text(&run_log.run);
     let commit_outcome = run_commit_outcome_label(&run_log.run);
+    let cancel_action = if run_log.active {
+        let action = format!(
+            "/projects/{}/automation/runs/{}/cancel",
+            encode_path(&project),
+            run_log.run.id
+        );
+        Some(view! {
+            <form method="post" action=action>
+                <input type="hidden" name="return_to" value=run_href/>
+                <button type="submit" class="danger">"Cancel run"</button>
+            </form>
+        })
+    } else {
+        None
+    };
     let pr_url = run_log.run.pr_url.clone().map(|pr_url| {
         let href = pr_url.clone();
         view! {
@@ -2185,6 +2201,7 @@ fn run_log_content(page: RunLogPage) -> AnyView {
                         " · "
                         {summary.clone()}
                     </p>
+                    <div class="run-log-actions">{cancel_action}</div>
                 </section>
                 <section>
                     <h2>"Run"</h2>
@@ -2255,6 +2272,7 @@ fn api_docs_content(page: ApiDocsPage) -> AnyView {
         "POST /projects/{project}/automation/cleanup-worktrees",
         "POST /projects/{project}/workspace/open",
         "POST /projects/{project}/automation/runs/{run_id}/workspace/open",
+        "POST /projects/{project}/automation/runs/{run_id}/cancel",
         "POST /system/database/open",
         "GET /projects/{project}/automation/runs/{run_id}/log",
     ]

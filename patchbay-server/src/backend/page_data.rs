@@ -285,8 +285,8 @@ pub(crate) async fn run_log_page_data(
 ) -> Result<RunLogPage> {
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
-    let run_log = automation::read_run_log_with_active_session(store, sessions, project, run_id)
-        .await?;
+    let run_log =
+        automation::read_run_log_with_active_session(store, sessions, project, run_id).await?;
     Ok(RunLogPage {
         projects,
         active_project_names,

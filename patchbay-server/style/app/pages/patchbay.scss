@@ -1001,6 +1001,13 @@ a {
   }
 }
 
+.run-log-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
 input,
 textarea,
 select,
