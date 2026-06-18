@@ -56,7 +56,7 @@ The server validates claim ownership, appends the optional release comment, clea
 
 General item edits use the item update endpoint, not workflow endpoints. Updates can change title, description, state, and per-item agent overrides.
 
-Version checks protect against overwriting newer item state. Workflow transitions still use dedicated operations because they contain additional business rules.
+A single item update request is applied as one versioned change, even when it edits both item fields and the state label. Version checks protect against overwriting newer item state. Workflow transitions still use dedicated operations because they contain additional business rules.
 
 ## Automation Launch
 

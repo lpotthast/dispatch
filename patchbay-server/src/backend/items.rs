@@ -42,6 +42,7 @@ pub struct CreateWorkItem {
 pub struct UpdateWorkItem {
     pub title: Option<String>,
     pub description: Option<String>,
+    pub state: Option<String>,
     pub agent_model_override: Option<Option<String>>,
     pub agent_reasoning_effort_override: Option<Option<AgentReasoningEffort>>,
     pub expect_version: Option<i64>,
@@ -247,8 +248,19 @@ pub async fn update_item(
     item_id: i64,
     update: UpdateWorkItem,
 ) -> Result<WorkItemView> {
+    let state = update
+        .state
+        .map(normalize_state_value)
+        .transpose()
+        .context("invalid item state")?;
+    let has_item_update = update.title.is_some()
+        || update.description.is_some()
+        || update.agent_model_override.is_some()
+        || update.agent_reasoning_effort_override.is_some();
+    let has_text_update = update.title.is_some() || update.description.is_some();
     if update.title.is_none()
         && update.description.is_none()
+        && state.is_none()
         && update.agent_model_override.is_none()
         && update.agent_reasoning_effort_override.is_none()
     {
@@ -268,7 +280,9 @@ pub async fn update_item(
     let description = update
         .description
         .unwrap_or_else(|| existing.description.clone());
-    validate_item_text(&title, &description)?;
+    if has_text_update {
+        validate_item_text(&title, &description)?;
+    }
 
     let version = existing.version;
     let mut active: WorkItemActiveModel = existing.into();
@@ -288,14 +302,28 @@ pub async fn update_item(
         .update(&txn)
         .await
         .context("failed to update work item")?;
-    record_event_in_tx(
-        &txn,
-        project_id,
-        Some(item_id),
-        "item_updated",
-        "Updated item",
-    )
-    .await?;
+    if has_item_update {
+        record_event_in_tx(
+            &txn,
+            project_id,
+            Some(item_id),
+            "item_updated",
+            "Updated item",
+        )
+        .await?;
+    }
+    if let Some(state) = state {
+        upsert_label_in_tx(
+            &txn,
+            project_id,
+            item_id,
+            STATE_LABEL_KEY,
+            Some(state.as_str()),
+        )
+        .await?;
+        let event_body = format!("Moved item to {state}");
+        record_event_in_tx(&txn, project_id, Some(item_id), "item_moved", &event_body).await?;
+    }
     txn.commit().await.context("failed to commit item update")?;
     events::publish_work_item_changed(project_name, item_id);
 
@@ -309,39 +337,20 @@ pub async fn move_item(
     state: String,
     expect_version: Option<i64>,
 ) -> Result<WorkItemView> {
-    let state = normalize_state_value(state)?;
-    let project_id = projects::project_id(store, project_name).await?;
-    let txn = store
-        .db()
-        .begin()
-        .await
-        .context("failed to start item move")?;
-    let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
-    check_expected_version(expect_version, existing.version)?;
-
-    let version = existing.version;
-    let mut active: WorkItemActiveModel = existing.into();
-    active.version = Set(version + 1);
-    active.updated_at = Set(utc_now());
-
-    let updated = active
-        .update(&txn)
-        .await
-        .context("failed to move work item")?;
-    upsert_label_in_tx(
-        &txn,
-        project_id,
+    update_item(
+        store,
+        project_name,
         item_id,
-        STATE_LABEL_KEY,
-        Some(state.as_str()),
+        UpdateWorkItem {
+            title: None,
+            description: None,
+            state: Some(state),
+            agent_model_override: None,
+            agent_reasoning_effort_override: None,
+            expect_version,
+        },
     )
-    .await?;
-    let event_body = format!("Moved item to {state}");
-    record_event_in_tx(&txn, project_id, Some(item_id), "item_moved", &event_body).await?;
-    txn.commit().await.context("failed to commit item move")?;
-    events::publish_work_item_changed(project_name, item_id);
-
-    model_to_view(store, updated).await
+    .await
 }
 
 pub async fn claim_item(
@@ -1919,6 +1928,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn updating_item_fields_and_state_is_one_versioned_change() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Update me".to_owned(),
+                description: "Move and edit together".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let updated = update_item(
+            &store,
+            "demo",
+            item.id,
+            UpdateWorkItem {
+                title: Some("Updated title".to_owned()),
+                description: None,
+                state: Some("review".to_owned()),
+                agent_model_override: Some(Some("gpt-5.4".to_owned())),
+                agent_reasoning_effort_override: None,
+                expect_version: Some(item.version),
+            },
+        )
+        .await
+        .unwrap();
+        let events = list_events(&store, "demo", Some(item.id), None)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.title, "Updated title");
+        assert_eq!(updated.state.as_deref(), Some("review"));
+        assert_eq!(updated.agent_model_override.as_deref(), Some("gpt-5.4"));
+        assert_eq!(updated.version, item.version + 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "item_updated")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "item_moved")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn stale_expected_version_is_rejected() {
         let (_temp, store) = test_store().await;
         let item = create_item(
@@ -1942,6 +2007,7 @@ mod tests {
             UpdateWorkItem {
                 title: Some("Changed".to_owned()),
                 description: None,
+                state: None,
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
                 expect_version: Some(item.version + 1),

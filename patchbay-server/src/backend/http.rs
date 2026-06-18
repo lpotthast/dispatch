@@ -1285,6 +1285,7 @@ async fn update_item(
         UpdateWorkItem {
             title: Some(form.title),
             description: Some(form.description),
+            state: None,
             agent_model_override: Some(
                 form.agent_model_override
                     .filter(|value| !value.trim().is_empty()),

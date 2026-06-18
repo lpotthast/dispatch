@@ -10,7 +10,7 @@ use patchbay_types::{
     ProgressWorkItemRequest, ReleaseWorkItemRequest, UpdateProjectMemoryRequest,
     UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
 };
-use rootcause::{Result, prelude::*};
+use rootcause::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{
@@ -160,7 +160,22 @@ pub(crate) async fn update_item(
     Path((project, item_id)): Path<(String, i64)>,
     Json(request): Json<UpdateWorkItemRequest>,
 ) -> Response {
-    json_result(update_item_inner(&state, &project, item_id, request).await)
+    json_result(
+        items::update_item(
+            &state.store,
+            &project,
+            item_id,
+            UpdateWorkItem {
+                title: request.title,
+                description: request.description,
+                state: request.state,
+                agent_model_override: request.agent_model_override,
+                agent_reasoning_effort_override: request.agent_reasoning_effort_override,
+                expect_version: request.expect_version,
+            },
+        )
+        .await,
+    )
 }
 
 pub(crate) async fn claim_item(
@@ -275,58 +290,6 @@ pub(crate) async fn get_run_log(
         )
         .await,
     )
-}
-
-async fn update_item_inner(
-    state: &AppState,
-    project: &str,
-    item_id: i64,
-    request: UpdateWorkItemRequest,
-) -> Result<patchbay_types::WorkItemView> {
-    let has_item_update = request.title.is_some()
-        || request.description.is_some()
-        || request.agent_model_override.is_some()
-        || request.agent_reasoning_effort_override.is_some();
-
-    if !has_item_update && request.state.is_none() {
-        bail!("item update requires at least one field");
-    }
-
-    let mut updated = None;
-    if has_item_update {
-        updated = Some(
-            items::update_item(
-                &state.store,
-                project,
-                item_id,
-                UpdateWorkItem {
-                    title: request.title,
-                    description: request.description,
-                    agent_model_override: request.agent_model_override,
-                    agent_reasoning_effort_override: request.agent_reasoning_effort_override,
-                    expect_version: request.expect_version,
-                },
-            )
-            .await?,
-        );
-    }
-
-    if let Some(state_filter) = request.state {
-        updated = Some(
-            items::move_item(
-                &state.store,
-                project,
-                item_id,
-                state_filter,
-                (!has_item_update)
-                    .then_some(request.expect_version)
-                    .flatten(),
-            )
-            .await?,
-        );
-    }
-
-    updated.ok_or_else(|| report!("item update requires at least one field"))
 }
 
 fn json_result<T>(result: Result<T>) -> Response
@@ -597,6 +560,35 @@ mod tests {
         .await;
         assert_eq!(finished.state.as_deref(), Some("done"));
         assert_eq!(finished.claimed_by, None);
+    }
+
+    #[tokio::test]
+    async fn update_endpoint_applies_fields_and_state_as_one_patch() {
+        let (_temp, state, item_id) = test_state().await;
+        let original = items::get_item(&state.store, "demo", item_id)
+            .await
+            .unwrap();
+
+        let updated: WorkItemView = decode(
+            update_item(
+                Extension(state),
+                Path(("demo".to_owned(), item_id)),
+                Json(UpdateWorkItemRequest {
+                    title: Some("Endpoint update".to_owned()),
+                    description: None,
+                    state: Some("review".to_owned()),
+                    agent_model_override: None,
+                    agent_reasoning_effort_override: None,
+                    expect_version: Some(original.version),
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        assert_eq!(updated.title, "Endpoint update");
+        assert_eq!(updated.state.as_deref(), Some("review"));
+        assert_eq!(updated.version, original.version + 1);
     }
 
     #[tokio::test]
