@@ -231,7 +231,7 @@ pub async fn has_unclaimed_item_matching_condition(
     project_name: &str,
     condition: &Condition,
 ) -> Result<bool> {
-    item_labels::validate_condition(condition)?;
+    let selector = item_labels::ValidatedLabelCondition::new(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
     let items = unclaimed_items_in_claim_order(store.db().as_ref(), project_id).await?;
     let labels_by_item =
@@ -239,7 +239,7 @@ pub async fn has_unclaimed_item_matching_condition(
 
     for item in items {
         let labels = labels_for_item(&labels_by_item, item.id);
-        if item_labels::automation_selector_matches(condition, labels)? {
+        if selector.matches_automation_selector(labels) {
             return Ok(true);
         }
     }
@@ -253,11 +253,11 @@ pub async fn item_matches_condition(
     item_id: i64,
     condition: &Condition,
 ) -> Result<bool> {
-    item_labels::validate_condition(condition)?;
+    let selector = item_labels::ValidatedLabelCondition::new(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
     let item = work_items::get(store.db().as_ref(), project_id, item_id).await?;
     let labels = work_item_labels::for_item(store.db().as_ref(), project_id, item.id).await?;
-    item_labels::automation_selector_matches(condition, &labels)
+    Ok(selector.matches_automation_selector(&labels))
 }
 
 pub async fn get_item(store: &Store, project_name: &str, item_id: i64) -> Result<WorkItemView> {
@@ -456,8 +456,8 @@ pub async fn claim_item(
         .await
         .context("failed to start item claim")?;
     let item = claim_first_matching_candidate_in_tx(&txn, project_id, agent_id, |labels| {
-        Ok(!item_labels::is_automation_blocked(labels)
-            && item_labels::current_state(labels).as_deref() == Some(state_filter.as_str()))
+        !item_labels::is_automation_blocked(labels)
+            && item_labels::current_state(labels).as_deref() == Some(state_filter.as_str())
     })
     .await?;
 
@@ -478,7 +478,7 @@ pub async fn claim_item_matching_condition(
     condition: &Condition,
 ) -> Result<Option<WorkItemView>> {
     validate_agent_id(agent_id)?;
-    item_labels::validate_condition(condition)?;
+    let selector = item_labels::ValidatedLabelCondition::new(condition)?;
 
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -487,7 +487,7 @@ pub async fn claim_item_matching_condition(
         .await
         .context("failed to start item claim")?;
     let item = claim_first_matching_candidate_in_tx(&txn, project_id, agent_id, |labels| {
-        item_labels::automation_selector_matches(condition, labels)
+        selector.matches_automation_selector(labels)
     })
     .await?;
 
@@ -977,14 +977,14 @@ async fn claim_first_matching_candidate_in_tx<C, F>(
 ) -> Result<Option<WorkItemModel>>
 where
     C: ConnectionTrait,
-    F: FnMut(&[WorkItemLabelView]) -> Result<bool>,
+    F: FnMut(&[WorkItemLabelView]) -> bool,
 {
     let candidates = unclaimed_items_in_claim_order(conn, project_id).await?;
     let labels_by_item = labels_for_candidate_items(conn, project_id, &candidates).await?;
 
     for candidate in candidates {
         let labels = labels_for_item(&labels_by_item, candidate.id);
-        if !matches_candidate(labels)? {
+        if !matches_candidate(labels) {
             continue;
         }
 

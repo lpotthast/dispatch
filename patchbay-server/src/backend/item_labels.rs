@@ -8,6 +8,25 @@ use crate::shared::view_models::{
     FEEDBACK_REQUESTED_LABEL_KEY, STATE_LABEL_KEY, WorkItemLabelView,
 };
 
+pub(crate) struct ValidatedLabelCondition<'a> {
+    condition: &'a Condition,
+}
+
+impl<'a> ValidatedLabelCondition<'a> {
+    pub(crate) fn new(condition: &'a Condition) -> Result<Self> {
+        validate_condition(condition)?;
+        Ok(Self { condition })
+    }
+
+    pub(crate) fn matches(&self, labels: &[WorkItemLabelView]) -> bool {
+        condition_matches_validated(self.condition, labels)
+    }
+
+    pub(crate) fn matches_automation_selector(&self, labels: &[WorkItemLabelView]) -> bool {
+        !is_automation_blocked(labels) && self.matches(labels)
+    }
+}
+
 pub(crate) fn is_automation_blocked(labels: &[WorkItemLabelView]) -> bool {
     labels.iter().any(|label| {
         label.key == AUTOMATION_BLOCKED_LABEL_KEY || label.key == FEEDBACK_REQUESTED_LABEL_KEY
@@ -84,44 +103,31 @@ pub(crate) fn validate_condition(condition: &Condition) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn condition_matches(
-    condition: &Condition,
-    labels: &[WorkItemLabelView],
-) -> Result<bool> {
-    match condition {
-        Condition::All(elements) => {
-            for element in elements {
-                if !element_matches(element, labels)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        Condition::Any(elements) => {
-            for element in elements {
-                if element_matches(element, labels)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-    }
-}
-
-pub(crate) fn automation_selector_matches(
-    condition: &Condition,
-    labels: &[WorkItemLabelView],
-) -> Result<bool> {
-    if is_automation_blocked(labels) {
-        return Ok(false);
-    }
-    condition_matches(condition, labels)
-}
-
 pub(crate) fn format_label(key: &str, value: Option<&str>) -> String {
     match value {
         Some(value) => format!("{key}={value}"),
         None => key.to_owned(),
+    }
+}
+
+fn condition_matches_validated(condition: &Condition, labels: &[WorkItemLabelView]) -> bool {
+    match condition {
+        Condition::All(elements) => {
+            for element in elements {
+                if !element_matches_validated(element, labels) {
+                    return false;
+                }
+            }
+            true
+        }
+        Condition::Any(elements) => {
+            for element in elements {
+                if element_matches_validated(element, labels) {
+                    return true;
+                }
+            }
+            false
+        }
     }
 }
 
@@ -157,46 +163,43 @@ fn validate_clause(clause: &ConditionClause) -> Result<()> {
     }
 }
 
-fn element_matches(element: &ConditionElement, labels: &[WorkItemLabelView]) -> Result<bool> {
+fn element_matches_validated(element: &ConditionElement, labels: &[WorkItemLabelView]) -> bool {
     match element {
-        ConditionElement::Clause(clause) => clause_matches(clause, labels),
-        ConditionElement::Condition(condition) => condition_matches(condition, labels),
+        ConditionElement::Clause(clause) => clause_matches_validated(clause, labels),
+        ConditionElement::Condition(condition) => condition_matches_validated(condition, labels),
     }
 }
 
-fn clause_matches(clause: &ConditionClause, labels: &[WorkItemLabelView]) -> Result<bool> {
-    validate_clause(clause)?;
+fn clause_matches_validated(clause: &ConditionClause, labels: &[WorkItemLabelView]) -> bool {
     let key = clause.column_name.trim();
     let label = labels.iter().find(|label| label.key == key);
     let label_value = label.and_then(|label| label.value.as_deref());
 
     match (&clause.operator, &clause.value) {
-        (Operator::Equal, ConditionClauseValue::Bool(expected)) => Ok(label.is_some() == *expected),
-        (Operator::NotEqual, ConditionClauseValue::Bool(expected)) => {
-            Ok(label.is_some() != *expected)
-        }
+        (Operator::Equal, ConditionClauseValue::Bool(expected)) => label.is_some() == *expected,
+        (Operator::NotEqual, ConditionClauseValue::Bool(expected)) => label.is_some() != *expected,
         (Operator::Equal, ConditionClauseValue::String(expected)) => {
-            Ok(label_value == Some(expected.as_str()))
+            label_value == Some(expected.as_str())
         }
         (Operator::NotEqual, ConditionClauseValue::String(expected)) => {
-            Ok(label_value != Some(expected.as_str()))
+            label_value != Some(expected.as_str())
         }
         (Operator::Equal, ConditionClauseValue::Json(serde_json::Value::Null)) => {
-            Ok(label.is_some() && label_value.is_none())
+            label.is_some() && label_value.is_none()
         }
         (Operator::NotEqual, ConditionClauseValue::Json(serde_json::Value::Null)) => {
-            Ok(label.is_none() || label_value.is_some())
+            label.is_none() || label_value.is_some()
         }
         (Operator::IsIn, ConditionClauseValue::Json(serde_json::Value::Array(values))) => {
             let Some(label_value) = label_value else {
-                return Ok(false);
+                return false;
             };
-            Ok(values
+            values
                 .iter()
                 .filter_map(|value| value.as_str())
-                .any(|expected| expected == label_value))
+                .any(|expected| expected == label_value)
         }
-        _ => bail!("invalid label condition clause"),
+        _ => false,
     }
 }
 
@@ -260,7 +263,11 @@ mod tests {
             ]))),
         ]);
 
-        assert!(condition_matches(&selector, &labels).unwrap());
+        assert!(
+            ValidatedLabelCondition::new(&selector)
+                .unwrap()
+                .matches(&labels)
+        );
     }
 
     #[test]
@@ -272,7 +279,31 @@ mod tests {
             value: ConditionClauseValue::Bool(false),
         })]);
 
-        assert!(condition_matches(&selector, &labels).unwrap());
+        assert!(
+            ValidatedLabelCondition::new(&selector)
+                .unwrap()
+                .matches(&labels)
+        );
+    }
+
+    #[test]
+    fn validated_label_conditions_match_labels_and_automation_blocking() {
+        let selector = Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: STATE_LABEL_KEY.to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::String("open".to_owned()),
+        })]);
+        let selector = ValidatedLabelCondition::new(&selector).unwrap();
+        let labels = vec![label(STATE_LABEL_KEY, Some("open"))];
+        let blocked_labels = vec![
+            label(STATE_LABEL_KEY, Some("open")),
+            label(AUTOMATION_BLOCKED_LABEL_KEY, None),
+        ];
+
+        assert!(selector.matches(&labels));
+        assert!(selector.matches(&blocked_labels));
+        assert!(selector.matches_automation_selector(&labels));
+        assert!(!selector.matches_automation_selector(&blocked_labels));
     }
 
     #[test]
@@ -307,7 +338,11 @@ mod tests {
             value: ConditionClauseValue::String("open".to_owned()),
         })]);
 
-        assert!(!automation_selector_matches(&selector, &labels).unwrap());
+        assert!(
+            !ValidatedLabelCondition::new(&selector)
+                .unwrap()
+                .matches_automation_selector(&labels)
+        );
     }
 
     #[test]
