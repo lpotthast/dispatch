@@ -3381,6 +3381,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_log_uses_active_session_output_when_available() {
+        let (temp, store) = test_store().await;
+        let project = get_project(&store, "demo").await.unwrap();
+        let run = create_run(
+            &store,
+            project.id,
+            AutomationMode::Execute,
+            AgentToolName::Codex,
+            None,
+        )
+        .await
+        .unwrap();
+        let log_path = temp.path().join("run.output.json");
+        write_run_output_log(
+            &log_path,
+            &[new_output_piece(
+                1,
+                AgentRunOutputKind::ModelMessage,
+                None,
+                "persisted",
+                "persisted output",
+                serde_json::json!({}),
+            )],
+        )
+        .unwrap();
+        let run = update_run_launch_details(
+            &store,
+            run,
+            LaunchDetails {
+                work_item_id: None,
+                command: "codex app-server turn prompt.md".to_owned(),
+                workspace: WorkspacePlan {
+                    working_dir: temp.path().to_path_buf(),
+                    worktree_path: None,
+                    branch_name: None,
+                },
+                prompt_path: None,
+                log_path: Some(log_path.to_string_lossy().into_owned()),
+                memory_event_id: None,
+                agent_model: None,
+                agent_reasoning_effort: None,
+                commit_required: false,
+                pr_requested: false,
+            },
+        )
+        .await
+        .unwrap();
+        let sessions = ProcessSessionRegistry::new();
+        let _cancel = sessions
+            .begin(ProcessSessionStart {
+                run_id: run.id,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: "codex app-server turn prompt.md".to_owned(),
+                working_dir: temp.path().to_string_lossy().into_owned(),
+            })
+            .await;
+        sessions
+            .append_output_piece(
+                run.id,
+                new_output_piece(
+                    1,
+                    AgentRunOutputKind::ModelMessage,
+                    None,
+                    "active",
+                    "active output",
+                    serde_json::json!({}),
+                ),
+            )
+            .await;
+
+        let run_log = read_run_log_with_active_session(&store, &sessions, "demo", run.id)
+            .await
+            .unwrap();
+
+        assert!(run_log.active);
+        assert_eq!(run_log.output.len(), 1);
+        assert_eq!(run_log.output[0].title, "active");
+        assert_eq!(run_log.output[0].body, "active output");
+    }
+
+    #[tokio::test]
     async fn effective_agent_settings_prefer_item_overrides() {
         let (_temp, store) = test_store().await;
         let settings = update_settings(
