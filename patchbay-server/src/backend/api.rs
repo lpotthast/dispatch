@@ -17,7 +17,7 @@ use crate::backend::{
     app_state::AppState,
     automation, comments,
     comments::AddComment,
-    items,
+    item_label_service, items,
     items::{CreateWorkItem, UpdateWorkItem},
     projects,
 };
@@ -122,7 +122,7 @@ pub(crate) async fn list_project_labels(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
 ) -> Response {
-    json_result(items::list_project_labels(&state.store, &project).await)
+    json_result(item_label_service::list_project_labels(&state.store, &project).await)
 }
 
 pub(crate) async fn create_item(
@@ -329,7 +329,7 @@ pub(crate) async fn list_item_labels(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
 ) -> Response {
-    json_result(items::list_item_labels(&state.store, &project, item_id).await)
+    json_result(item_label_service::list_item_labels(&state.store, &project, item_id).await)
 }
 
 pub(crate) async fn add_item_label(
@@ -339,7 +339,7 @@ pub(crate) async fn add_item_label(
     Json(request): Json<CreateWorkItemLabelRequest>,
 ) -> Response {
     json_result(
-        items::add_label(
+        item_label_service::add_label(
             &state.store,
             &project,
             item_id,
@@ -357,7 +357,7 @@ pub(crate) async fn update_item_label(
     Json(request): Json<UpdateWorkItemLabelRequest>,
 ) -> Response {
     json_result(
-        items::update_label(
+        item_label_service::update_label(
             &state.store,
             &project,
             item_id,
@@ -376,7 +376,7 @@ pub(crate) async fn delete_item_label(
     Query(query): Query<LabelMutationQuery>,
 ) -> Response {
     json_result(
-        items::delete_label(
+        item_label_service::delete_label(
             &state.store,
             &project,
             item_id,

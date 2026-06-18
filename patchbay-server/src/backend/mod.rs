@@ -10,6 +10,7 @@ pub(crate) mod crudkit_resources;
 pub(crate) mod entities;
 pub(crate) mod events;
 pub(crate) mod http;
+pub(crate) mod item_label_service;
 pub(crate) mod item_labels;
 pub(crate) mod items;
 pub(crate) mod migrations;

@@ -1204,7 +1204,8 @@ mod tests {
     use super::*;
     use crate::backend::{
         agent_tools::set_tool_path,
-        items::{CreateWorkItem, add_label, create_item, get_item, item_matches_condition},
+        item_label_service::add_label,
+        items::{CreateWorkItem, create_item, get_item, item_matches_condition},
         projects::{CreateProject, create_project},
     };
 

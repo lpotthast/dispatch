@@ -46,6 +46,15 @@ where
         .context("failed to update item version")?)
 }
 
+pub(crate) fn check_expected_version(expected: Option<i64>, actual: i64) -> Result<()> {
+    if let Some(expected) = expected
+        && expected != actual
+    {
+        bail!("version conflict: expected {expected}, found {actual}");
+    }
+    Ok(())
+}
+
 pub(crate) async fn models_to_views(
     store: &Store,
     project_id: i64,

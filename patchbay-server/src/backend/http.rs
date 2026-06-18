@@ -28,7 +28,7 @@ use crate::{
         automation_triggers::{self, CreateAutomationTrigger},
         codex_app_server,
         comments::{self, AddComment},
-        crudkit_resources, events,
+        crudkit_resources, events, item_label_service,
         items::{self, CreateWorkItem, UpdateWorkItem},
         projects::{self, UpdateProjectSettings},
         storage::Store,
@@ -1414,7 +1414,7 @@ async fn add_item_label(
     Path((project, item_id)): Path<(String, i64)>,
     Form(form): Form<AddItemLabelForm>,
 ) -> Response {
-    match items::add_label(
+    match item_label_service::add_label(
         &state.store,
         &project,
         item_id,
@@ -1441,7 +1441,7 @@ async fn update_item_label(
     Path((project, item_id, label_id)): Path<(String, i64, i64)>,
     Form(form): Form<UpdateItemLabelForm>,
 ) -> Response {
-    match items::update_label(
+    match item_label_service::update_label(
         &state.store,
         &project,
         item_id,
@@ -1467,7 +1467,7 @@ async fn delete_item_label(
     Path((project, item_id, label_id)): Path<(String, i64, i64)>,
     Form(form): Form<DeleteItemLabelForm>,
 ) -> Response {
-    match items::delete_label(
+    match item_label_service::delete_label(
         &state.store,
         &project,
         item_id,
