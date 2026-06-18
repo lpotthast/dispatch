@@ -23,8 +23,9 @@ use crate::{
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AuthorType,
         CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL, CommentView,
-        DeleteWorkItemLabelResponse, FINISHED_STATE_LABEL, ProjectLabelView, RecoveredClaimView,
-        STATE_LABEL_KEY, WorkItemEventView, WorkItemLabelView, WorkItemView,
+        DeleteWorkItemLabelResponse, FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL,
+        ProjectLabelView, RecoveredClaimView, STATE_LABEL_KEY, WorkItemEventView,
+        WorkItemLabelView, WorkItemView,
     },
 };
 
@@ -393,7 +394,7 @@ pub async fn claim_item(
                       SELECT 1
                       FROM work_item_labels blocked_labels
                       WHERE blocked_labels.work_item_id = work_items.id
-                        AND blocked_labels.label_key = ?6
+                        AND blocked_labels.label_key IN (?6, ?7)
                   )
                 ORDER BY work_items.updated_at ASC, work_items.id ASC
                 LIMIT 1
@@ -407,6 +408,7 @@ pub async fn claim_item(
                 state_filter.clone().into(),
                 STATE_LABEL_KEY.into(),
                 AUTOMATION_BLOCKED_LABEL_KEY.into(),
+                FEEDBACK_REQUESTED_LABEL_KEY.into(),
             ],
         ))
         .await
@@ -623,6 +625,93 @@ pub async fn release_item(
     model_to_view(store, updated).await
 }
 
+pub async fn request_feedback(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    agent_id: &str,
+    body: &str,
+) -> Result<WorkItemView> {
+    validate_agent_id(agent_id)?;
+    if body.trim().is_empty() {
+        bail!("feedback request body cannot be empty");
+    }
+
+    let project_id = projects::project_id(store, project_name).await?;
+    let txn = store
+        .db()
+        .begin()
+        .await
+        .context("failed to start feedback request")?;
+    let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    ensure_active_claim(&existing, agent_id)?;
+    let labels = labels_for_item(&txn, project_id, item_id).await?;
+    let release_state = item_labels::release_state_from_claim_labels(&labels);
+
+    let now = utc_now();
+    insert_comment_in_tx(
+        &txn,
+        item_id,
+        AuthorType::Agent,
+        Some(agent_id.to_owned()),
+        body,
+    )
+    .await?;
+
+    let version = existing.version;
+    let mut active: WorkItemActiveModel = existing.into();
+    active.claimed_by = Set(None);
+    active.claimed_at = Set(None);
+    active.claim_expires_at = Set(None);
+    active.version = Set(version + 1);
+    active.updated_at = Set(now);
+    let updated = active
+        .update(&txn)
+        .await
+        .context("failed to request item feedback")?;
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(release_state.as_str()),
+    )
+    .await?;
+    delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        AUTOMATION_BLOCKED_LABEL_KEY,
+        None,
+    )
+    .await?;
+    upsert_label_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        FEEDBACK_REQUESTED_LABEL_KEY,
+        None,
+    )
+    .await?;
+
+    let event_body = format!("Feedback requested by {agent_id}; restored state to {release_state}");
+    work_item_events::record_event_in_tx(
+        &txn,
+        project_id,
+        Some(item_id),
+        "feedback_requested",
+        &event_body,
+    )
+    .await?;
+    txn.commit()
+        .await
+        .context("failed to commit feedback request")?;
+    events::publish_work_item_changed(project_name, item_id);
+
+    model_to_view(store, updated).await
+}
+
 pub async fn progress_item(
     store: &Store,
     project_name: &str,
@@ -723,6 +812,7 @@ pub async fn finish_item(
     .await?;
     delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
     delete_label_by_key_in_tx(&txn, project_id, item_id, AUTOMATION_BLOCKED_LABEL_KEY).await?;
+    delete_label_by_key_in_tx(&txn, project_id, item_id, FEEDBACK_REQUESTED_LABEL_KEY).await?;
     work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report)
         .await?;
     txn.commit().await.context("failed to commit item finish")?;
@@ -1233,6 +1323,7 @@ where
         Some(CLAIMED_STATE_LABEL),
     )
     .await?;
+    delete_label_by_key_in_tx(conn, project_id, item_id, FEEDBACK_REQUESTED_LABEL_KEY).await?;
     let comment_body = format!("Claimed by {agent_id}");
     insert_comment_in_tx(
         conn,
@@ -2409,6 +2500,110 @@ mod tests {
             .await
             .unwrap();
         assert!(claimed_again.is_none());
+    }
+
+    #[tokio::test]
+    async fn request_feedback_restores_source_state_and_blocks_automation() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Needs input".to_owned(),
+                description: "Agent should ask for a user decision".to_owned(),
+                state: "ready".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        claim_item(&store, "demo", "agent-a", "ready")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let updated = request_feedback(
+            &store,
+            "demo",
+            item.id,
+            "agent-a",
+            "Which provider should this integration target?",
+        )
+        .await
+        .unwrap();
+        let comments = list_comments(&store, "demo", item.id).await.unwrap();
+        let events = list_events(&store, "demo", Some(item.id), None)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.state.as_deref(), Some("ready"));
+        assert_eq!(updated.claimed_by, None);
+        assert!(
+            updated
+                .labels
+                .iter()
+                .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+        );
+        assert!(
+            updated
+                .labels
+                .iter()
+                .any(|label| label.key == FEEDBACK_REQUESTED_LABEL_KEY)
+        );
+        assert!(
+            updated
+                .labels
+                .iter()
+                .all(|label| label.key != CLAIMED_FROM_STATE_LABEL_KEY)
+        );
+        assert!(comments.iter().any(|comment| {
+            comment.author_type == AuthorType::Agent
+                && comment.author_name.as_deref() == Some("agent-a")
+                && comment.body == "Which provider should this integration target?"
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "feedback_requested")
+        );
+
+        let claimed_again = claim_item(&store, "demo", "agent-b", "ready")
+            .await
+            .unwrap();
+        assert!(claimed_again.is_none());
+    }
+
+    #[tokio::test]
+    async fn feedback_requested_label_blocks_state_claims() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Awaiting answer".to_owned(),
+                description: "Feedback label alone should block automation pickup".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            item.id,
+            FEEDBACK_REQUESTED_LABEL_KEY.to_owned(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let claimed = claim_item(&store, "demo", "agent-a", "open").await.unwrap();
+
+        assert!(claimed.is_none());
     }
 
     #[tokio::test]

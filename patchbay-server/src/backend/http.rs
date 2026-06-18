@@ -249,6 +249,10 @@ pub(crate) fn router(
             post(api::release_item),
         )
         .route(
+            "/api/projects/{project}/items/{item_id}/request-feedback",
+            post(api::request_item_feedback),
+        )
+        .route(
             "/api/projects/{project}/items/{item_id}/comments",
             get(api::list_comments).post(api::add_comment),
         )

@@ -40,6 +40,7 @@ POST /api/projects/{project}/items/claim
 POST /api/projects/{project}/items/{item_id}/progress
 POST /api/projects/{project}/items/{item_id}/finish
 POST /api/projects/{project}/items/{item_id}/release
+POST /api/projects/{project}/items/{item_id}/request-feedback
 ```
 
 Comment endpoints:
@@ -75,6 +76,8 @@ GET /api/projects/{project}/items/{item_id}/events
 `finish` appends a completion report, marks the item done, clears active claim ownership, records finish metadata, and emits events.
 
 `release` appends an optional release comment, clears the claim, returns the item to an available state, and emits events.
+
+`request-feedback` appends an agent-authored feedback request comment, clears the claim, restores the claimed-from state, adds `patchbay:feedback-requested` and `patchbay:automation-blocked`, and emits events. The caller must own the active claim. Automation must skip items with `patchbay:feedback-requested` until the label is removed after user feedback has been handled.
 
 `PATCH /items/{item_id}` is for item field updates and supports version safety. It is separate from workflow transitions.
 

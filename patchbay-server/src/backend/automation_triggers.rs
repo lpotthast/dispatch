@@ -56,7 +56,7 @@ Required workflow:
 - Remove the `needs-refinement` label when refinement is complete. Keep or add `needs-verification` only when the refined item should be checked before implementation.
 - Add a concise progress comment summarizing what changed.
 
-Do not call `patchbay item finish` for successful refinement, and do not call `patchbay item release` after successful refinement. Let Patchbay release the temporary claim after your final response. If the item cannot be refined without a human decision, leave `needs-refinement` in place and call `patchbay item release --comment ...` with the blocker."#;
+Do not call `patchbay item finish` for successful refinement, and do not call `patchbay item release` after successful refinement. Let Patchbay release the temporary claim after your final response. If the item cannot be refined without a human decision, leave `needs-refinement` in place and call `patchbay item request-feedback --body ...` with the concrete question for the user."#;
 
 const DEFAULT_VERIFICATION_AUTOMATION_PROMPT: &str = r#"You are the needs-verification executor for the claimed Patchbay work item.
 
@@ -71,7 +71,7 @@ Required workflow:
 
 If verification shows the work is unnecessary, explain why in the item and a comment. You may move the item to a project-specific terminal state only when that state already exists in the project's visible workflow vocabulary; do not invent or hardcode a state name. Use `patchbay label suggestions --json`, existing item labels, comments, or project docs to infer that vocabulary.
 
-Do not call `patchbay item finish` for successful verification, and do not call `patchbay item release` after successful verification. Let Patchbay release the temporary claim after your final response. If verification is blocked, leave `needs-verification` in place and call `patchbay item release --comment ...` with the blocker."#;
+Do not call `patchbay item finish` for successful verification, and do not call `patchbay item release` after successful verification. Let Patchbay release the temporary claim after your final response. If verification needs a user decision, leave `needs-verification` in place and call `patchbay item request-feedback --body ...` with the concrete question for the user. If verification is blocked by a technical or environment issue rather than missing user input, call `patchbay item release --comment ...` with the blocker."#;
 
 struct DefaultProjectAutomation {
     name: &'static str,

@@ -40,7 +40,7 @@ Core fields include:
 
 Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook for claim, finish, release, and default automation transitions.
 
-Patchbay also uses hardcoded workflow labels. `patchbay:claimed-from-state=<state-label>` is transient claim bookkeeping so release can restore the state an item came from. `patchbay:automation-blocked` marks released, non-operable work that automation should skip until the label is removed.
+Patchbay also uses hardcoded workflow labels. `patchbay:claimed-from-state=<state-label>` is transient claim bookkeeping so release and feedback requests can restore the state an item came from. `patchbay:automation-blocked` marks released, non-operable work that automation should skip until the label is removed. `patchbay:feedback-requested` marks work where an agent is waiting for a user answer; automation treats it as a blocking label until a user or agent removes it after the feedback has been handled.
 
 Work item states are project-scoped records with an identifier, display name, and position. They define the authored values that operators should use for the `state` label. New projects start with `idea`, `open`, `in_progress`, and `done` states.
 
@@ -114,7 +114,7 @@ Automation records include enabled state, activation, effect, tool, prompt, requ
 
 Default project automation rules are ordinary editable records. Patchbay creates and migrates these defaults:
 
-- `Claim open work`: consume-work, selector `state=open` plus absence of `needs-refinement` and `needs-verification`.
+- `Claim open work`: consume-work, selector `state=open` plus absence of `needs-refinement`, `needs-verification`, and `patchbay:feedback-requested`.
 - `Refine needs-refinement work`: consume-work, selector requiring the `needs-refinement` label.
 - `Verify needs-verification work`: consume-work, selector requiring the `needs-verification` label.
 

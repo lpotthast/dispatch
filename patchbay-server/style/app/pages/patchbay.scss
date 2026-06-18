@@ -1405,6 +1405,12 @@ button.link-danger {
     background: $danger-soft;
     color: $danger;
   }
+
+  &.feedback {
+    border-color: rgba($amber, 0.35);
+    background: $amber-soft;
+    color: $amber;
+  }
 }
 
 .patchbay-labels {
@@ -1415,7 +1421,7 @@ button.link-danger {
 
 .system-label-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 
   article {

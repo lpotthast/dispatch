@@ -3,8 +3,9 @@ use patchbay_types::{
     CommentView, CreateWorkItemLabelRequest, CreateWorkItemRequest, DeleteWorkItemLabelResponse,
     FinishWorkItemRequest, ProgressWorkItemRequest, ProjectLabelView, ProjectMemoryCompactionView,
     ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView,
-    ProjectView, ReleaseWorkItemRequest, RunLogView, UpdateProjectMemoryRequest,
-    UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemLabelView, WorkItemView,
+    ProjectView, ReleaseWorkItemRequest, RequestFeedbackWorkItemRequest, RunLogView,
+    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
+    WorkItemLabelView, WorkItemView,
 };
 use rootcause::{Result, prelude::*};
 use serde::{Serialize, de::DeserializeOwned};
@@ -210,6 +211,19 @@ impl PatchbayClient {
     ) -> Result<WorkItemView> {
         self.post(
             &project_path(project, &format!("/items/{item_id}/release")),
+            request,
+        )
+        .await
+    }
+
+    pub async fn request_item_feedback(
+        &self,
+        project: &str,
+        item_id: i64,
+        request: &RequestFeedbackWorkItemRequest,
+    ) -> Result<WorkItemView> {
+        self.post(
+            &project_path(project, &format!("/items/{item_id}/request-feedback")),
             request,
         )
         .await

@@ -5,13 +5,13 @@ use rootcause::{Result, prelude::*};
 
 use crate::shared::view_models::{
     AUTOMATION_BLOCKED_LABEL_KEY, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
-    STATE_LABEL_KEY, WorkItemLabelView,
+    FEEDBACK_REQUESTED_LABEL_KEY, STATE_LABEL_KEY, WorkItemLabelView,
 };
 
 pub(crate) fn is_automation_blocked(labels: &[WorkItemLabelView]) -> bool {
-    labels
-        .iter()
-        .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+    labels.iter().any(|label| {
+        label.key == AUTOMATION_BLOCKED_LABEL_KEY || label.key == FEEDBACK_REQUESTED_LABEL_KEY
+    })
 }
 
 pub(crate) fn source_state_for_new_claim(labels: &[WorkItemLabelView]) -> String {
@@ -276,6 +276,13 @@ mod tests {
         let err = validate_condition(&selector).unwrap_err();
 
         assert!(err.to_string().contains("unsupported operator"));
+    }
+
+    #[test]
+    fn feedback_requested_blocks_automation_claims() {
+        let labels = vec![label(FEEDBACK_REQUESTED_LABEL_KEY, None)];
+
+        assert!(is_automation_blocked(&labels));
     }
 
     #[test]

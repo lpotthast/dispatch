@@ -212,7 +212,8 @@ const DEFAULT_AGENT_GIT_COMMAND_POLICY: &str =
     r#"{"add":true,"commit":true,"push":true,"reset":true,"hard_reset":"isolated_workspaces"}"#;
 const OLD_DEFAULT_WORK_ITEM_SELECTOR: &str =
     r#"{"All":[{"column_name":"state","operator":"=","value":{"String":"open"}}]}"#;
-const DEFAULT_WORK_ITEM_SELECTOR: &str = r#"{"All":[{"column_name":"state","operator":"=","value":{"String":"open"}},{"column_name":"needs-refinement","operator":"=","value":{"Bool":false}},{"column_name":"needs-verification","operator":"=","value":{"Bool":false}}]}"#;
+const PRE_FEEDBACK_DEFAULT_WORK_ITEM_SELECTOR: &str = r#"{"All":[{"column_name":"state","operator":"=","value":{"String":"open"}},{"column_name":"needs-refinement","operator":"=","value":{"Bool":false}},{"column_name":"needs-verification","operator":"=","value":{"Bool":false}}]}"#;
+const DEFAULT_WORK_ITEM_SELECTOR: &str = r#"{"All":[{"column_name":"state","operator":"=","value":{"String":"open"}},{"column_name":"needs-refinement","operator":"=","value":{"Bool":false}},{"column_name":"needs-verification","operator":"=","value":{"Bool":false}},{"column_name":"patchbay:feedback-requested","operator":"=","value":{"Bool":false}}]}"#;
 const DEFAULT_REFINEMENT_SELECTOR: &str =
     r#"{"All":[{"column_name":"needs-refinement","operator":"=","value":{"Bool":true}}]}"#;
 const DEFAULT_VERIFICATION_SELECTOR: &str =
@@ -228,8 +229,34 @@ Required workflow:
 - Remove the `needs-refinement` label when refinement is complete. Keep or add `needs-verification` only when the refined item should be checked before implementation.
 - Add a concise progress comment summarizing what changed.
 
+Do not call `patchbay item finish` for successful refinement, and do not call `patchbay item release` after successful refinement. Let Patchbay release the temporary claim after your final response. If the item cannot be refined without a human decision, leave `needs-refinement` in place and call `patchbay item request-feedback --body ...` with the concrete question for the user."#;
+const PRE_FEEDBACK_REFINEMENT_PROMPT: &str = r#"You are the needs-refinement executor for the claimed Patchbay work item.
+
+Goal: turn a rough or under-specified item into implementation-ready work. Do not implement the work.
+
+Required workflow:
+- Re-read the item, comments, labels, and any relevant project memory before editing it.
+- Clarify the title and description so a later implementation agent can act without guessing. Prefer concrete scope, non-goals, acceptance criteria, suggested approach, verification expectations, and open questions only when human input is genuinely required.
+- Update labels when they improve routing, priority, status, environment, or follow-up handling.
+- Remove the `needs-refinement` label when refinement is complete. Keep or add `needs-verification` only when the refined item should be checked before implementation.
+- Add a concise progress comment summarizing what changed.
+
 Do not call `patchbay item finish` for successful refinement, and do not call `patchbay item release` after successful refinement. Let Patchbay release the temporary claim after your final response. If the item cannot be refined without a human decision, leave `needs-refinement` in place and call `patchbay item release --comment ...` with the blocker."#;
 const DEFAULT_VERIFICATION_PROMPT: &str = r#"You are the needs-verification executor for the claimed Patchbay work item.
+
+Goal: verify whether the item is necessary, accurate, and ready for a later implementation agent. Do not implement the work.
+
+Required workflow:
+- Re-read the item, comments, labels, and any relevant project memory. Inspect repository files only as needed to verify facts.
+- Update the title or description with verification findings, corrected scope, risks, acceptance criteria, and verification notes that future workers need.
+- Update labels when they improve routing, priority, status, environment, or follow-up handling.
+- Remove the `needs-verification` label when verification is complete. Add `needs-refinement` only if the item still needs story-shaping before implementation.
+- Add a concise progress comment with the verification result.
+
+If verification shows the work is unnecessary, explain why in the item and a comment. You may move the item to a project-specific terminal state only when that state already exists in the project's visible workflow vocabulary; do not invent or hardcode a state name. Use `patchbay label suggestions --json`, existing item labels, comments, or project docs to infer that vocabulary.
+
+Do not call `patchbay item finish` for successful verification, and do not call `patchbay item release` after successful verification. Let Patchbay release the temporary claim after your final response. If verification needs a user decision, leave `needs-verification` in place and call `patchbay item request-feedback --body ...` with the concrete question for the user. If verification is blocked by a technical or environment issue rather than missing user input, call `patchbay item release --comment ...` with the blocker."#;
+const PRE_FEEDBACK_VERIFICATION_PROMPT: &str = r#"You are the needs-verification executor for the claimed Patchbay work item.
 
 Goal: verify whether the item is necessary, accurate, and ready for a later implementation agent. Do not implement the work.
 
@@ -281,6 +308,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddRefinerVerifierAutomations),
             Box::new(RemoveAutomationModes),
             Box::new(RemoveRefinementConcurrencySetting),
+            Box::new(AddFeedbackRequestWorkflow),
         ]
     }
 }
@@ -2295,9 +2323,30 @@ impl MigrationTrait for AddRefinerVerifierAutomations {
         .await?;
         delete_label_routed_automation(
             manager,
+            "Verify needs-verification work",
+            PRE_FEEDBACK_VERIFICATION_PROMPT,
+            DEFAULT_VERIFICATION_SELECTOR,
+        )
+        .await?;
+        delete_label_routed_automation(
+            manager,
             "Refine needs-refinement work",
             DEFAULT_REFINEMENT_PROMPT,
             DEFAULT_REFINEMENT_SELECTOR,
+        )
+        .await?;
+        delete_label_routed_automation(
+            manager,
+            "Refine needs-refinement work",
+            PRE_FEEDBACK_REFINEMENT_PROMPT,
+            DEFAULT_REFINEMENT_SELECTOR,
+        )
+        .await?;
+        update_automation_selector_if_unchanged(
+            manager,
+            "Claim open work",
+            PRE_FEEDBACK_DEFAULT_WORK_ITEM_SELECTOR,
+            OLD_DEFAULT_WORK_ITEM_SELECTOR,
         )
         .await?;
         update_default_open_work_selector(manager, OLD_DEFAULT_WORK_ITEM_SELECTOR).await
@@ -2384,6 +2433,65 @@ impl MigrationTrait for RemoveRefinementConcurrencySetting {
     }
 }
 
+struct AddFeedbackRequestWorkflow;
+
+impl MigrationName for AddFeedbackRequestWorkflow {
+    fn name(&self) -> &str {
+        "m20260618_000033_add_feedback_request_workflow"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddFeedbackRequestWorkflow {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        update_automation_selector_if_unchanged(
+            manager,
+            "Claim open work",
+            PRE_FEEDBACK_DEFAULT_WORK_ITEM_SELECTOR,
+            DEFAULT_WORK_ITEM_SELECTOR,
+        )
+        .await?;
+        update_automation_prompt_if_unchanged(
+            manager,
+            "Refine needs-refinement work",
+            PRE_FEEDBACK_REFINEMENT_PROMPT,
+            DEFAULT_REFINEMENT_PROMPT,
+        )
+        .await?;
+        update_automation_prompt_if_unchanged(
+            manager,
+            "Verify needs-verification work",
+            PRE_FEEDBACK_VERIFICATION_PROMPT,
+            DEFAULT_VERIFICATION_PROMPT,
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        update_automation_prompt_if_unchanged(
+            manager,
+            "Verify needs-verification work",
+            DEFAULT_VERIFICATION_PROMPT,
+            PRE_FEEDBACK_VERIFICATION_PROMPT,
+        )
+        .await?;
+        update_automation_prompt_if_unchanged(
+            manager,
+            "Refine needs-refinement work",
+            DEFAULT_REFINEMENT_PROMPT,
+            PRE_FEEDBACK_REFINEMENT_PROMPT,
+        )
+        .await?;
+        update_automation_selector_if_unchanged(
+            manager,
+            "Claim open work",
+            DEFAULT_WORK_ITEM_SELECTOR,
+            PRE_FEEDBACK_DEFAULT_WORK_ITEM_SELECTOR,
+        )
+        .await
+    }
+}
+
 async fn update_default_open_work_selector(
     manager: &SchemaManager<'_>,
     target_selector: &str,
@@ -2409,6 +2517,64 @@ async fn update_default_open_work_selector(
             vec![
                 target_selector.to_owned().into(),
                 source_selector.to_owned().into(),
+            ],
+        ))
+        .await
+        .map(|_| ())
+}
+
+async fn update_automation_selector_if_unchanged(
+    manager: &SchemaManager<'_>,
+    name: &str,
+    source_selector: &str,
+    target_selector: &str,
+) -> Result<(), DbErr> {
+    manager
+        .get_connection()
+        .execute(Statement::from_sql_and_values(
+            manager.get_database_backend(),
+            r#"
+            UPDATE "automation_triggers"
+            SET "work_item_selector" = ?3,
+                "updated_at" = CURRENT_TIMESTAMP
+            WHERE "name" = ?1
+              AND "activation" = 'work_item'
+              AND "effect" = 'consume_work'
+              AND "work_item_selector" = ?2;
+            "#,
+            vec![
+                name.to_owned().into(),
+                source_selector.to_owned().into(),
+                target_selector.to_owned().into(),
+            ],
+        ))
+        .await
+        .map(|_| ())
+}
+
+async fn update_automation_prompt_if_unchanged(
+    manager: &SchemaManager<'_>,
+    name: &str,
+    source_prompt: &str,
+    target_prompt: &str,
+) -> Result<(), DbErr> {
+    manager
+        .get_connection()
+        .execute(Statement::from_sql_and_values(
+            manager.get_database_backend(),
+            r#"
+            UPDATE "automation_triggers"
+            SET "prompt" = ?3,
+                "updated_at" = CURRENT_TIMESTAMP
+            WHERE "name" = ?1
+              AND "activation" = 'work_item'
+              AND "effect" = 'consume_work'
+              AND "prompt" = ?2;
+            "#,
+            vec![
+                name.to_owned().into(),
+                source_prompt.to_owned().into(),
+                target_prompt.to_owned().into(),
             ],
         ))
         .await

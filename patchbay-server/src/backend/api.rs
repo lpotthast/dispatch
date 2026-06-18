@@ -7,8 +7,8 @@ use axum::{
 use patchbay_types::{
     AddCommentRequest, ApiError, ClaimWorkItemRequest, ClaimWorkItemResponse,
     CreateWorkItemLabelRequest, CreateWorkItemRequest, DEFAULT_STATE_LABEL, FinishWorkItemRequest,
-    ProgressWorkItemRequest, ReleaseWorkItemRequest, UpdateProjectMemoryRequest,
-    UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
+    ProgressWorkItemRequest, ReleaseWorkItemRequest, RequestFeedbackWorkItemRequest,
+    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
 };
 use rootcause::Result;
 use serde::{Deserialize, Serialize};
@@ -242,6 +242,23 @@ pub(crate) async fn release_item(
     )
 }
 
+pub(crate) async fn request_item_feedback(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id)): Path<(String, i64)>,
+    Json(request): Json<RequestFeedbackWorkItemRequest>,
+) -> Response {
+    json_result(
+        items::request_feedback(
+            &state.store,
+            &project,
+            item_id,
+            &request.agent_id,
+            &request.body,
+        )
+        .await,
+    )
+}
+
 pub(crate) async fn list_comments(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
@@ -376,9 +393,10 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use patchbay_types::{
-        AUTOMATION_BLOCKED_LABEL_KEY, ClaimWorkItemResponse, CommentView, ProjectLabelView,
-        ProjectMemoryCompactionView, ProjectMemoryEventView, ProjectMemoryUpdateView,
-        ProjectMemoryView, WorkItemLabelView, WorkItemView,
+        AUTOMATION_BLOCKED_LABEL_KEY, ClaimWorkItemResponse, CommentView,
+        FEEDBACK_REQUESTED_LABEL_KEY, ProjectLabelView, ProjectMemoryCompactionView,
+        ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, WorkItemLabelView,
+        WorkItemView,
     };
     use serde::de::DeserializeOwned;
     use tempfile::{TempDir, tempdir};
@@ -516,6 +534,56 @@ mod tests {
         )
         .await;
         assert!(!claimed.claimed());
+
+        let feedback_item_id = items::create_item(
+            &state.store,
+            "demo",
+            CreateWorkItem {
+                title: "Endpoint feedback".to_owned(),
+                description: "Exercise feedback request endpoint".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+
+        let claimed: ClaimWorkItemResponse = decode(
+            claim_item(
+                Extension(state.clone()),
+                Path("demo".to_owned()),
+                Json(ClaimWorkItemRequest {
+                    agent_id: agent_id.clone(),
+                    state: "open".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(claimed.item.unwrap().id, feedback_item_id);
+
+        let feedback_requested: WorkItemView = decode(
+            request_item_feedback(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), feedback_item_id)),
+                Json(RequestFeedbackWorkItemRequest {
+                    agent_id: agent_id.clone(),
+                    body: "Need a user decision".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(feedback_requested.state.as_deref(), Some("open"));
+        assert_eq!(feedback_requested.claimed_by, None);
+        assert!(
+            feedback_requested
+                .labels
+                .iter()
+                .any(|label| label.key == FEEDBACK_REQUESTED_LABEL_KEY)
+        );
 
         let finish_item_id = items::create_item(
             &state.store,

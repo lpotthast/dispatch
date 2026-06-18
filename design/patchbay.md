@@ -43,4 +43,4 @@ The absence of a root workspace keeps the Patchbay crates independent from the `
 
 ## Design Boundary
 
-CrudKit accelerates ordinary admin and CRUD surfaces such as projects, work items, comments, agent tools, agent runs, and automation rules. Patchbay-specific workflow behavior remains custom: claim, progress, finish, release, stale-claim recovery, automation launch, run logs, live events, and board-oriented workflow views.
+CrudKit accelerates ordinary admin and CRUD surfaces such as projects, work items, comments, agent tools, agent runs, and automation rules. Patchbay-specific workflow behavior remains custom: claim, progress, finish, release, request feedback, stale-claim recovery, automation launch, run logs, live events, and board-oriented workflow views.

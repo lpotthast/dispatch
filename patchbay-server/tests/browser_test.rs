@@ -339,6 +339,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             .context("failed to open Patchbay API page")?;
         find(driver, By::Css("section.patchbay-labels")).await?;
         assert_source_contains(driver, "patchbay:automation-blocked").await?;
+        assert_source_contains(driver, "patchbay:feedback-requested").await?;
         driver
             .goto(app.url("/?project=demo"))
             .await

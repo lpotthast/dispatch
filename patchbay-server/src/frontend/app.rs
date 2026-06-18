@@ -37,9 +37,10 @@ use crate::{
         AgentRunTokenUsageView, AgentRunView, AuthorType, AutomationStatusView,
         CLAIMED_FROM_STATE_LABEL_KEY, CodexAgentModel, CodexAppServerStatusView,
         CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
-        ProjectGitStatusView, ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView,
-        ProjectSettingsView, ProjectSystemPromptEventView, ProjectView, RevertStrategy, RunLogView,
-        STATE_LABEL_KEY, SwimLaneView, UiEvent, WorkItemLabelView, WorkItemStateView, WorkItemView,
+        FEEDBACK_REQUESTED_LABEL_KEY, ProjectGitStatusView, ProjectLabelView,
+        ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
+        ProjectSystemPromptEventView, ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY,
+        SwimLaneView, UiEvent, WorkItemLabelView, WorkItemStateView, WorkItemView,
         WorkspaceEditorView, WorkspaceMode,
     },
 };
@@ -2020,10 +2021,17 @@ fn item_label_row(
     let rendered = format_label(&label.key, label.value.as_deref());
     let can_delete = label.key != STATE_LABEL_KEY;
     let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
+    let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;
 
     view! {
         <article class="label-row">
-            <span class="label-chip" class:blocked=blocked>{rendered}</span>
+            <span
+                class="label-chip"
+                class:blocked=blocked
+                class:feedback=feedback_requested
+            >
+                {rendered}
+            </span>
             <form method="post" action=update_action>
                 <input type="hidden" name="version" value=item.version.to_string()/>
                 <input name="key" value=label.key required/>
@@ -2078,6 +2086,10 @@ fn patchbay_labels_panel() -> impl IntoView {
                 <article>
                     <code>{AUTOMATION_BLOCKED_LABEL_KEY}</code>
                     <span>"Excluded from automation pickup."</span>
+                </article>
+                <article>
+                    <code>{FEEDBACK_REQUESTED_LABEL_KEY}</code>
+                    <span>"Waiting for user feedback."</span>
                 </article>
             </div>
         </section>
@@ -2271,6 +2283,7 @@ fn api_docs_content(page: ApiDocsPage) -> AnyView {
         "POST /projects/{project}/workspace/open",
         "POST /projects/{project}/automation/runs/{run_id}/workspace/open",
         "POST /projects/{project}/automation/runs/{run_id}/cancel",
+        "POST /api/projects/{project}/items/{item_id}/request-feedback",
         "POST /system/database/open",
         "GET /projects/{project}/automation/runs/{run_id}/log",
     ]
@@ -5993,8 +6006,17 @@ fn item_card(project: String, item: WorkItemView) -> impl IntoView + 'static {
         .iter()
         .map(|label| {
             let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
+            let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;
             let label = format_label(&label.key, label.value.as_deref());
-            view! { <span class="label-chip" class:blocked=blocked>{label}</span> }
+            view! {
+                <span
+                    class="label-chip"
+                    class:blocked=blocked
+                    class:feedback=feedback_requested
+                >
+                    {label}
+                </span>
+            }
         })
         .collect::<Vec<_>>();
     let claim = item.claimed_by.clone().map(|agent| {

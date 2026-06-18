@@ -17,6 +17,7 @@ patchbay comment list --json
 patchbay item progress --body "..."
 patchbay item finish --report "..."
 patchbay item release --comment "..."
+patchbay item request-feedback --body "..."
 patchbay memory append --body "Important project fact to remember."
 ```
 
@@ -54,6 +55,7 @@ Commands that operate on an existing item accept an optional item id and may def
 - `item progress [item-id]`;
 - `item finish [item-id]`;
 - `item release [item-id]`;
+- `item request-feedback [item-id]`;
 - `item watch [item-id]`;
 - `comment list [item-id]`;
 - `comment add [item-id]`.
@@ -76,6 +78,7 @@ patchbay label suggestions [--json]
 patchbay item progress [item-id] --body "..." [--json]
 patchbay item finish [item-id] --report "..." [--json]
 patchbay item release [item-id] [--comment "..."] [--json]
+patchbay item request-feedback [item-id] --body "..." [--json]
 patchbay item watch [item-id] [--since-version <n>] [--json]
 ```
 

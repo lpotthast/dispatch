@@ -39,8 +39,9 @@ use crate::{
         AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece,
         AgentRunStatus, AgentRunTokenUsageView, AgentRunView, AgentSandboxMode, AgentToolName,
         AutomationStatusView, CLAIMED_FROM_STATE_LABEL_KEY, DEFAULT_STATE_LABEL,
-        FINISHED_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView,
-        RevertStrategy, RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
+        FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL, ProjectMemoryEventRefView,
+        ProjectSettingsView, RecoveredClaimView, RevertStrategy, RunLogView, WorkItemView,
+        WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -2400,11 +2401,13 @@ fn build_prompt(context: PromptContext<'_>) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         prompt.push_str(&format!(
-            "Item: #{}\nTitle: {}\nState label: {}\nClaimed from state label: {}\nRelease behavior: `patchbay item release` restores the claimed-from state and adds `{}` so automation will not pick the item again until that label is removed.\nLabels: {}\nVersion: {}\n\n{}\n\n",
+            "Item: #{}\nTitle: {}\nState label: {}\nClaimed from state label: {}\nRelease behavior: `patchbay item release` restores the claimed-from state and adds `{}` so automation will not pick the item again until that label is removed.\nFeedback behavior: `patchbay item request-feedback --body ...` restores the claimed-from state and adds `{}` plus `{}` so automation waits for a user response.\nLabels: {}\nVersion: {}\n\n{}\n\n",
             item.id,
             item.title,
             state,
             claimed_from_state,
+            AUTOMATION_BLOCKED_LABEL_KEY,
+            FEEDBACK_REQUESTED_LABEL_KEY,
             AUTOMATION_BLOCKED_LABEL_KEY,
             if labels.is_empty() { "(none)" } else { &labels },
             item.version,
@@ -3568,7 +3571,9 @@ mod tests {
         assert!(prompt.contains("State label: in_progress"));
         assert!(prompt.contains("Claimed from state label: ready"));
         assert!(prompt.contains("Release behavior: `patchbay item release` restores"));
+        assert!(prompt.contains("Feedback behavior: `patchbay item request-feedback --body ...`"));
         assert!(prompt.contains(AUTOMATION_BLOCKED_LABEL_KEY));
+        assert!(prompt.contains(FEEDBACK_REQUESTED_LABEL_KEY));
         assert!(prompt.contains("Labels: state=in_progress, patchbay:claimed-from-state=ready"));
         assert!(prompt.contains("--clear-agent-reasoning-effort"));
         assert!(prompt.contains("patchbay comment add [item-id]"));

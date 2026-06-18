@@ -131,7 +131,12 @@ mod tests {
         .await
         .unwrap();
 
-        let migration_count_before_cleanup = Migrator::migrations().len() as u32 - 1;
+        let migration_count_before_cleanup = Migrator::migrations()
+            .iter()
+            .position(|migration| {
+                migration.name() == "m20260618_000032_remove_refinement_concurrency_setting"
+            })
+            .unwrap() as u32;
         Migrator::up(&db, Some(migration_count_before_cleanup))
             .await
             .unwrap();
@@ -205,6 +210,7 @@ mod tests {
             "m20260618_000030_add_refiner_verifier_automations",
             "m20260618_000031_remove_automation_modes",
             "m20260618_000032_remove_refinement_concurrency_setting",
+            "m20260618_000033_add_feedback_request_workflow",
         ];
 
         assert_eq!(names.as_slice(), expected.as_slice());

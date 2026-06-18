@@ -10,7 +10,8 @@ use patchbay_types::{
     AddCommentRequest, AgentReasoningEffort, AgentRunOutputPiece, AgentRunTokenUsageView,
     AgentRunView, AuthorType, ClaimWorkItemRequest, CreateWorkItemLabelRequest,
     CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
-    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest, WorkItemView,
+    RequestFeedbackWorkItemRequest, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
+    UpdateWorkItemRequest, WorkItemView,
 };
 use rootcause::{Result, prelude::*};
 use serde::Serialize;
@@ -95,6 +96,8 @@ enum ItemCommand {
     Finish(ItemFinishArgs),
     /// Release an item back to the queue.
     Release(ItemReleaseArgs),
+    /// Ask the user for feedback and pause automation.
+    RequestFeedback(ItemRequestFeedbackArgs),
     /// Poll an item and print version changes.
     Watch(ItemWatchArgs),
 }
@@ -285,6 +288,20 @@ struct ItemReleaseArgs {
     /// Optional release note.
     #[arg(long)]
     comment: Option<String>,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ItemRequestFeedbackArgs {
+    /// Item id; defaults to the claimed item when available.
+    item_id: Option<i64>,
+
+    /// Feedback request to show the user.
+    #[arg(long)]
+    body: String,
 
     /// Print JSON instead of text.
     #[arg(long)]
@@ -625,6 +642,27 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
             output(args.json, &item, || {
                 println!(
                     "Released item #{} back to {}",
+                    item.id,
+                    item_state_label(&item)
+                );
+            })
+        }
+        ItemCommand::RequestFeedback(args) => {
+            let item_id = context.item_id(args.item_id)?;
+            let agent_id = context.agent_id()?;
+            let item = client
+                .request_item_feedback(
+                    project,
+                    item_id,
+                    &RequestFeedbackWorkItemRequest {
+                        agent_id: agent_id.to_owned(),
+                        body: args.body,
+                    },
+                )
+                .await?;
+            output(args.json, &item, || {
+                println!(
+                    "Requested feedback for item #{} and restored state to {}",
                     item.id,
                     item_state_label(&item)
                 );
@@ -1073,6 +1111,7 @@ mod tests {
         assert!(item.contains("Add an agent progress comment"));
         assert!(item.contains("Mark an item done with a final report"));
         assert!(item.contains("Release an item back to the queue"));
+        assert!(item.contains("Ask the user for feedback and pause automation"));
         assert!(item.contains("Poll an item and print version changes"));
 
         let comment = help_output(&["patchbay", "comment", "--help"]);
@@ -1118,6 +1157,9 @@ mod tests {
 
         let progress = help_output(&["patchbay", "item", "progress", "--help"]);
         assert!(progress.contains("Progress text to record"));
+
+        let request_feedback = help_output(&["patchbay", "item", "request-feedback", "--help"]);
+        assert!(request_feedback.contains("Feedback request to show the user"));
 
         let comment = help_output(&["patchbay", "comment", "add", "--help"]);
         assert!(comment.contains("Comment text"));

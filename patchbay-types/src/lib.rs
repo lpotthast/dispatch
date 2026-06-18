@@ -698,6 +698,7 @@ pub const CLAIMED_STATE_LABEL: &str = "in_progress";
 pub const FINISHED_STATE_LABEL: &str = "done";
 pub const CLAIMED_FROM_STATE_LABEL_KEY: &str = "patchbay:claimed-from-state";
 pub const AUTOMATION_BLOCKED_LABEL_KEY: &str = "patchbay:automation-blocked";
+pub const FEEDBACK_REQUESTED_LABEL_KEY: &str = "patchbay:feedback-requested";
 pub const NEEDS_REFINEMENT_LABEL_KEY: &str = "needs-refinement";
 pub const NEEDS_VERIFICATION_LABEL_KEY: &str = "needs-verification";
 
@@ -715,6 +716,11 @@ pub fn default_automation_work_item_selector() -> Condition {
         }),
         ConditionElement::Clause(ConditionClause {
             column_name: NEEDS_VERIFICATION_LABEL_KEY.to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::Bool(false),
+        }),
+        ConditionElement::Clause(ConditionClause {
+            column_name: FEEDBACK_REQUESTED_LABEL_KEY.to_owned(),
             operator: Operator::Equal,
             value: ConditionClauseValue::Bool(false),
         }),
@@ -1284,6 +1290,12 @@ pub struct FinishWorkItemRequest {
 pub struct ReleaseWorkItemRequest {
     pub agent_id: String,
     pub comment: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RequestFeedbackWorkItemRequest {
+    pub agent_id: String,
+    pub body: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

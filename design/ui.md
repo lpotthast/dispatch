@@ -29,9 +29,10 @@ The main workflow surface should make these states easy to inspect:
 - recent comments and progress;
 - automation status;
 - stale or blocked work;
+- feedback-requested work that is waiting for a user answer;
 - run logs and run outcomes, including live output for active runs, active-run cancellation, commit outcome, and created commit SHA visibility.
 - per-run Codex token usage when reported by the agent runtime.
-- Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, and `patchbay:automation-blocked`.
+- Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, `patchbay:automation-blocked`, and `patchbay:feedback-requested`.
 
 Board and item-detail interactions call server actions or custom API endpoints so workflow rules remain centralized.
 Human-authored rich prose fields such as work item descriptions and automation prompts should use the Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists, memory history, and commit policy text stay plain text controls.
@@ -49,7 +50,7 @@ CrudKit is appropriate for ordinary resource administration:
 - agent runs;
 - automation rules.
 
-Patchbay-specific actions such as claim, release, finish, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
+Patchbay-specific actions such as claim, release, finish, request feedback, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
 
 Work item state and swim-lane authoring live on project administration surfaces, not the main board. The board shows small lane edit controls that navigate to the selected swim-lane editor. New item state choices come from authored work item states. Lane add controls may preselect a state when a lane filter is state-backed.
 
