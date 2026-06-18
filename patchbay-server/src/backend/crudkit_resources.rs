@@ -16,9 +16,9 @@ use crate::{
             agent_run, agent_tool, automation_trigger, comment, project, swim_lane, work_item,
             work_item_label, work_item_state,
         },
-        events, items, projects,
+        events, projects,
         storage::{Store, utc_now},
-        swim_lanes, work_item_states,
+        swim_lanes, work_item_events, work_item_states,
     },
     shared::view_models::{
         AgentReasoningEffort, AgentSandboxMode, AgentToolName, AutomationActivation,
@@ -485,7 +485,7 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
             .insert(context.store.db().as_ref())
             .await
             .map_err(work_item_internal_error)?;
-        items::record_event_in_tx(
+        work_item_events::record_event_in_tx(
             context.store.db().as_ref(),
             model.project_id,
             Some(model.id),

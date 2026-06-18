@@ -14,6 +14,7 @@ use crate::{
         },
         events, items, projects,
         storage::{Store, utc_now},
+        work_item_events,
     },
     shared::view_models::{AuthorType, CommentView},
 };
@@ -62,7 +63,7 @@ pub async fn add_comment(
         .await
         .context("failed to update item after comment")?;
 
-    items::record_event_in_tx(
+    work_item_events::record_event_in_tx(
         &txn,
         project_id,
         Some(item_id),
@@ -112,7 +113,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{
-        items::{CreateWorkItem, create_item},
+        items::{CreateWorkItem, create_item, list_events},
         projects::{CreateProject, create_project},
     };
 
@@ -185,6 +186,23 @@ mod tests {
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].body, "First");
         assert_eq!(comments[1].author_type, AuthorType::Agent);
+
+        let events = list_events(&store, "demo", Some(item_id), None)
+            .await
+            .unwrap();
+        let comment_events = events
+            .iter()
+            .filter(|event| event.event_type == "comment_added")
+            .collect::<Vec<_>>();
+
+        assert_eq!(comment_events.len(), 2);
+        assert!(comment_events.iter().all(|event| {
+            event.work_item_id == Some(item_id)
+                && event.body == "Added comment"
+                && event.actor_type.is_none()
+                && event.actor_id.is_none()
+                && event.agent_run_id.is_none()
+        }));
     }
 
     #[tokio::test]

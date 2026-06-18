@@ -21,9 +21,9 @@ use crate::{
             project::{self, Project, ProjectActiveModel, ProjectModel},
             work_item_event,
         },
-        events, items,
+        events,
         storage::{Store, utc_now},
-        swim_lanes, work_item_states,
+        swim_lanes, work_item_events, work_item_states,
     },
     shared::view_models::{
         AgentGitCommandPolicy, AgentReasoningEffort, AgentSandboxMode, AgentToolName,
@@ -593,13 +593,13 @@ where
         system_prompt: project.system_prompt.clone(),
     })
     .context("failed to encode project system prompt event")?;
-    items::record_event_with_attribution_in_tx(
+    work_item_events::record_event_with_attribution_in_tx(
         conn,
         project.id,
         None,
         SYSTEM_PROMPT_CHANGED_EVENT_TYPE,
         &body,
-        items::EventAttribution {
+        work_item_events::EventAttribution {
             actor_type: Some(source.actor_type()),
             actor_id: source.actor_id(),
             agent_run_id: source.agent_run_id(),
@@ -622,13 +622,13 @@ where
         memory: project.memory.clone(),
     })
     .context("failed to encode project memory event")?;
-    items::record_event_with_attribution_in_tx(
+    work_item_events::record_event_with_attribution_in_tx(
         conn,
         project.id,
         None,
         MEMORY_CHANGED_EVENT_TYPE,
         &body,
-        items::EventAttribution {
+        work_item_events::EventAttribution {
             actor_type: Some(source.actor_type()),
             actor_id: source.actor_id(),
             agent_run_id: source.agent_run_id(),
@@ -1209,6 +1209,7 @@ mod tests {
     use std::fs;
 
     use git2::Signature;
+    use sea_orm::EntityTrait;
     use tempfile::TempDir;
 
     use super::*;
@@ -1488,6 +1489,86 @@ mod tests {
         );
         let current = get_project(&store, "demo").await.unwrap();
         assert_eq!(current.system_prompt, "Updated prompt.");
+    }
+
+    #[tokio::test]
+    async fn project_context_events_persist_project_level_attribution() {
+        let (temp, store) = test_store().await;
+        let project = create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: project_path(&temp, "demo"),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let prompted = update_system_prompt_with_source(
+            &store,
+            "demo",
+            "Agent prompt.".to_owned(),
+            ProjectChangeSource::Agent {
+                agent_id: "patchbay-run-42".to_owned(),
+                agent_run_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let prompt_row = work_item_event::Entity::find_by_id(prompted.event.id)
+            .one(store.db().as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let prompt_body = serde_json::from_str::<SystemPromptChangedBody>(&prompt_row.body)
+            .expect("system prompt event body should decode");
+
+        assert_eq!(prompted.event.actor_type.as_deref(), Some("agent"));
+        assert_eq!(prompted.event.actor_id.as_deref(), Some("patchbay-run-42"));
+        assert_eq!(prompted.event.agent_run_id, Some(42));
+        assert_eq!(prompt_row.project_id, project.id);
+        assert_eq!(prompt_row.work_item_id, None);
+        assert_eq!(prompt_row.event_type, SYSTEM_PROMPT_CHANGED_EVENT_TYPE);
+        assert_eq!(prompt_row.actor_type.as_deref(), Some("agent"));
+        assert_eq!(prompt_row.actor_id.as_deref(), Some("patchbay-run-42"));
+        assert_eq!(prompt_row.agent_run_id, Some(42));
+        assert_eq!(prompt_body.operation, "set");
+        assert_eq!(prompt_body.system_prompt, "Agent prompt.");
+
+        let remembered = append_memory_with_source(
+            &store,
+            "demo",
+            "Agent memory.".to_owned(),
+            ProjectChangeSource::Agent {
+                agent_id: "codex-worker".to_owned(),
+                agent_run_id: Some(77),
+            },
+        )
+        .await
+        .unwrap();
+        let memory_row = work_item_event::Entity::find_by_id(remembered.event.id)
+            .one(store.db().as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let memory_body = serde_json::from_str::<MemoryChangedBody>(&memory_row.body).unwrap();
+
+        assert_eq!(remembered.event.actor_type.as_deref(), Some("agent"));
+        assert_eq!(remembered.event.actor_id.as_deref(), Some("codex-worker"));
+        assert_eq!(remembered.event.agent_run_id, Some(77));
+        assert_eq!(memory_row.project_id, project.id);
+        assert_eq!(memory_row.work_item_id, None);
+        assert_eq!(memory_row.event_type, MEMORY_CHANGED_EVENT_TYPE);
+        assert_eq!(memory_row.actor_type.as_deref(), Some("agent"));
+        assert_eq!(memory_row.actor_id.as_deref(), Some("codex-worker"));
+        assert_eq!(memory_row.agent_run_id, Some(77));
+        assert_eq!(memory_body.operation, "append");
+        assert_eq!(memory_body.memory, "Agent memory.");
     }
 
     #[tokio::test]

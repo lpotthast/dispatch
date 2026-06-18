@@ -13,11 +13,12 @@ use crate::{
         entities::{
             comment::{CommentActiveModel, CommentModel},
             work_item::{self, WorkItem, WorkItemActiveModel, WorkItemModel},
-            work_item_event::{self, WorkItemEventActiveModel},
+            work_item_event,
             work_item_label::{self, WorkItemLabel, WorkItemLabelActiveModel, WorkItemLabelModel},
         },
         events, item_labels, projects,
         storage::{Store, utc_now},
+        work_item_events,
     },
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AuthorType,
@@ -44,13 +45,6 @@ pub struct UpdateWorkItem {
     pub agent_model_override: Option<Option<String>>,
     pub agent_reasoning_effort_override: Option<Option<AgentReasoningEffort>>,
     pub expect_version: Option<i64>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct EventAttribution<'a> {
-    pub actor_type: Option<&'a str>,
-    pub actor_id: Option<&'a str>,
-    pub agent_run_id: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,7 +220,7 @@ pub async fn create_item(
         Some(state_label.as_str()),
     )
     .await?;
-    record_event_in_tx(
+    work_item_events::record_event_in_tx(
         &txn,
         project_id,
         Some(item.id),
@@ -301,7 +295,7 @@ pub async fn update_item(
         .await
         .context("failed to update work item")?;
     if has_item_update {
-        record_event_in_tx(
+        work_item_events::record_event_in_tx(
             &txn,
             project_id,
             Some(item_id),
@@ -320,7 +314,14 @@ pub async fn update_item(
         )
         .await?;
         let event_body = format!("Moved item to {state}");
-        record_event_in_tx(&txn, project_id, Some(item_id), "item_moved", &event_body).await?;
+        work_item_events::record_event_in_tx(
+            &txn,
+            project_id,
+            Some(item_id),
+            "item_moved",
+            &event_body,
+        )
+        .await?;
     }
     txn.commit().await.context("failed to commit item update")?;
     events::publish_work_item_changed(project_name, item_id);
@@ -606,7 +607,7 @@ pub async fn release_item(
     }
 
     let event_body = format!("Released by {agent_id}; restored state to {release_state}");
-    record_event_in_tx(
+    work_item_events::record_event_in_tx(
         &txn,
         project_id,
         Some(item_id),
@@ -659,7 +660,8 @@ pub async fn progress_item(
         .update(&txn)
         .await
         .context("failed to update item after progress")?;
-    record_event_in_tx(&txn, project_id, Some(item_id), "progress_added", body).await?;
+    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "progress_added", body)
+        .await?;
     txn.commit()
         .await
         .context("failed to commit item progress")?;
@@ -721,7 +723,8 @@ pub async fn finish_item(
     .await?;
     delete_label_by_key_in_tx(&txn, project_id, item_id, CLAIMED_FROM_STATE_LABEL_KEY).await?;
     delete_label_by_key_in_tx(&txn, project_id, item_id, AUTOMATION_BLOCKED_LABEL_KEY).await?;
-    record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report).await?;
+    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report)
+        .await?;
     txn.commit().await.context("failed to commit item finish")?;
     events::publish_work_item_changed(project_name, item_id);
 
@@ -737,7 +740,7 @@ pub async fn delete_item(store: &Store, project_name: &str, item_id: i64) -> Res
         .context("failed to start item delete")?;
     get_item_model_in_tx(&txn, project_id, item_id).await?;
 
-    record_event_in_tx(
+    work_item_events::record_event_in_tx(
         &txn,
         project_id,
         Some(item_id),
@@ -840,7 +843,8 @@ pub async fn add_label(
         "Added label {}",
         item_labels::format_label(&key, value.as_deref())
     );
-    record_event_in_tx(&txn, project_id, Some(item_id), "label_added", &body).await?;
+    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "label_added", &body)
+        .await?;
     txn.commit().await.context("failed to commit label add")?;
     events::publish_work_item_changed(project_name, item_id);
     model_to_view(store, updated).await
@@ -902,7 +906,8 @@ pub async fn update_label(
         "Updated label {}",
         item_labels::format_label(&key, value.as_deref())
     );
-    record_event_in_tx(&txn, project_id, Some(item_id), "label_updated", &body).await?;
+    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "label_updated", &body)
+        .await?;
     txn.commit()
         .await
         .context("failed to commit label update")?;
@@ -938,7 +943,8 @@ pub async fn delete_label(
         .await
         .context("failed to delete label")?;
     let updated = touch_item_in_tx(&txn, item).await?;
-    record_event_in_tx(&txn, project_id, Some(item_id), "label_deleted", &body).await?;
+    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "label_deleted", &body)
+        .await?;
     txn.commit()
         .await
         .context("failed to commit label delete")?;
@@ -1236,7 +1242,7 @@ where
         comment_body.as_str(),
     )
     .await?;
-    record_event_in_tx(
+    work_item_events::record_event_in_tx(
         conn,
         project_id,
         Some(item_id),
@@ -1369,56 +1375,6 @@ where
         .update(conn)
         .await
         .context("failed to update item version")?)
-}
-
-pub(crate) async fn record_event_in_tx<C>(
-    conn: &C,
-    project_id: i64,
-    work_item_id: Option<i64>,
-    event_type: &str,
-    body: &str,
-) -> Result<work_item_event::Model>
-where
-    C: sea_orm::ConnectionTrait,
-{
-    record_event_with_attribution_in_tx(
-        conn,
-        project_id,
-        work_item_id,
-        event_type,
-        body,
-        EventAttribution::default(),
-    )
-    .await
-}
-
-pub(crate) async fn record_event_with_attribution_in_tx<C>(
-    conn: &C,
-    project_id: i64,
-    work_item_id: Option<i64>,
-    event_type: &str,
-    body: &str,
-    attribution: EventAttribution<'_>,
-) -> Result<work_item_event::Model>
-where
-    C: sea_orm::ConnectionTrait,
-{
-    let active = WorkItemEventActiveModel {
-        project_id: Set(project_id),
-        work_item_id: Set(work_item_id),
-        event_type: Set(event_type.to_owned()),
-        body: Set(body.to_owned()),
-        actor_type: Set(attribution.actor_type.map(ToOwned::to_owned)),
-        actor_id: Set(attribution.actor_id.map(ToOwned::to_owned)),
-        agent_run_id: Set(attribution.agent_run_id),
-        created_at: Set(utc_now()),
-        ..Default::default()
-    };
-    let event = active
-        .insert(conn)
-        .await
-        .context_with(|| format!("failed to record event {event_type}"))?;
-    Ok(event)
 }
 
 async fn insert_comment_in_tx<C>(
@@ -1731,6 +1687,39 @@ mod tests {
                 .to_string()
                 .contains("does not exist in this project")
         );
+    }
+
+    #[tokio::test]
+    async fn creating_item_records_item_created_event_row() {
+        let (_temp, store) = test_store().await;
+        let project_id = projects::project_id(&store, "demo").await.unwrap();
+
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Record event".to_owned(),
+                description: "Persist the creation event".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let events = list_events(&store, "demo", Some(item.id), None)
+            .await
+            .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].project_id, project_id);
+        assert_eq!(events[0].work_item_id, Some(item.id));
+        assert_eq!(events[0].event_type, "item_created");
+        assert_eq!(events[0].body, "Created item");
+        assert!(events[0].actor_type.is_none());
+        assert!(events[0].actor_id.is_none());
+        assert!(events[0].agent_run_id.is_none());
     }
 
     #[tokio::test]
