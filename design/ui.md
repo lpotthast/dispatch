@@ -35,6 +35,7 @@ The main workflow surface should make these states easy to inspect:
 - Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, `patchbay:automation-blocked`, and `patchbay:feedback-requested`.
 
 Board and item-detail interactions call server actions or custom API endpoints so workflow rules remain centralized.
+Hydrated item-detail label and comment forms should save in the background and keep the item page mounted, including current scroll position and nearby form state; non-hydrated form posts may keep the redirect fallback.
 Board swim-lanes cap their height at roughly 80% of the viewport, with overflowing work item cards scrolling inside each lane so large lanes do not lengthen the page indefinitely.
 Human-authored rich prose fields such as work item descriptions and automation prompts should use the Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists, memory history, and commit policy text stay plain text controls.
 Ordinary work item create and edit fields may be embedded CrudKit forms, including the Board new-item modal and item-detail editor, so those flows share field configuration and CrudKit dirty-state leave protection while Patchbay workflow controls remain custom.
@@ -55,6 +56,7 @@ CrudKit is appropriate for ordinary resource administration:
 Patchbay-specific actions such as claim, release, finish, request feedback, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
 
 Work item state and swim-lane authoring live on project administration surfaces, not the main board. The board shows small lane edit controls that navigate to the selected swim-lane editor. New item state choices come from authored work item states. Lane add controls may preselect a state when a lane filter is state-backed.
+On item detail pages, the `state` label's value editor should render as a state picker backed by the current project's authored work item states instead of a free-text value field.
 
 The Codex app-server status panel should guide setup failures directly. When
 Patchbay's managed Codex home is not signed in, the panel shows the exact
@@ -96,6 +98,7 @@ Automation rule administration should show and edit each work-consuming rule's m
 ## Live Updates
 
 The UI uses project and item event streams to refresh workflow state. Event streams are hints for refreshing the current view; persisted records remain the source of truth.
+Hydrated route page data is cached by route context. Revisiting a frontend route should render cached content immediately and refresh asynchronously instead of replacing the page with the loading fallback.
 
 ## Browser Coverage
 

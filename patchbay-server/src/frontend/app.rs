@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 #[cfg(feature = "ssr")]
 use crate::backend::{app_state, page_data};
@@ -61,7 +61,8 @@ use crudkit_leptos::crudkit_core::{
 use crudkit_leptos::fields::{FieldRenderer, render_label};
 use crudkit_leptos::{
     crud_instance_config::{
-        CrudNavigationConfig, FieldRendererRegistry, Header, ItemsPerPage, ModelHandler, PageNr,
+        CrudCreateActionsPlacement, CrudNavigationConfig, FieldRendererRegistry, Header,
+        ItemsPerPage, ModelHandler, PageNr,
     },
     crudkit_web::{
         HeaderOptions, Label, reqwest_executor::NewClientPerRequestExecutor,
@@ -71,12 +72,12 @@ use crudkit_leptos::{
 };
 use indexmap::indexmap;
 use leptonic::components::prelude::{
-    LeptonicTheme, Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle, Root, Select,
+    Icon, LeptonicTheme, Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle, Root, Select,
     TiptapEditor,
 };
 #[cfg(not(feature = "ssr"))]
 use leptonic::components::prelude::{Toast, ToastTimeout, ToastVariant, Toasts};
-use leptonic::prelude::TiptapContent;
+use leptonic::prelude::{TiptapContent, icondata};
 use leptos::prelude::LeptosOptions;
 use leptos::prelude::*;
 #[cfg(feature = "ssr")]
@@ -225,6 +226,18 @@ pub struct ApiDocsPage {
     pub codex_status: CodexAppServerStatusView,
 }
 
+#[derive(Clone)]
+enum CachedRoutePage {
+    Board(Box<BoardPage>),
+    Projects(Box<ProjectsPage>),
+    Triggers(Box<TriggersPage>),
+    Runs(Box<RunsPage>),
+    Codex(Box<CodexStatusPage>),
+    Item(Box<ItemPage>),
+    RunLog(Box<RunLogPage>),
+    ApiDocs(Box<ApiDocsPage>),
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ActivePage {
     Board,
@@ -247,6 +260,32 @@ struct TopBarAutomation {
 #[derive(Clone, Copy)]
 struct LiveEventContext {
     latest_event: ReadSignal<Option<UiEvent>>,
+}
+
+#[derive(Clone, Copy)]
+struct RoutePageCacheContext {
+    pages: ReadSignal<HashMap<String, CachedRoutePage>>,
+    set_pages: WriteSignal<HashMap<String, CachedRoutePage>>,
+}
+
+fn provide_route_page_cache_context() {
+    let (pages, set_pages) = signal(HashMap::new());
+    provide_context(RoutePageCacheContext { pages, set_pages });
+}
+
+#[derive(Clone, Copy)]
+struct WorkItemStatesContext {
+    states: ReadSignal<Vec<WorkItemStateView>>,
+    set_states: WriteSignal<Vec<WorkItemStateView>>,
+}
+
+fn provide_work_item_states_context(
+    initial_states: Vec<WorkItemStateView>,
+) -> WorkItemStatesContext {
+    let (states, set_states) = signal(initial_states);
+    let context = WorkItemStatesContext { states, set_states };
+    provide_context(context);
+    context
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -295,6 +334,8 @@ pub fn App() -> impl IntoView {
 
 #[component]
 pub fn MainLayout() -> impl IntoView {
+    provide_route_page_cache_context();
+
     view! {
         <CrudInstanceMgr>
             <LiveEventsProvider/>
@@ -332,13 +373,32 @@ fn LiveEventsProvider() -> impl IntoView {
 #[component]
 pub fn PageBoard() -> impl IntoView {
     let selected_project = selected_project_signal();
+    let selected_project_for_cache = selected_project;
     let api_base_url = api_base_url();
-    let page =
-        LocalResource::new(move || load_board_page(selected_project.get(), api_base_url.clone()));
+    let page = LocalResource::new(move || {
+        let selected_project = selected_project.get();
+        let cache_key = selected_project_page_cache_key("board", selected_project.as_deref());
+        let api_base_url = api_base_url.clone();
+        async move {
+            (
+                cache_key,
+                load_board_page(selected_project, api_base_url).await,
+            )
+        }
+    });
 
     view! {
         <Title text="Patchbay"/>
-        {resilient_page_view(page, board_content)}
+        {cached_page_view(
+            move || selected_project_page_cache_key(
+                "board",
+                selected_project_for_cache.get().as_deref(),
+            ),
+            page,
+            board_content,
+            cache_board_page,
+            board_page_from_cache,
+        )}
     }
 }
 
@@ -371,15 +431,33 @@ async fn load_board_items_section(project: String) -> Result<BoardItemsSection, 
 #[component]
 pub fn PageProjects() -> impl IntoView {
     let selected_project = selected_project_signal();
+    let selected_project_for_cache = selected_project;
     let api_base_url = api_base_url();
     let api_base_url_for_panel = api_base_url.clone();
     let page = LocalResource::new(move || {
-        load_projects_page(selected_project.get(), api_base_url.clone())
+        let selected_project = selected_project.get();
+        let cache_key = selected_project_page_cache_key("projects", selected_project.as_deref());
+        let api_base_url = api_base_url.clone();
+        async move {
+            (
+                cache_key,
+                load_projects_page(selected_project, api_base_url).await,
+            )
+        }
     });
 
     view! {
         <Title text="Projects"/>
-        {resilient_page_view(page, projects_content)}
+        {cached_page_view(
+            move || selected_project_page_cache_key(
+                "projects",
+                selected_project_for_cache.get().as_deref(),
+            ),
+            page,
+            projects_content,
+            cache_projects_page,
+            projects_page_from_cache,
+        )}
         <div class="page-shell projects-page crudkit-tools-shell">
             {agent_tools_panel(api_base_url_for_panel)}
         </div>
@@ -407,14 +485,32 @@ async fn load_projects_page(
 #[component]
 pub fn PageTriggers() -> impl IntoView {
     let selected_project = selected_project_signal();
+    let selected_project_for_cache = selected_project;
     let api_base_url = api_base_url();
     let page = LocalResource::new(move || {
-        load_triggers_page(selected_project.get(), api_base_url.clone())
+        let selected_project = selected_project.get();
+        let cache_key = selected_project_page_cache_key("triggers", selected_project.as_deref());
+        let api_base_url = api_base_url.clone();
+        async move {
+            (
+                cache_key,
+                load_triggers_page(selected_project, api_base_url).await,
+            )
+        }
     });
 
     view! {
         <Title text="Automation"/>
-        {resilient_page_view(page, triggers_content)}
+        {cached_page_view(
+            move || selected_project_page_cache_key(
+                "triggers",
+                selected_project_for_cache.get().as_deref(),
+            ),
+            page,
+            triggers_content,
+            cache_triggers_page,
+            triggers_page_from_cache,
+        )}
     }
 }
 
@@ -450,12 +546,26 @@ async fn load_trigger_run_sessions(
 #[component]
 pub fn PageRuns() -> impl IntoView {
     let selected_project = selected_project_signal();
-    let page = LocalResource::new(move || load_runs_page(selected_project.get()));
+    let selected_project_for_cache = selected_project;
+    let page = LocalResource::new(move || {
+        let selected_project = selected_project.get();
+        let cache_key = selected_project_page_cache_key("runs", selected_project.as_deref());
+        async move { (cache_key, load_runs_page(selected_project).await) }
+    });
     refetch_on_live_event(page, runs_page_event_matches);
 
     view! {
         <Title text="Runs"/>
-        {resilient_page_view(page, runs_content)}
+        {cached_page_view(
+            move || selected_project_page_cache_key(
+                "runs",
+                selected_project_for_cache.get().as_deref(),
+            ),
+            page,
+            runs_content,
+            cache_runs_page,
+            runs_page_from_cache,
+        )}
     }
 }
 
@@ -490,12 +600,26 @@ async fn load_runs_section(project: String) -> Result<RunsSection, ServerFnError
 #[component]
 pub fn PageCodex() -> impl IntoView {
     let selected_project = selected_project_signal();
-    let page = LocalResource::new(move || load_codex_status_page(selected_project.get()));
+    let selected_project_for_cache = selected_project;
+    let page = LocalResource::new(move || {
+        let selected_project = selected_project.get();
+        let cache_key = selected_project_page_cache_key("codex", selected_project.as_deref());
+        async move { (cache_key, load_codex_status_page(selected_project).await) }
+    });
     refetch_on_live_event(page, codex_event_matches);
 
     view! {
         <Title text="Codex automation"/>
-        {resilient_page_view(page, codex_status_content)}
+        {cached_page_view(
+            move || selected_project_page_cache_key(
+                "codex",
+                selected_project_for_cache.get().as_deref(),
+            ),
+            page,
+            codex_status_content,
+            cache_codex_status_page,
+            codex_status_page_from_cache,
+        )}
     }
 }
 
@@ -523,11 +647,22 @@ pub fn PageItem() -> impl IntoView {
         .read_untracked()
         .get("item_id")
         .and_then(|value| value.parse::<i64>().ok());
+    let cache_key = entity_page_cache_key("item", project.as_deref(), item_id);
     let project_for_loader = project.clone();
     let project_for_events = project;
+    let cache_key_for_loader = cache_key.clone();
+    let cache_key_for_view = cache_key;
     let api_base_url = api_base_url();
     let page = LocalResource::new(move || {
-        load_item_page(project_for_loader.clone(), item_id, api_base_url.clone())
+        let cache_key = cache_key_for_loader.clone();
+        let project = project_for_loader.clone();
+        let api_base_url = api_base_url.clone();
+        async move {
+            (
+                cache_key,
+                load_item_page(project, item_id, api_base_url).await,
+            )
+        }
     });
     refetch_on_live_event(page, move |event| {
         item_event_matches(event, project_for_events.clone(), item_id)
@@ -535,7 +670,13 @@ pub fn PageItem() -> impl IntoView {
 
     view! {
         <Title text="Patchbay"/>
-        {resilient_page_view(page, item_content)}
+        {cached_page_view(
+            move || cache_key_for_view.clone(),
+            page,
+            item_content,
+            cache_item_page,
+            item_page_from_cache,
+        )}
     }
 }
 
@@ -570,16 +711,29 @@ pub fn PageRunLog() -> impl IntoView {
         .read_untracked()
         .get("run_id")
         .and_then(|value| value.parse::<i64>().ok());
+    let cache_key = entity_page_cache_key("run-log", project.as_deref(), run_id);
     let project_for_loader = project.clone();
     let project_for_events = project;
-    let page = LocalResource::new(move || load_run_log_page(project_for_loader.clone(), run_id));
+    let cache_key_for_loader = cache_key.clone();
+    let cache_key_for_view = cache_key;
+    let page = LocalResource::new(move || {
+        let cache_key = cache_key_for_loader.clone();
+        let project = project_for_loader.clone();
+        async move { (cache_key, load_run_log_page(project, run_id).await) }
+    });
     refetch_on_live_event(page, move |event| {
         run_log_event_matches(event, project_for_events.clone(), run_id)
     });
 
     view! {
         <Title text="Run log"/>
-        {resilient_page_view(page, run_log_content)}
+        {cached_page_view(
+            move || cache_key_for_view.clone(),
+            page,
+            run_log_content,
+            cache_run_log_page,
+            run_log_page_from_cache,
+        )}
     }
 }
 
@@ -608,12 +762,26 @@ async fn load_run_log_page(
 #[component]
 pub fn PageApiDocs() -> impl IntoView {
     let selected_project = selected_project_signal();
-    let page = LocalResource::new(move || load_api_docs_page(selected_project.get()));
+    let selected_project_for_cache = selected_project;
+    let page = LocalResource::new(move || {
+        let selected_project = selected_project.get();
+        let cache_key = selected_project_page_cache_key("api-docs", selected_project.as_deref());
+        async move { (cache_key, load_api_docs_page(selected_project).await) }
+    });
     refetch_on_live_event(page, api_docs_event_matches);
 
     view! {
         <Title text="Patchbay API"/>
-        {resilient_page_view(page, api_docs_content)}
+        {cached_page_view(
+            move || selected_project_page_cache_key(
+                "api-docs",
+                selected_project_for_cache.get().as_deref(),
+            ),
+            page,
+            api_docs_content,
+            cache_api_docs_page,
+            api_docs_page_from_cache,
+        )}
     }
 }
 
@@ -664,8 +832,105 @@ fn selected_project_signal() -> Memo<Option<String>> {
     Memo::new(move |_| query.read().get("project"))
 }
 
+fn selected_project_page_cache_key(page: &str, selected_project: Option<&str>) -> String {
+    format!("{page}:project={}", selected_project.unwrap_or_default())
+}
+
+fn entity_page_cache_key(page: &str, project: Option<&str>, id: Option<i64>) -> String {
+    let id = id.map(|id| id.to_string()).unwrap_or_default();
+    format!("{page}:project={}:id={id}", project.unwrap_or_default())
+}
+
+fn cache_board_page(page: BoardPage) -> CachedRoutePage {
+    CachedRoutePage::Board(Box::new(page))
+}
+
+fn board_page_from_cache(page: &CachedRoutePage) -> Option<BoardPage> {
+    match page {
+        CachedRoutePage::Board(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn cache_projects_page(page: ProjectsPage) -> CachedRoutePage {
+    CachedRoutePage::Projects(Box::new(page))
+}
+
+fn projects_page_from_cache(page: &CachedRoutePage) -> Option<ProjectsPage> {
+    match page {
+        CachedRoutePage::Projects(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn cache_triggers_page(page: TriggersPage) -> CachedRoutePage {
+    CachedRoutePage::Triggers(Box::new(page))
+}
+
+fn triggers_page_from_cache(page: &CachedRoutePage) -> Option<TriggersPage> {
+    match page {
+        CachedRoutePage::Triggers(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn cache_runs_page(page: RunsPage) -> CachedRoutePage {
+    CachedRoutePage::Runs(Box::new(page))
+}
+
+fn runs_page_from_cache(page: &CachedRoutePage) -> Option<RunsPage> {
+    match page {
+        CachedRoutePage::Runs(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn cache_codex_status_page(page: CodexStatusPage) -> CachedRoutePage {
+    CachedRoutePage::Codex(Box::new(page))
+}
+
+fn codex_status_page_from_cache(page: &CachedRoutePage) -> Option<CodexStatusPage> {
+    match page {
+        CachedRoutePage::Codex(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn cache_item_page(page: ItemPage) -> CachedRoutePage {
+    CachedRoutePage::Item(Box::new(page))
+}
+
+fn item_page_from_cache(page: &CachedRoutePage) -> Option<ItemPage> {
+    match page {
+        CachedRoutePage::Item(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn cache_run_log_page(page: RunLogPage) -> CachedRoutePage {
+    CachedRoutePage::RunLog(Box::new(page))
+}
+
+fn run_log_page_from_cache(page: &CachedRoutePage) -> Option<RunLogPage> {
+    match page {
+        CachedRoutePage::RunLog(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn cache_api_docs_page(page: ApiDocsPage) -> CachedRoutePage {
+    CachedRoutePage::ApiDocs(Box::new(page))
+}
+
+fn api_docs_page_from_cache(page: &CachedRoutePage) -> Option<ApiDocsPage> {
+    match page {
+        CachedRoutePage::ApiDocs(page) => Some(page.as_ref().clone()),
+        _ => None,
+    }
+}
+
 fn refetch_on_live_event<T>(
-    resource: LocalResource<Result<T, ServerFnError>>,
+    resource: LocalResource<T>,
     should_refetch: impl Fn(&UiEvent) -> bool + 'static,
 ) where
     T: 'static,
@@ -756,8 +1021,8 @@ fn item_event_matches(event: &UiEvent, project: Option<String>, item_id: Option<
         | UiEvent::AgentOutputChanged { item_id: None, .. }
         | UiEvent::SystemPromptChanged { .. }
         | UiEvent::MemoryChanged { .. }
-        | UiEvent::SwimLaneChanged { .. }
-        | UiEvent::WorkItemStateChanged { .. } => false,
+        | UiEvent::SwimLaneChanged { .. } => false,
+        UiEvent::WorkItemStateChanged { .. } => true,
     }
 }
 
@@ -886,25 +1151,71 @@ enum ResilientPage<T> {
     InitialError(String),
 }
 
-fn resilient_page_view<T>(
-    resource: LocalResource<Result<T, ServerFnError>>,
+fn cached_page_view<T>(
+    cache_key: impl Fn() -> String + Clone + 'static,
+    resource: LocalResource<(String, Result<T, ServerFnError>)>,
     content: impl Fn(T) -> AnyView + Copy + Send + 'static,
+    into_cached_page: impl Fn(T) -> CachedRoutePage + Copy + 'static,
+    from_cached_page: impl Fn(&CachedRoutePage) -> Option<T> + Copy + 'static,
 ) -> impl IntoView
 where
     T: Clone + Send + Sync + 'static,
 {
-    let (displayed_page, set_displayed_page) = signal(None::<ResilientPage<T>>);
-    notify_resource_errors(resource, move || {
+    let cache = use_context::<RoutePageCacheContext>();
+    let initial_cache_key = cache_key();
+    let initial_page = cached_route_page(cache, &initial_cache_key, from_cached_page);
+    let has_initial_page = initial_page.is_some();
+    let (displayed_cache_key, set_displayed_cache_key) = signal(initial_cache_key);
+    let (displayed_page, set_displayed_page) = signal(initial_page.map(ResilientPage::Content));
+    let (skip_next_visible_update, set_skip_next_visible_update) = signal(has_initial_page);
+    notify_page_resource_errors(resource, move || {
         displayed_page.with_untracked(|page| matches!(page, Some(ResilientPage::Content(_))))
     });
 
+    let cache_key_for_route_change = cache_key.clone();
+    Effect::new(move |_| {
+        let key = cache_key_for_route_change();
+        if displayed_cache_key.with_untracked(|displayed| displayed != &key) {
+            let cached = cached_route_page(cache, &key, from_cached_page);
+            if let Some(cached) = cached {
+                set_displayed_page.set(Some(ResilientPage::Content(cached)));
+                set_skip_next_visible_update.set(true);
+            } else {
+                set_skip_next_visible_update.set(false);
+            }
+            set_displayed_cache_key.set(key);
+        }
+    });
+
+    let cache_key_for_resource = cache_key;
     Effect::new(move |_| match resource.get() {
-        Some(Ok(page)) => set_displayed_page.set(Some(ResilientPage::Content(page))),
-        Some(Err(err)) if displayed_page.with_untracked(Option::is_none) => {
+        Some((loaded_key, Ok(page))) => {
+            if let Some(cache) = cache {
+                let cached = into_cached_page(page.clone());
+                cache.set_pages.update(|pages| {
+                    pages.insert(loaded_key.clone(), cached);
+                });
+            }
+            if loaded_key == cache_key_for_resource() {
+                let should_skip_visible_update = skip_next_visible_update
+                    .with_untracked(|skip| *skip)
+                    && displayed_page
+                        .with_untracked(|page| matches!(page, Some(ResilientPage::Content(_))));
+                if should_skip_visible_update {
+                    set_skip_next_visible_update.set(false);
+                } else {
+                    set_displayed_cache_key.set(loaded_key);
+                    set_displayed_page.set(Some(ResilientPage::Content(page)));
+                }
+            }
+        }
+        Some((loaded_key, Err(err)))
+            if loaded_key == cache_key_for_resource()
+                && displayed_page.with_untracked(Option::is_none) =>
+        {
             set_displayed_page.set(Some(ResilientPage::InitialError(err.to_string())));
         }
-        Some(Err(_)) => {}
-        None => {}
+        Some((_, Err(_))) | None => {}
     });
 
     move || match displayed_page.get() {
@@ -912,6 +1223,49 @@ where
         Some(ResilientPage::InitialError(message)) => error_content(message),
         None => page_loading().into_any(),
     }
+}
+
+fn cached_route_page<T>(
+    cache: Option<RoutePageCacheContext>,
+    key: &str,
+    from_cached_page: impl Fn(&CachedRoutePage) -> Option<T>,
+) -> Option<T> {
+    cache.and_then(|cache| {
+        cache
+            .pages
+            .with_untracked(|pages| pages.get(key).and_then(from_cached_page))
+    })
+}
+
+fn notify_page_resource_errors<T>(
+    resource: LocalResource<(String, Result<T, ServerFnError>)>,
+    should_notify: impl Fn() -> bool + Copy + 'static,
+) where
+    T: Clone + Send + Sync + 'static,
+{
+    #[cfg(not(feature = "ssr"))]
+    let toasts = use_context::<Toasts>();
+    let (last_notified_error, set_last_notified_error) = signal(None::<String>);
+    Effect::new(move |_| {
+        if let Some((_, result)) = resource.get() {
+            match result {
+                Ok(_) => set_last_notified_error.set(None),
+                Err(err) if should_notify() => {
+                    let message = err.to_string();
+                    let already_notified = last_notified_error
+                        .with_untracked(|last| last.as_deref() == Some(message.as_str()));
+                    if !already_notified {
+                        #[cfg(not(feature = "ssr"))]
+                        show_request_error_toast(toasts, message.clone());
+                        #[cfg(feature = "ssr")]
+                        show_request_error_toast(message.clone());
+                        set_last_notified_error.set(Some(message));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    });
 }
 
 fn notify_resource_errors<T>(
@@ -963,6 +1317,85 @@ fn show_request_error_toast(toasts: Option<Toasts>, message: String) {
 
 #[cfg(feature = "ssr")]
 fn show_request_error_toast(_message: String) {}
+
+fn background_form_submit(
+    reset_on_success: bool,
+) -> impl Fn(leptos::ev::SubmitEvent) + Clone + 'static {
+    #[cfg(not(feature = "ssr"))]
+    {
+        let toasts = use_context::<Toasts>();
+        move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            let Some(form) = event.current_target().or_else(|| event.target()) else {
+                show_request_error_toast(toasts.clone(), "Missing submitted form".to_owned());
+                return;
+            };
+            let form = wasm_bindgen::JsValue::from(form);
+            let toasts = toasts.clone();
+            leptos::task::spawn_local(async move {
+                if let Err(message) = submit_background_form(form, reset_on_success).await {
+                    show_request_error_toast(toasts, message);
+                }
+            });
+        }
+    }
+    #[cfg(feature = "ssr")]
+    {
+        let _ = reset_on_success;
+        move |_event: leptos::ev::SubmitEvent| {}
+    }
+}
+
+#[cfg(not(feature = "ssr"))]
+async fn submit_background_form(
+    form: wasm_bindgen::JsValue,
+    reset_on_success: bool,
+) -> Result<(), String> {
+    match js_submit_background_form(form, reset_on_success).await {
+        Ok(message) => {
+            let message = message.as_string().unwrap_or_default();
+            if message.is_empty() {
+                Ok(())
+            } else {
+                Err(message)
+            }
+        }
+        Err(err) => Err(js_error_message(err)),
+    }
+}
+
+#[cfg(not(feature = "ssr"))]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export async function patchbaySubmitBackgroundForm(form, resetOnSuccess) {
+  if (!(form instanceof HTMLFormElement)) {
+    return 'Missing submitted form';
+  }
+
+  const response = await fetch(form.action, {
+    method: (form.method || 'POST').toUpperCase(),
+    body: new URLSearchParams(new FormData(form)),
+    headers: { 'x-patchbay-background': 'true' },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    return body || `${response.status} ${response.statusText}`;
+  }
+
+  if (resetOnSuccess) {
+    form.reset();
+  }
+
+  return '';
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(catch, js_name = patchbaySubmitBackgroundForm)]
+    async fn js_submit_background_form(
+        form: wasm_bindgen::JsValue,
+        reset_on_success: bool,
+    ) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+}
 
 fn board_content(page: BoardPage) -> AnyView {
     let BoardPage {
@@ -1018,17 +1451,17 @@ fn board_content(page: BoardPage) -> AnyView {
         let (show_create_item_modal, set_show_create_item_modal) = signal(false);
         let initial_create_item_state_options =
             state_options_from_project_states(&work_item_states);
+        let work_item_states_context = provide_work_item_states_context(work_item_states);
         let initial_create_item_state =
             default_state_identifier(&initial_create_item_state_options);
         let (create_item_state, set_create_item_state) = signal(initial_create_item_state);
         let (create_item_state_options, set_create_item_state_options) =
             signal(initial_create_item_state_options);
-        let (create_item_states, set_create_item_states) = signal(work_item_states.clone());
         let has_create_item_states = Memo::new(move |_| {
-            !state_options_from_project_states(&create_item_states.get()).is_empty()
+            !state_options_from_project_states(&work_item_states_context.states.get()).is_empty()
         });
         let open_create_item = Callback::new(move |request: CreateItemOpenRequest| {
-            let states = create_item_states.get_untracked();
+            let states = work_item_states_context.states.get_untracked();
             let options = state_options_for_open_request(&states, &request);
             if options.is_empty() {
                 return;
@@ -1042,10 +1475,8 @@ fn board_content(page: BoardPage) -> AnyView {
                 project=project.clone()
                 initial_items=items
                 initial_swim_lanes=swim_lanes
-                initial_work_item_states=work_item_states
                 initial_misconfigured_item_count=misconfigured_item_count
                 open_create_item=open_create_item
-                set_create_item_states=set_create_item_states
             />
         };
         let admin_project_id = project_view.id;
@@ -1796,6 +2227,7 @@ fn item_content(page: ItemPage) -> AnyView {
         api_base_url,
         codex_status,
     } = page;
+    provide_work_item_states_context(work_item_states);
     let topbar = top_bar(
         projects,
         active_project_names,
@@ -1845,6 +2277,7 @@ fn item_content(page: ItemPage) -> AnyView {
             />
         </div>
     };
+    let comment_submit = background_form_submit(true);
     let claim = item
         .claimed_by
         .clone()
@@ -1869,7 +2302,7 @@ fn item_content(page: ItemPage) -> AnyView {
             }
         })
         .collect::<Vec<_>>();
-    let labels = item_labels_view(&project, &item, label_suggestions, &work_item_states);
+    let labels = item_labels_view(&project, &item, label_suggestions);
 
     view! {
         <div>
@@ -1906,7 +2339,7 @@ fn item_content(page: ItemPage) -> AnyView {
                 <section class="comments">
                     <h2>"Comments"</h2>
                     {comment_views}
-                    <form method="post" action=comment_action>
+                    <form method="post" action=comment_action on:submit=comment_submit>
                         <input name="author_name" placeholder="Your name"/>
                         <textarea name="body" placeholder="Comment" required></textarea>
                         <button>"Add comment"</button>
@@ -1949,7 +2382,6 @@ fn item_labels_view(
     project: &str,
     item: &WorkItemView,
     suggestions: Vec<ProjectLabelView>,
-    work_item_states: &[WorkItemStateView],
 ) -> AnyView {
     let add_action = format!(
         "/projects/{}/items/{}/labels",
@@ -1957,12 +2389,17 @@ fn item_labels_view(
         item.id
     );
     let suggestion_options = label_suggestion_options(&suggestions);
-    let state_suggestion_options = state_suggestion_options(work_item_states);
+    let state_options = use_context::<WorkItemStatesContext>()
+        .map(|context| context.states)
+        .expect("work item states context should be provided before rendering item labels");
+    let state_suggestions = state_options.get_untracked();
+    let state_suggestion_options = state_suggestion_options(&state_suggestions);
+    let add_submit = background_form_submit(true);
     let rows = item
         .labels
         .iter()
         .cloned()
-        .map(|label| item_label_row(project, item, label))
+        .map(|label| item_label_row(project, item, label, state_options))
         .collect::<Vec<_>>();
 
     view! {
@@ -1971,7 +2408,7 @@ fn item_labels_view(
             <datalist id="label-key-suggestions">{suggestion_options}</datalist>
             <datalist id="state-value-suggestions">{state_suggestion_options}</datalist>
             <div class="label-list">{rows}</div>
-            <form class="label-add-form" method="post" action=add_action>
+            <form class="label-add-form" method="post" action=add_action on:submit=add_submit>
                 <input type="hidden" name="version" value=item.version.to_string()/>
                 <input
                     name="key"
@@ -1995,6 +2432,7 @@ fn item_label_row(
     project: &str,
     item: &WorkItemView,
     label: WorkItemLabelView,
+    work_item_states: ReadSignal<Vec<WorkItemStateView>>,
 ) -> impl IntoView + 'static {
     let update_action = format!(
         "/projects/{}/items/{}/labels/{}/update",
@@ -2010,9 +2448,12 @@ fn item_label_row(
     );
     let value = label.value.clone().unwrap_or_default();
     let rendered = format_label(&label.key, label.value.as_deref());
+    let is_state = label.key == STATE_LABEL_KEY;
     let can_delete = label.key != STATE_LABEL_KEY;
     let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
     let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;
+    let update_submit = background_form_submit(false);
+    let delete_submit = background_form_submit(false);
 
     view! {
         <article class="label-row">
@@ -2023,20 +2464,77 @@ fn item_label_row(
             >
                 {rendered}
             </span>
-            <form method="post" action=update_action>
+            <form
+                method="post"
+                action=update_action
+                class=if is_state { "state-label-form" } else { "" }
+                on:submit=update_submit
+            >
                 <input type="hidden" name="version" value=item.version.to_string()/>
-                <input name="key" value=label.key required/>
-                <input name="value" value=value/>
+                {if is_state {
+                    let value = value.clone();
+                    view! {
+                        <input type="hidden" name="key" value=STATE_LABEL_KEY/>
+                        <select name="value" class="state-label-select" required>
+                            {move || state_label_option_views(work_item_states.get(), value.clone())}
+                        </select>
+                    }
+                    .into_any()
+                } else {
+                    view! {
+                        <input name="key" value=label.key required/>
+                        <input name="value" value=value/>
+                    }
+                    .into_any()
+                }}
                 <button>"Update"</button>
             </form>
             {can_delete.then(|| view! {
-                <form method="post" action=delete_action>
+                <form method="post" action=delete_action on:submit=delete_submit>
                     <input type="hidden" name="version" value=item.version.to_string()/>
                     <button class="danger">"Delete"</button>
                 </form>
             })}
         </article>
     }
+}
+
+fn state_label_option_views(states: Vec<WorkItemStateView>, current_value: String) -> Vec<AnyView> {
+    let mut has_current = false;
+    let mut options = Vec::new();
+    for state in states {
+        let selected = state.identifier == current_value;
+        has_current |= selected;
+        options.push(
+            view! {
+                <option value=state.identifier selected=selected>
+                    {state.name}
+                </option>
+            }
+            .into_any(),
+        );
+    }
+
+    if !current_value.is_empty() && !has_current {
+        let label = format!("{current_value} (unknown)");
+        options.push(
+            view! {
+                <option value=current_value selected=true>{label}</option>
+            }
+            .into_any(),
+        );
+    }
+
+    if options.is_empty() {
+        options.push(
+            view! {
+                <option value="" selected=true>"No states available"</option>
+            }
+            .into_any(),
+        );
+    }
+
+    options
 }
 
 fn label_suggestion_options(suggestions: &[ProjectLabelView]) -> Vec<impl IntoView> {
@@ -4679,14 +5177,15 @@ fn LiveBoardItems(
     project: String,
     initial_items: Vec<WorkItemView>,
     initial_swim_lanes: Vec<SwimLaneView>,
-    initial_work_item_states: Vec<WorkItemStateView>,
     initial_misconfigured_item_count: i64,
     open_create_item: Callback<CreateItemOpenRequest>,
-    set_create_item_states: WriteSignal<Vec<WorkItemStateView>>,
 ) -> impl IntoView + 'static {
     let (items, set_items) = signal(initial_items);
     let (swim_lanes, set_swim_lanes) = signal(initial_swim_lanes);
-    let (work_item_states, set_work_item_states) = signal(initial_work_item_states);
+    let work_item_states_context = use_context::<WorkItemStatesContext>()
+        .expect("work item states context should be provided before rendering board items");
+    let work_item_states = work_item_states_context.states;
+    let set_work_item_states = work_item_states_context.set_states;
     let (misconfigured_item_count, set_misconfigured_item_count) =
         signal(initial_misconfigured_item_count);
     let project_for_loader = project.clone();
@@ -4711,7 +5210,6 @@ fn LiveBoardItems(
             let updated_swim_lanes = section.swim_lanes;
             let updated_work_item_states = section.work_item_states;
             set_swim_lanes.set(updated_swim_lanes);
-            set_create_item_states.set(updated_work_item_states.clone());
             set_work_item_states.set(updated_work_item_states);
             set_misconfigured_item_count.set(section.misconfigured_item_count);
         }
@@ -5841,10 +6339,12 @@ fn create_item_modal(
                 <ModalTitle>"New item"</ModalTitle>
                 <button
                     type="button"
-                    class="secondary"
+                    class="secondary icon-button modal-close-button"
+                    title="Close"
+                    aria-label="Close"
                     on:click=move |_| request_close_on_header.run(())
                 >
-                    "Close"
+                    <Icon icon=icondata::BsX/>
                 </button>
             </ModalHeader>
             <ModalBody>
@@ -5869,7 +6369,8 @@ fn create_item_modal(
                                         api_base_url.clone(),
                                         project_id,
                                         SerializableCrudView::Create,
-                                        CrudNavigationConfig::embedded_single_entity(),
+                                        CrudNavigationConfig::embedded_single_entity()
+                                            .with_create_actions_placement(CrudCreateActionsPlacement::External),
                                         default_create_state,
                                         Some(crud_state_options),
                                     )
@@ -5892,6 +6393,7 @@ fn create_item_modal(
                 >
                     "Cancel"
                 </button>
+                <CrudCreateActionsOutlet context=context />
             </ModalFooter>
         </Modal>
     }

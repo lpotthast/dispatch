@@ -313,6 +313,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_lane_add_button_count(driver, 2).await?;
         assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
             .await?;
+        assert_cached_frontend_route_revisit_avoids_loading(driver).await?;
         assert_crudkit_create_form_survives_live_event(driver).await?;
         assert_request_error_toast_preserves_draft(driver).await?;
 
@@ -399,6 +400,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             .await
             .context("failed to reopen Patchbay board page after API check")?;
         open_new_item_modal(driver).await?;
+        assert_new_item_modal_actions(driver).await?;
         find(driver, By::Css("#new-item-modal select[name='state']")).await?;
         assert_new_item_lane_options(driver).await?;
         close_clean_new_item_modal(driver).await?;
@@ -464,6 +466,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         .await?;
         assert_source_contains(driver, "patchbay-run-60").await?;
         find(driver, By::Css("section.item-labels")).await?;
+        assert_state_label_dropdown_and_move(driver).await?;
         send_keys(
             driver,
             By::Css(".label-add-form input[name='key']"),
@@ -478,6 +481,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         .await?;
         submit_label_add_form(driver).await?;
         find(driver, By::XPath("//*[contains(text(), 'severity=high')]")).await?;
+        assert_label_add_save_preserved_item_page(driver).await?;
 
         driver
             .goto(app.url("/projects?project=demo"))
@@ -906,6 +910,73 @@ async fn assert_system_prompt_history_selector_behaviour(driver: &WebDriver) -> 
         .convert::<String>()
         .context("failed to read system prompt history selector result")?;
     assert_that!(result).is_equal_to("ok".to_owned());
+    Ok(())
+}
+
+async fn assert_cached_frontend_route_revisit_avoids_loading(
+    driver: &WebDriver,
+) -> Result<(), Report> {
+    click(driver, By::Css(".top-nav a[href='/projects?project=demo']")).await?;
+    find(
+        driver,
+        By::Css("[data-crudkit-leptos='projects'] .crud-nav"),
+    )
+    .await?;
+    click(driver, By::Css(".top-nav a[href='/?project=demo']")).await?;
+    find(driver, By::Css("section.board")).await?;
+
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const link = document.querySelector(".top-nav a[href='/projects?project=demo']");
+            if (!link) {
+                done('missing projects link');
+                return;
+            }
+            const isLoadingFallback = () => {
+                const fallback = document.querySelector('main.page-shell > p.muted');
+                return (fallback?.textContent ?? '').trim() === 'Loading...';
+            };
+            let sawLoading = isLoadingFallback();
+            const observer = new MutationObserver(() => {
+                if (isLoadingFallback()) {
+                    sawLoading = true;
+                }
+            });
+            observer.observe(document.body, {
+                childList: true,
+                characterData: true,
+                subtree: true,
+            });
+            link.click();
+
+            const deadline = Date.now() + 5000;
+            const check = () => {
+                if (document.querySelector("[data-crudkit-leptos='projects'] .crud-nav")) {
+                    observer.disconnect();
+                    done(`loading=${sawLoading}`);
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    observer.disconnect();
+                    done(`timeout;loading=${sawLoading};url=${window.location.href}`);
+                    return;
+                }
+                setTimeout(check, 0);
+            };
+            check();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to verify cached frontend route navigation")?
+        .convert::<String>()
+        .context("failed to read cached route navigation result")?;
+    assert_that!(result).is_equal_to("loading=false".to_owned());
+
+    click(driver, By::Css(".top-nav a[href='/?project=demo']")).await?;
+    find(driver, By::Css("section.board")).await?;
     Ok(())
 }
 
@@ -1359,6 +1430,40 @@ async fn assert_new_item_lane_options(driver: &WebDriver) -> Result<(), Report> 
         .convert::<String>()
         .context("failed to read new item state options")?;
     assert_that!(summary).is_equal_to("idea|idea,open,in_progress,done".to_owned());
+    Ok(())
+}
+
+async fn assert_new_item_modal_actions(driver: &WebDriver) -> Result<(), Report> {
+    let summary = driver
+        .execute(
+            r#"
+            const modal = document.querySelector('#new-item-modal');
+            if (!modal) {
+                throw new Error('missing new item modal');
+            }
+            const headerButton = modal.querySelector('leptonic-modal-header button');
+            const bodySaveButton = modal.querySelector('leptonic-modal-body .crud-nav button');
+            const footerButtons = Array.from(modal.querySelectorAll('leptonic-modal-footer button'));
+            const footerButtonTexts = footerButtons
+                .map(button => (button.textContent ?? '').replace(/\s+/g, ' ').trim())
+                .join('|');
+            return [
+                `headerIcon=${Boolean(headerButton?.querySelector('svg'))}`,
+                `headerText=${(headerButton?.textContent ?? '').replace(/\s+/g, ' ').trim() || '<empty>'}`,
+                `bodySave=${Boolean(bodySaveButton)}`,
+                `footerButtons=${footerButtonTexts}`,
+            ].join(';');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect new item modal actions")?
+        .convert::<String>()
+        .context("failed to read new item modal action summary")?;
+    assert_that!(summary).is_equal_to(
+        "headerIcon=true;headerText=<empty>;bodySave=false;footerButtons=Cancel|Speichern"
+            .to_owned(),
+    );
     Ok(())
 }
 
@@ -1836,6 +1941,11 @@ async fn assert_item_detail_description_editor_accepts_click_and_text(
         .context("failed to read description editor click marker")?;
     assert_that!(marker).is_equal_to("kept".to_owned());
 
+    let editor = find(
+        driver,
+        By::Css("section.item-settings [data-rich-text-field='description'] .ProseMirror"),
+    )
+    .await?;
     editor
         .send_keys(" Editable after click")
         .await
@@ -1984,12 +2094,113 @@ async fn submit_label_add_form(driver: &WebDriver) -> Result<(), Report> {
             if (!form) {
                 throw new Error('missing label add form');
             }
-            form.submit();
+            window.__patchbayLabelAddMarker = 'alive';
+            window.__patchbayLabelAddUrl = window.location.href;
+            document.body.style.minHeight = '5000px';
+            window.scrollTo(0, 1600);
+            form.requestSubmit();
             "#,
             Vec::new(),
         )
         .await
         .context("failed to submit label add form")?;
+    Ok(())
+}
+
+async fn assert_label_add_save_preserved_item_page(driver: &WebDriver) -> Result<(), Report> {
+    let summary = driver
+        .execute(
+            r#"
+            const summary = [
+                `marker=${window.__patchbayLabelAddMarker ?? '<missing>'}`,
+                `sameUrl=${window.location.href === window.__patchbayLabelAddUrl}`,
+                `scrollKept=${window.scrollY > 1000}`,
+            ].join(';');
+            document.body.style.minHeight = '';
+            return summary;
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect item label add background save")?
+        .convert::<String>()
+        .context("failed to read item label add background save summary")?;
+    assert_that!(summary).is_equal_to("marker=alive;sameUrl=true;scrollKept=true".to_owned());
+    Ok(())
+}
+
+async fn assert_state_label_dropdown_and_move(driver: &WebDriver) -> Result<(), Report> {
+    let summary = driver
+        .execute(
+            r#"
+            const form = document.querySelector('.label-row form.state-label-form');
+            if (!form) {
+                throw new Error('missing state label form');
+            }
+            const key = form.querySelector('input[name="key"]');
+            const valueSelect = form.querySelector('select[name="value"]');
+            const valueInput = form.querySelector('input[name="value"]');
+            if (!valueSelect) {
+                throw new Error('missing state label select');
+            }
+            return [
+                `key=${key?.value ?? '<missing>'}`,
+                `value=${valueSelect.value}`,
+                `hasValueInput=${Boolean(valueInput)}`,
+                `options=${Array.from(valueSelect.options)
+                    .map(option => `${option.value}:${(option.textContent ?? '').trim()}`)
+                    .join('|')}`,
+            ].join(';');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect state label select")?
+        .convert::<String>()
+        .context("failed to read state label select summary")?;
+    assert_that!(summary).is_equal_to(
+        "key=state;value=in_progress;hasValueInput=false;options=idea:Idea|open:Open|in_progress:In progress|done:Done"
+            .to_owned(),
+    );
+
+    driver
+        .execute(
+            r#"
+            const form = document.querySelector('.label-row form.state-label-form');
+            const valueSelect = form?.querySelector('select[name="value"]');
+            if (!form || !valueSelect) {
+                throw new Error('missing state label form');
+            }
+            window.__patchbayLabelSaveMarker = 'alive';
+            window.__patchbayLabelSaveUrl = window.location.href;
+            document.body.style.minHeight = '5000px';
+            window.scrollTo(0, 1600);
+            valueSelect.value = 'done';
+            form.requestSubmit();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to submit state label move")?;
+    find(driver, By::XPath("//*[contains(text(), 'state=done')]")).await?;
+    let save_summary = driver
+        .execute(
+            r#"
+            const summary = [
+                `marker=${window.__patchbayLabelSaveMarker ?? '<missing>'}`,
+                `sameUrl=${window.location.href === window.__patchbayLabelSaveUrl}`,
+                `scrollKept=${window.scrollY > 1000}`,
+            ].join(';');
+            document.body.style.minHeight = '';
+            return summary;
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect item label background save")?
+        .convert::<String>()
+        .context("failed to read item label background save summary")?;
+    assert_that!(save_summary).is_equal_to("marker=alive;sameUrl=true;scrollKept=true".to_owned());
     Ok(())
 }
 

@@ -1507,6 +1507,10 @@ button.link-danger {
     gap: 8px;
     align-items: center;
   }
+
+  .state-label-form {
+    grid-template-columns: minmax(120px, 1fr) auto;
+  }
 }
 
 .claim-badge {
@@ -2336,6 +2340,17 @@ dd {
     display: grid;
   }
 
+  .modal-close-button {
+    width: 32px;
+    min-height: 32px;
+    padding: 0;
+
+    svg {
+      width: 18px;
+      height: 18px;
+    }
+  }
+
   leptonic-modal-header,
   leptonic-modal-footer {
     display: flex;
@@ -2375,6 +2390,10 @@ dd {
   leptonic-modal-footer {
     justify-content: flex-end;
     border-top: 1px solid $border;
+
+    .leptonic-btn-wrapper {
+      display: inline-flex;
+    }
   }
 }
 

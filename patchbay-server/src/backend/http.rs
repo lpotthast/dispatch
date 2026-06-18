@@ -1308,12 +1308,13 @@ struct UpdateItemForm {
 async fn update_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Form(form): Form<UpdateItemForm>,
 ) -> Response {
     let agent_reasoning_effort_override =
         match parse_optional_reasoning_effort(form.agent_reasoning_effort_override) {
             Ok(value) => value,
-            Err(err) => return error_response(err).await,
+            Err(err) => return form_error_response(&headers, err).await,
         };
     match items::update_item(
         &state.store,
@@ -1333,13 +1334,8 @@ async fn update_item(
     )
     .await
     {
-        Ok(_) => Redirect::to(&format!(
-            "/projects/{}/items/{}",
-            urlencoding::encode(&project),
-            item_id
-        ))
-        .into_response(),
-        Err(err) => error_response(err).await,
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
     }
 }
 
@@ -1412,6 +1408,7 @@ struct AddItemLabelForm {
 async fn add_item_label(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Form(form): Form<AddItemLabelForm>,
 ) -> Response {
     match item_label_service::add_label(
@@ -1424,8 +1421,8 @@ async fn add_item_label(
     )
     .await
     {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
     }
 }
 
@@ -1439,6 +1436,7 @@ struct UpdateItemLabelForm {
 async fn update_item_label(
     Extension(state): Extension<AppState>,
     Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
     Form(form): Form<UpdateItemLabelForm>,
 ) -> Response {
     match item_label_service::update_label(
@@ -1452,8 +1450,8 @@ async fn update_item_label(
     )
     .await
     {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
     }
 }
 
@@ -1465,6 +1463,7 @@ struct DeleteItemLabelForm {
 async fn delete_item_label(
     Extension(state): Extension<AppState>,
     Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
     Form(form): Form<DeleteItemLabelForm>,
 ) -> Response {
     match item_label_service::delete_label(
@@ -1476,8 +1475,16 @@ async fn delete_item_label(
     )
     .await
     {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
+    }
+}
+
+fn item_form_success(headers: &HeaderMap, project: &str, item_id: i64) -> Response {
+    if is_background_form_request(headers) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        item_redirect(project, item_id)
     }
 }
 
@@ -1490,6 +1497,15 @@ fn item_redirect(project: &str, item_id: i64) -> Response {
     .into_response()
 }
 
+async fn form_error_response(headers: &HeaderMap, err: impl Into<Report>) -> Response {
+    let err = err.into();
+    if is_background_form_request(headers) {
+        (StatusCode::BAD_REQUEST, err.to_string()).into_response()
+    } else {
+        error_response(err).await
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct AddCommentForm {
     body: String,
@@ -1499,6 +1515,7 @@ struct AddCommentForm {
 async fn add_comment(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Form(form): Form<AddCommentForm>,
 ) -> Response {
     let author_name = form.author_name.filter(|value| !value.trim().is_empty());
@@ -1514,13 +1531,8 @@ async fn add_comment(
     )
     .await
     {
-        Ok(_) => Redirect::to(&format!(
-            "/projects/{}/items/{}",
-            urlencoding::encode(&project),
-            item_id
-        ))
-        .into_response(),
-        Err(err) => error_response(err).await,
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
     }
 }
 
