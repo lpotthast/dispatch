@@ -359,7 +359,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         send_keys(
             driver,
             By::Css("#new-item-modal textarea[name='description']"),
-            "Created through browser-test",
+            "Created through browser-test\nSecond line",
         )
         .await?;
         click(driver, By::Css("#new-item-modal button[type='submit']")).await?;
@@ -372,6 +372,7 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         find(driver, By::Css("section.item-settings")).await?;
         find(driver, By::Css("section.comments")).await?;
         assert_source_contains(driver, "Item details").await?;
+        assert_item_detail_description_is_not_duplicated(driver).await?;
         assert_source_does_not_contain(driver, "automation can claim this item").await?;
         assert_source_does_not_contain(driver, "Set state").await?;
         assert_source_contains(driver, "Start agent").await?;
@@ -1255,6 +1256,33 @@ async fn assert_new_item_lane_options(driver: &WebDriver) -> Result<(), Report> 
         .convert::<String>()
         .context("failed to read new item state options")?;
     assert_that!(summary).is_equal_to("idea|idea,open,in_progress,done".to_owned());
+    Ok(())
+}
+
+async fn assert_item_detail_description_is_not_duplicated(
+    driver: &WebDriver,
+) -> Result<(), Report> {
+    let summary = driver
+        .execute(
+            r#"
+            const expected = 'Created through browser-test\nSecond line';
+            const headerText = document.querySelector('.item-header')?.textContent ?? '';
+            const textarea = document.querySelector(
+                'section.item-settings textarea[name="description"]'
+            );
+            return [
+                headerText.includes(expected),
+                textarea?.value === expected,
+                textarea?.classList.contains('item-description-text') ?? false
+            ].join('|');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect item detail description placement")?
+        .convert::<String>()
+        .context("failed to read item detail description placement")?;
+    assert_that!(summary).is_equal_to("false|true|true".to_owned());
     Ok(())
 }
 

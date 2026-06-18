@@ -1820,7 +1820,6 @@ fn item_content(page: ItemPage) -> AnyView {
     let update_title = item.title.clone();
     let update_description = item.description.clone();
     let header_title = item.title.clone();
-    let header_description = item.description.clone();
     let item_state_display = state_label(&item).to_owned();
     let model_override_options =
         agent_model_options(item.agent_model_override.clone(), "Project default");
@@ -1859,7 +1858,6 @@ fn item_content(page: ItemPage) -> AnyView {
                 <section class="item-header">
                     <a href=board_href>"Board"</a>
                     <h1>{header_title}</h1>
-                    <p>{header_description}</p>
                 </section>
                 <section class="item-meta">
                     <span>{item_state_display}</span>
@@ -1877,7 +1875,7 @@ fn item_content(page: ItemPage) -> AnyView {
                         </label>
                         <label>
                             <span>"Description"</span>
-                            <textarea name="description" required>{update_description}</textarea>
+                            <textarea class="item-description-text" name="description" required>{update_description}</textarea>
                         </label>
                         <label>
                             <span>"Agent model override"</span>

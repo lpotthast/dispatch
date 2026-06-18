@@ -1614,6 +1614,11 @@ a.claim-badge {
     font-size: 14px;
     font-weight: 650;
   }
+
+  .item-description-text {
+    min-height: 180px;
+    line-height: 1.45;
+  }
 }
 
 .comments {
