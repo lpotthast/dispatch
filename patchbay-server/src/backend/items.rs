@@ -1,17 +1,17 @@
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
 
 use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, Statement, TransactionTrait,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
+    QueryOrder, Statement, TransactionTrait,
 };
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
     backend::{
         entities::{
-            comment::{self, CommentActiveModel, CommentModel},
+            comment::{CommentActiveModel, CommentModel},
             work_item::{self, WorkItem, WorkItemActiveModel, WorkItemModel},
             work_item_event::{self, WorkItemEventActiveModel},
             work_item_label::{self, WorkItemLabel, WorkItemLabelActiveModel, WorkItemLabelModel},
@@ -95,7 +95,7 @@ pub async fn list_items(
         .all(store.db().as_ref())
         .await
         .context("failed to list work items")?;
-    models_to_views(store, items).await
+    models_to_views(store, project_id, items).await
 }
 
 pub async fn count_items_outside_work_item_states(
@@ -1402,22 +1402,115 @@ where
         .context("failed to add item comment")?)
 }
 
-async fn models_to_views(store: &Store, items: Vec<WorkItemModel>) -> Result<Vec<WorkItemView>> {
+async fn models_to_views(
+    store: &Store,
+    project_id: i64,
+    items: Vec<WorkItemModel>,
+) -> Result<Vec<WorkItemView>> {
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut labels = labels_for_items(store.db().as_ref(), project_id, &item_ids).await?;
+    let mut comment_counts = comment_counts_for_items(store.db().as_ref(), &item_ids).await?;
+
     let mut views = Vec::with_capacity(items.len());
     for item in items {
-        views.push(model_to_view(store, item).await?);
+        let item_id = item.id;
+        views.push(work_item_view(
+            item,
+            labels.remove(&item_id).unwrap_or_default(),
+            comment_counts.remove(&item_id).unwrap_or(0),
+        )?);
     }
     Ok(views)
 }
 
 async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemView> {
     let labels = labels_for_item(store.db().as_ref(), item.project_id, item.id).await?;
-    let state = item_labels::current_state(&labels);
-    let comment_count = comment::Comment::find()
-        .filter(comment::Column::WorkItemId.eq(item.id))
-        .count(store.db().as_ref())
+    let comment_count = comment_counts_for_items(store.db().as_ref(), &[item.id])
+        .await?
+        .remove(&item.id)
+        .unwrap_or(0);
+    work_item_view(item, labels, comment_count)
+}
+
+async fn labels_for_items<C>(
+    conn: &C,
+    project_id: i64,
+    item_ids: &[i64],
+) -> Result<BTreeMap<i64, Vec<WorkItemLabelView>>>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let labels = WorkItemLabel::find()
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .filter(work_item_label::Column::WorkItemId.is_in(item_ids.iter().copied()))
+        .order_by_asc(work_item_label::Column::WorkItemId)
+        .order_by_asc(work_item_label::Column::Key)
+        .order_by_asc(work_item_label::Column::Value)
+        .all(conn)
         .await
-        .context("failed to count item comments")? as i64;
+        .context("failed to list item labels")?;
+
+    let mut labels_by_item = BTreeMap::<i64, Vec<WorkItemLabelView>>::new();
+    for label in labels {
+        labels_by_item
+            .entry(label.work_item_id)
+            .or_default()
+            .push(label_to_view(label));
+    }
+    Ok(labels_by_item)
+}
+
+async fn comment_counts_for_items<C>(conn: &C, item_ids: &[i64]) -> Result<BTreeMap<i64, i64>>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    if item_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let placeholders = (1..=item_ids.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = item_ids.iter().copied().map(Into::into).collect::<Vec<_>>();
+    let rows = conn
+        .query_all(Statement::from_sql_and_values(
+            sea_orm::DbBackend::Sqlite,
+            format!(
+                r#"
+                SELECT work_item_id, COUNT(*) AS count
+                FROM comments
+                WHERE work_item_id IN ({placeholders})
+                GROUP BY work_item_id
+                "#
+            ),
+            values,
+        ))
+        .await
+        .context("failed to count item comments")?;
+
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        counts.insert(
+            row.try_get::<i64>("", "work_item_id")
+                .context("failed to read comment count item id")?,
+            row.try_get::<i64>("", "count")
+                .context("failed to read item comment count")?,
+        );
+    }
+    Ok(counts)
+}
+
+fn work_item_view(
+    item: WorkItemModel,
+    labels: Vec<WorkItemLabelView>,
+    comment_count: i64,
+) -> Result<WorkItemView> {
+    let state = item_labels::current_state(&labels);
 
     Ok(WorkItemView {
         id: item.id,
@@ -1515,7 +1608,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{
-        comments::list_comments,
+        comments::{AddComment, add_comment, list_comments},
         projects::{CreateProject, create_project},
     };
 
@@ -1594,6 +1687,98 @@ mod tests {
             other_lookup
                 .to_string()
                 .contains("does not exist in this project")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_items_hydrates_labels_state_and_comment_counts() {
+        let (_temp, store) = test_store().await;
+        let first = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "First item".to_owned(),
+                description: "Has several comments and labels".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        let second = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Second item".to_owned(),
+                description: "Has an independent label and comment count".to_owned(),
+                state: "ready".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            first.id,
+            "severity".to_owned(),
+            Some("high".to_owned()),
+            None,
+        )
+        .await
+        .unwrap();
+        add_label(&store, "demo", second.id, "bug".to_owned(), None, None)
+            .await
+            .unwrap();
+
+        for body in ["First comment", "Second comment"] {
+            add_comment(
+                &store,
+                "demo",
+                first.id,
+                AddComment {
+                    author_type: AuthorType::User,
+                    author_name: Some("operator".to_owned()),
+                    body: body.to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        add_comment(
+            &store,
+            "demo",
+            second.id,
+            AddComment {
+                author_type: AuthorType::Agent,
+                author_name: Some("agent-a".to_owned()),
+                body: "Only comment".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let items = list_items(&store, "demo", None).await.unwrap();
+        let first = items.iter().find(|item| item.id == first.id).unwrap();
+        let second = items.iter().find(|item| item.id == second.id).unwrap();
+
+        assert_eq!(first.state.as_deref(), Some("open"));
+        assert_eq!(first.comment_count, 2);
+        assert!(
+            first
+                .labels
+                .iter()
+                .any(|label| { label.key == "severity" && label.value.as_deref() == Some("high") })
+        );
+        assert_eq!(second.state.as_deref(), Some("ready"));
+        assert_eq!(second.comment_count, 1);
+        assert!(
+            second
+                .labels
+                .iter()
+                .any(|label| { label.key == "bug" && label.value.is_none() })
         );
     }
 
