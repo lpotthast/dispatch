@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{
-        automation_triggers,
+        agent_ids, automation_triggers,
         entities::{
             project::{self, Project, ProjectActiveModel, ProjectModel},
             work_item_event,
@@ -118,7 +118,7 @@ impl ProjectChangeSource {
             Self::Agent {
                 agent_id,
                 agent_run_id,
-            } => agent_run_id.or_else(|| infer_agent_run_id(agent_id)),
+            } => agent_run_id.or_else(|| agent_ids::parse_patchbay_run_agent_id(agent_id)),
             Self::User | Self::System => None,
         }
     }
@@ -1200,12 +1200,6 @@ pub(crate) fn validate_agent_extra_writable_roots_do_not_include_database(
         }
     }
     Ok(())
-}
-
-fn infer_agent_run_id(agent_id: &str) -> Option<i64> {
-    agent_id
-        .strip_prefix("patchbay-run-")
-        .and_then(|id| id.parse::<i64>().ok())
 }
 
 #[cfg(test)]

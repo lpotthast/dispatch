@@ -1184,6 +1184,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{
+        agent_ids,
         comments::{AddComment, add_comment, list_comments},
         entities::agent_run,
         item_label_service::add_label,
@@ -1988,7 +1989,7 @@ mod tests {
         .insert(store.db().as_ref())
         .await
         .unwrap();
-        let agent_id = format!("patchbay-run-{}", run.id);
+        let agent_id = agent_ids::patchbay_run_agent_id(run.id);
 
         claim_specific_item(&store, "demo", item.id, &agent_id)
             .await
@@ -2082,7 +2083,7 @@ mod tests {
         .insert(store.db().as_ref())
         .await
         .unwrap();
-        let agent_id = format!("patchbay-run-{}", run.id);
+        let agent_id = agent_ids::patchbay_run_agent_id(run.id);
 
         claim_specific_item(&store, "demo", item.id, &agent_id)
             .await

@@ -28,7 +28,7 @@ use tokio::{sync::watch, time::timeout};
 
 use crate::{
     backend::{
-        agent_tools, codex_app_server,
+        agent_ids, agent_tools, codex_app_server,
         entities::agent_run::{self, AgentRun, AgentRunActiveModel, AgentRunModel},
         events, items,
         process_sessions::{ProcessSessionRegistry, ProcessSessionStart},
@@ -463,7 +463,7 @@ async fn complete_started_automation_run(
         tool,
         mut run,
     } = started;
-    let agent_id = format!("patchbay-run-{}", run.id);
+    let agent_id = agent_ids::patchbay_run_agent_id(run.id);
     let run_mutability = AutomationRunMutability::from_str(&run.mutability)?;
 
     if cancellation_requested(&cancellation) {
@@ -1045,7 +1045,7 @@ pub async fn stop_automation(store: &Store, project_name: &str) -> Result<Vec<Ag
     let mut cancelled = Vec::new();
     for run in running {
         let run_id = run.id;
-        let agent_id = format!("patchbay-run-{}", run.id);
+        let agent_id = agent_ids::patchbay_run_agent_id(run.id);
         let claimed_item = match run.work_item_id {
             Some(item_id) => Some(items::get_item(store, project_name, item_id).await?),
             None => None,
@@ -3694,6 +3694,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{
+        agent_ids,
         items::{CreateWorkItem, claim_item, create_item, get_item},
         projects::{
             CreateProject, UpdateProjectSettings, create_project, get_project, get_settings,
@@ -4643,7 +4644,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let agent_id = format!("patchbay-run-{}", run.id);
+        let agent_id = agent_ids::patchbay_run_agent_id(run.id);
         claim_item(&store, "demo", &agent_id, "ready")
             .await
             .unwrap()

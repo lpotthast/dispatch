@@ -7,6 +7,7 @@ use sea_orm::{
 
 use crate::{
     backend::{
+        agent_ids,
         entities::{
             agent_run::{self, AgentRun, AgentRunModel},
             work_item::{self, WorkItem, WorkItemActiveModel, WorkItemModel},
@@ -112,7 +113,7 @@ where
     let run_to_item = items
         .iter()
         .filter_map(|item| {
-            let run_id = patchbay_run_id_from_agent(item.claimed_by.as_deref()?)?;
+            let run_id = agent_ids::parse_patchbay_run_agent_id(item.claimed_by.as_deref()?)?;
             Some((run_id, item.id))
         })
         .collect::<BTreeMap<_, _>>();
@@ -148,10 +149,6 @@ fn claim_source_from_run(run: AgentRunModel) -> WorkItemClaimSourceView {
         trigger_id: run.trigger_id,
         trigger_name: projects::normalize_optional(run.trigger_name),
     }
-}
-
-fn patchbay_run_id_from_agent(agent_id: &str) -> Option<i64> {
-    agent_id.strip_prefix("patchbay-run-")?.parse().ok()
 }
 
 fn to_view(
