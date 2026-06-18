@@ -31,6 +31,11 @@ use crate::{
             ReadWorkItemState, ReadWorkItemStateField, WorkItemState, WorkItemStateField,
         },
     },
+    frontend::work_item_creation::{
+        CreateItemOpenRequest, CreateItemStateOption, default_state_identifier,
+        state_identifier_from_lane_filter, state_options_for_open_request,
+        state_options_from_project_states,
+    },
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentCommitOutcome, AgentGitHardResetPolicy,
         AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece, AgentRunStatus,
@@ -95,19 +100,6 @@ use uuid::Uuid;
 
 const TOOL_OUTPUT_PREVIEW_CHARS: usize = 1200;
 const BOARD_ITEMS_REFRESH_INTERVAL_MS: u64 = 30_000;
-const DEFAULT_CREATE_ITEM_STATE: &str = "idea";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CreateItemStateOption {
-    identifier: String,
-    name: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum CreateItemOpenRequest {
-    AnyState,
-    SingleState(String),
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BoardPage {
@@ -1024,22 +1016,24 @@ fn board_content(page: BoardPage) -> AnyView {
             board_return_to.clone(),
         );
         let (show_create_item_modal, set_show_create_item_modal) = signal(false);
-        let initial_create_item_state_options = creatable_state_options(&work_item_states);
+        let initial_create_item_state_options =
+            state_options_from_project_states(&work_item_states);
         let initial_create_item_state =
-            default_create_item_state(&initial_create_item_state_options);
+            default_state_identifier(&initial_create_item_state_options);
         let (create_item_state, set_create_item_state) = signal(initial_create_item_state);
         let (create_item_state_options, set_create_item_state_options) =
             signal(initial_create_item_state_options);
         let (create_item_states, set_create_item_states) = signal(work_item_states.clone());
-        let has_create_item_states =
-            Memo::new(move |_| !creatable_state_options(&create_item_states.get()).is_empty());
+        let has_create_item_states = Memo::new(move |_| {
+            !state_options_from_project_states(&create_item_states.get()).is_empty()
+        });
         let open_create_item = Callback::new(move |request: CreateItemOpenRequest| {
             let states = create_item_states.get_untracked();
-            let options = create_item_options_for_request(&states, &request);
+            let options = state_options_for_open_request(&states, &request);
             if options.is_empty() {
                 return;
             }
-            set_create_item_state.set(default_create_item_state(&options));
+            set_create_item_state.set(default_state_identifier(&options));
             set_create_item_state_options.set(options);
             set_show_create_item_modal.set(true);
         });
@@ -5745,40 +5739,6 @@ fn maintenance_view(project: &str) -> impl IntoView + 'static {
     }
 }
 
-fn create_item_options_for_request(
-    states: &[WorkItemStateView],
-    request: &CreateItemOpenRequest,
-) -> Vec<CreateItemStateOption> {
-    match request {
-        CreateItemOpenRequest::AnyState => creatable_state_options(states),
-        CreateItemOpenRequest::SingleState(identifier) => states
-            .iter()
-            .filter(|state| state.identifier == *identifier)
-            .map(create_item_state_option)
-            .collect(),
-    }
-}
-
-fn creatable_state_options(states: &[WorkItemStateView]) -> Vec<CreateItemStateOption> {
-    states.iter().map(create_item_state_option).collect()
-}
-
-fn create_item_state_option(state: &WorkItemStateView) -> CreateItemStateOption {
-    CreateItemStateOption {
-        identifier: state.identifier.clone(),
-        name: state.name.clone(),
-    }
-}
-
-fn default_create_item_state(options: &[CreateItemStateOption]) -> String {
-    options
-        .iter()
-        .find(|option| option.identifier == DEFAULT_CREATE_ITEM_STATE)
-        .or_else(|| options.first())
-        .map(|option| option.identifier.clone())
-        .unwrap_or_else(|| DEFAULT_CREATE_ITEM_STATE.to_owned())
-}
-
 fn create_item_state_option_views(
     options: Vec<CreateItemStateOption>,
     selected_state: String,
@@ -5971,7 +5931,7 @@ fn board_view(
                 .map(|item| item_card(project.clone(), item))
                 .collect::<Vec<_>>();
             let count = cards.len();
-            let create_state = lane_create_state(&lane.filter);
+            let create_state = state_identifier_from_lane_filter(&lane.filter);
             let add_button = if lane.can_create_items {
                 create_state
                     .map(|create_state| {
@@ -6053,26 +6013,6 @@ fn lane_edit_href(project: &str, lane_id: i64) -> String {
         encode_path(project),
         lane_id
     )
-}
-
-fn lane_create_state(condition: &Condition) -> Option<String> {
-    match condition {
-        Condition::All(elements) | Condition::Any(elements) => {
-            elements.iter().find_map(|element| match element {
-                ConditionElement::Clause(clause)
-                    if clause.column_name.trim() == STATE_LABEL_KEY
-                        && clause.operator == Operator::Equal =>
-                {
-                    match &clause.value {
-                        ConditionClauseValue::String(value) => Some(value.clone()),
-                        _ => None,
-                    }
-                }
-                ConditionElement::Clause(_) => None,
-                ConditionElement::Condition(condition) => lane_create_state(condition),
-            })
-        }
-    }
 }
 
 fn item_matches_condition(item: &WorkItemView, condition: &Condition) -> bool {
