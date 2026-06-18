@@ -2,7 +2,9 @@ use std::io::{self, Write};
 
 use patchbay_types::{
     AgentCommitOutcome, AgentRunOutputPiece, AgentRunTokenUsageView, AgentRunView, CommentView,
-    ProjectLabelView, ProjectMemoryEventView, RunLogView, WorkItemLabelView, WorkItemView,
+    ProjectLabelView, ProjectMemoryEventView, RunLogView, WorkItemLabelView,
+    WorkItemRelationshipDirection, WorkItemRelationshipItemSummary, WorkItemRelationshipListEntry,
+    WorkItemRelationshipView, WorkItemView,
 };
 
 pub(crate) fn write_item_rows(output: &mut dyn Write, items: &[WorkItemView]) -> io::Result<()> {
@@ -84,6 +86,48 @@ pub(crate) fn write_project_label_suggestions(
     Ok(())
 }
 
+pub(crate) fn write_relationship_rows(
+    output: &mut dyn Write,
+    relationships: &[WorkItemRelationshipListEntry],
+) -> io::Result<()> {
+    for entry in relationships {
+        let relationship = &entry.relationship;
+        let related = match entry.direction {
+            WorkItemRelationshipDirection::Outgoing => &relationship.target,
+            WorkItemRelationshipDirection::Incoming => &relationship.source,
+        };
+        writeln!(
+            output,
+            "#{}\t{}\t#{} [{}] -- {} --> #{} [{}]\trelated: #{} {}",
+            relationship.id,
+            entry.direction,
+            relationship.source.id,
+            relationship_state_label(&relationship.source),
+            relationship.kind,
+            relationship.target.id,
+            relationship_state_label(&relationship.target),
+            related.id,
+            related.title
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_relationship_view(
+    output: &mut dyn Write,
+    relationship: &WorkItemRelationshipView,
+    verb: &str,
+) -> io::Result<()> {
+    writeln!(
+        output,
+        "{verb} relationship #{}: #{} {} #{}",
+        relationship.id,
+        relationship.source_work_item_id,
+        relationship.kind,
+        relationship.target_work_item_id
+    )
+}
+
 pub(crate) fn write_comments(output: &mut dyn Write, comments: &[CommentView]) -> io::Result<()> {
     for comment in comments {
         writeln!(
@@ -160,6 +204,10 @@ fn format_label(key: &str, value: Option<&str>) -> String {
         Some(value) => format!("{key}={value}"),
         None => key.to_owned(),
     }
+}
+
+fn relationship_state_label(item: &WorkItemRelationshipItemSummary) -> &str {
+    item.state.as_deref().unwrap_or("(no state)")
 }
 
 fn run_commit_outcome_text(run: &AgentRunView) -> String {
@@ -266,6 +314,8 @@ fn metadata_value_text(metadata: &serde_json::Value, key: &str) -> Option<String
 mod tests {
     use patchbay_types::{
         AgentRunOutputKind, AgentRunStatus, AgentToolName, AuthorType, AutomationRunMutability,
+        WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
+        WorkItemRelationshipListEntry, WorkItemRelationshipView,
     };
     use serde_json::json;
 
@@ -308,6 +358,29 @@ mod tests {
             created_at: "2026-06-18T00:00:00Z".to_owned(),
             updated_at: "2026-06-18T00:00:00Z".to_owned(),
             comment_count: 0,
+        }
+    }
+
+    fn relationship_item(id: i64, title: &str, state: &str) -> WorkItemRelationshipItemSummary {
+        WorkItemRelationshipItemSummary {
+            id,
+            title: title.to_owned(),
+            state: Some(state.to_owned()),
+            version: 1,
+        }
+    }
+
+    fn relationship() -> WorkItemRelationshipView {
+        WorkItemRelationshipView {
+            id: 9,
+            project_id: 1,
+            kind: "is follow-up of".to_owned(),
+            source_work_item_id: 42,
+            target_work_item_id: 18,
+            source: relationship_item(42, "Follow-up", "open"),
+            target: relationship_item(18, "Original", "in_progress"),
+            created_at: "2026-06-18T00:00:00Z".to_owned(),
+            updated_at: "2026-06-18T00:00:00Z".to_owned(),
         }
     }
 
@@ -362,6 +435,40 @@ mod tests {
             output,
             "#42 [open] v3\nReview renderer\nclaimed by: patchbay-run-1\nlabels: priority=high, source\n\nKeep text output stable.\n"
         );
+    }
+
+    #[test]
+    fn relationship_rows_render_direction_kind_and_related_item() {
+        let output = text_output(|output| {
+            write_relationship_rows(
+                output,
+                &[
+                    WorkItemRelationshipListEntry {
+                        relationship: relationship(),
+                        direction: WorkItemRelationshipDirection::Outgoing,
+                    },
+                    WorkItemRelationshipListEntry {
+                        relationship: relationship(),
+                        direction: WorkItemRelationshipDirection::Incoming,
+                    },
+                ],
+            )
+        });
+
+        assert!(output.contains(
+            "#9\toutgoing\t#42 [open] -- is follow-up of --> #18 [in_progress]\trelated: #18 Original\n"
+        ));
+        assert!(output.contains(
+            "#9\tincoming\t#42 [open] -- is follow-up of --> #18 [in_progress]\trelated: #42 Follow-up\n"
+        ));
+    }
+
+    #[test]
+    fn relationship_mutation_summary_renders_source_kind_and_target() {
+        let output =
+            text_output(|output| write_relationship_view(output, &relationship(), "Updated"));
+
+        assert_eq!(output, "Updated relationship #9: #42 is follow-up of #18\n");
     }
 
     #[test]

@@ -12,9 +12,10 @@ use context::{ContextOverrides, ResolvedContext, resolve_context};
 use git_guard::run_git;
 use patchbay_types::{
     AddCommentRequest, AgentReasoningEffort, AuthorType, ClaimWorkItemRequest,
-    CreateWorkItemLabelRequest, CreateWorkItemRequest, FinishWorkItemRequest,
-    ProgressWorkItemRequest, ReleaseWorkItemRequest, RequestFeedbackWorkItemRequest,
-    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
+    CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest, CreateWorkItemRequest,
+    FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
+    RequestFeedbackWorkItemRequest, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
+    UpdateWorkItemRelationshipRequest, UpdateWorkItemRequest,
 };
 use rootcause::{Result, prelude::*};
 use serde::Serialize;
@@ -65,6 +66,11 @@ enum Command {
     Label {
         #[command(subcommand)]
         command: LabelCommand,
+    },
+    /// Manage directed relationships between work items.
+    Relationship {
+        #[command(subcommand)]
+        command: RelationshipCommand,
     },
     /// Read and update project memory.
     Memory {
@@ -125,6 +131,18 @@ enum LabelCommand {
     Delete(LabelDeleteArgs),
     /// List labels already used in this project.
     Suggestions(JsonArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum RelationshipCommand {
+    /// List relationships touching an item.
+    List(RelationshipListArgs),
+    /// Create a relationship from an item to a target item.
+    Add(RelationshipAddArgs),
+    /// Update a relationship kind.
+    Update(RelationshipUpdateArgs),
+    /// Delete a relationship.
+    Delete(RelationshipDeleteArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -404,6 +422,58 @@ struct LabelDeleteArgs {
 }
 
 #[derive(Debug, Args)]
+struct RelationshipListArgs {
+    /// Item id; defaults to the claimed item when available.
+    item_id: Option<i64>,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct RelationshipAddArgs {
+    /// Source item id; defaults to the claimed item when available.
+    item_id: Option<i64>,
+
+    /// Target item id.
+    #[arg(long)]
+    target: i64,
+
+    /// Free-form relationship kind.
+    #[arg(long)]
+    kind: String,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct RelationshipUpdateArgs {
+    /// Relationship id to update.
+    relationship_id: i64,
+
+    /// Replacement free-form relationship kind.
+    #[arg(long)]
+    kind: String,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct RelationshipDeleteArgs {
+    /// Relationship id to delete.
+    relationship_id: i64,
+
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct CommentAddArgs {
     /// Item id; defaults to the claimed item when available.
     item_id: Option<i64>,
@@ -477,6 +547,7 @@ async fn run(command: Command, context: ResolvedContext) -> Result<()> {
         Command::Item { command } => run_item(command, context).await,
         Command::Comment { command } => run_comment(command, context).await,
         Command::Label { command } => run_label(command, context).await,
+        Command::Relationship { command } => run_relationship(command, context).await,
         Command::Memory { command } => run_memory(command, context).await,
         Command::Automation { command } => run_automation(command, context).await,
         Command::Git(args) => run_git(args.args),
@@ -725,6 +796,63 @@ async fn run_label(command: LabelCommand, context: ResolvedContext) -> Result<()
     }
 }
 
+async fn run_relationship(command: RelationshipCommand, context: ResolvedContext) -> Result<()> {
+    let client = context.client();
+    let project = context.project()?;
+    match command {
+        RelationshipCommand::List(args) => {
+            let item_id = context.item_id(args.item_id)?;
+            let relationships = client.list_item_relationships(project, item_id).await?;
+            output(args.json, &relationships, |output| {
+                render::write_relationship_rows(output, &relationships)
+            })
+        }
+        RelationshipCommand::Add(args) => {
+            let item_id = context.item_id(args.item_id)?;
+            let relationship = client
+                .create_item_relationship(
+                    project,
+                    item_id,
+                    &CreateWorkItemRelationshipRequest {
+                        target_work_item_id: args.target,
+                        kind: args.kind,
+                    },
+                )
+                .await?;
+            output(args.json, &relationship, |output| {
+                writeln!(
+                    output,
+                    "Created relationship #{}: #{} {} #{}",
+                    relationship.relationship.id,
+                    relationship.relationship.source_work_item_id,
+                    relationship.relationship.kind,
+                    relationship.relationship.target_work_item_id
+                )
+            })
+        }
+        RelationshipCommand::Update(args) => {
+            let relationship = client
+                .update_relationship(
+                    project,
+                    args.relationship_id,
+                    &UpdateWorkItemRelationshipRequest { kind: args.kind },
+                )
+                .await?;
+            output(args.json, &relationship, |output| {
+                render::write_relationship_view(output, &relationship, "Updated")
+            })
+        }
+        RelationshipCommand::Delete(args) => {
+            let deleted = client
+                .delete_relationship(project, args.relationship_id)
+                .await?;
+            output(args.json, &deleted, |output| {
+                render::write_relationship_view(output, &deleted.relationship, "Deleted")
+            })
+        }
+    }
+}
+
 async fn run_comment(command: CommentCommand, context: ResolvedContext) -> Result<()> {
     let client = context.client();
     let project = context.project()?;
@@ -917,6 +1045,7 @@ mod tests {
         assert!(root.contains("Work with project-scoped items"));
         assert!(root.contains("Read and add item comments"));
         assert!(root.contains("Manage work item labels"));
+        assert!(root.contains("Manage directed relationships between work items"));
         assert!(root.contains("Read and update project memory"));
         assert!(root.contains("Inspect automation runs and logs"));
         assert!(root.contains("Override the Patchbay API URL"));
@@ -945,6 +1074,12 @@ mod tests {
         assert!(label.contains("Update a label on an item"));
         assert!(label.contains("Delete a label from an item"));
         assert!(label.contains("List labels already used in this project"));
+
+        let relationship = help_output(&["patchbay", "relationship", "--help"]);
+        assert!(relationship.contains("List relationships touching an item"));
+        assert!(relationship.contains("Create a relationship from an item to a target item"));
+        assert!(relationship.contains("Update a relationship kind"));
+        assert!(relationship.contains("Delete a relationship"));
 
         let memory = help_output(&["patchbay", "memory", "--help"]);
         assert!(memory.contains("Show current project memory"));
@@ -975,6 +1110,15 @@ mod tests {
         let label_add = help_output(&["patchbay", "label", "add", "--help"]);
         assert!(label_add.contains("Label key"));
         assert!(label_add.contains("Optional label value"));
+
+        let relationship_add = help_output(&["patchbay", "relationship", "add", "--help"]);
+        assert!(relationship_add.contains("Source item id; defaults to the claimed item"));
+        assert!(relationship_add.contains("Target item id"));
+        assert!(relationship_add.contains("Free-form relationship kind"));
+
+        let relationship_update = help_output(&["patchbay", "relationship", "update", "--help"]);
+        assert!(relationship_update.contains("Relationship id to update"));
+        assert!(relationship_update.contains("Replacement free-form relationship kind"));
 
         let progress = help_output(&["patchbay", "item", "progress", "--help"]);
         assert!(progress.contains("Progress text to record"));

@@ -40,6 +40,8 @@ Board swim-lanes cap their height at roughly 80% of the viewport, with overflowi
 Human-authored rich prose fields such as work item descriptions and automation prompts should use the Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists, memory history, and commit policy text stay plain text controls.
 Ordinary work item create and edit fields may be embedded CrudKit forms, including the Board new-item modal and item-detail editor, so those flows share field configuration and CrudKit dirty-state leave protection while Patchbay workflow controls remain custom.
 
+Item detail pages show a relationships panel for every directed relationship touching the current work item. The panel distinguishes outgoing links where the current item is the source from incoming links where the current item is the target, shows the free-form relationship kind, shows source and target item id/title/state summaries, and links to the related item. Relationship add, update-kind, and delete controls post to Patchbay-owned handlers that use the custom relationship service rather than CrudKit routes.
+
 ## Admin Surfaces
 
 CrudKit is appropriate for ordinary resource administration:

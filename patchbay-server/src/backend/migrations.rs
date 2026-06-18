@@ -80,6 +80,18 @@ enum WorkItemLabels {
 }
 
 #[derive(DeriveIden)]
+enum WorkItemRelationships {
+    Table,
+    Id,
+    ProjectId,
+    SourceWorkItemId,
+    TargetWorkItemId,
+    Kind,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
 enum SwimLanes {
     Table,
     Id,
@@ -313,6 +325,7 @@ impl MigratorTrait for Migrator {
             Box::new(RemoveRefinementConcurrencySetting),
             Box::new(AddFeedbackRequestWorkflow),
             Box::new(AddAutomationRunMutability),
+            Box::new(AddWorkItemRelationships),
         ]
     }
 }
@@ -2575,6 +2588,149 @@ impl MigrationTrait for AddAutomationRunMutability {
         )
         .await
     }
+}
+
+struct AddWorkItemRelationships;
+
+impl MigrationName for AddWorkItemRelationships {
+    fn name(&self) -> &str {
+        "m20260618_000035_add_work_item_relationships"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddWorkItemRelationships {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        create_work_item_relationships(manager).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(WorkItemRelationships::Table)
+                    .if_exists()
+                    .to_owned(),
+            )
+            .await
+    }
+}
+
+async fn create_work_item_relationships(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    manager
+        .create_table(
+            Table::create()
+                .table(WorkItemRelationships::Table)
+                .if_not_exists()
+                .col(
+                    ColumnDef::new(WorkItemRelationships::Id)
+                        .big_integer()
+                        .not_null()
+                        .auto_increment()
+                        .primary_key(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemRelationships::ProjectId)
+                        .big_integer()
+                        .not_null(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemRelationships::SourceWorkItemId)
+                        .big_integer()
+                        .not_null(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemRelationships::TargetWorkItemId)
+                        .big_integer()
+                        .not_null(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemRelationships::Kind)
+                        .text()
+                        .not_null(),
+                )
+                .col(
+                    ColumnDef::new(WorkItemRelationships::CreatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .col(
+                    ColumnDef::new(WorkItemRelationships::UpdatedAt)
+                        .string()
+                        .not_null()
+                        .default(Expr::current_timestamp()),
+                )
+                .foreign_key(
+                    ForeignKey::create()
+                        .name("fk_work_item_relationships_project_id")
+                        .from(
+                            WorkItemRelationships::Table,
+                            WorkItemRelationships::ProjectId,
+                        )
+                        .to(Projects::Table, Projects::Id)
+                        .on_delete(ForeignKeyAction::Cascade),
+                )
+                .foreign_key(
+                    ForeignKey::create()
+                        .name("fk_work_item_relationships_source")
+                        .from(
+                            WorkItemRelationships::Table,
+                            WorkItemRelationships::SourceWorkItemId,
+                        )
+                        .to(WorkItems::Table, WorkItems::Id)
+                        .on_delete(ForeignKeyAction::Cascade),
+                )
+                .foreign_key(
+                    ForeignKey::create()
+                        .name("fk_work_item_relationships_target")
+                        .from(
+                            WorkItemRelationships::Table,
+                            WorkItemRelationships::TargetWorkItemId,
+                        )
+                        .to(WorkItems::Table, WorkItems::Id)
+                        .on_delete(ForeignKeyAction::Cascade),
+                )
+                .to_owned(),
+        )
+        .await?;
+
+    manager
+        .create_index(
+            Index::create()
+                .name("idx_work_item_relationships_touching_source")
+                .table(WorkItemRelationships::Table)
+                .col(WorkItemRelationships::ProjectId)
+                .col(WorkItemRelationships::SourceWorkItemId)
+                .if_not_exists()
+                .to_owned(),
+        )
+        .await?;
+    manager
+        .create_index(
+            Index::create()
+                .name("idx_work_item_relationships_touching_target")
+                .table(WorkItemRelationships::Table)
+                .col(WorkItemRelationships::ProjectId)
+                .col(WorkItemRelationships::TargetWorkItemId)
+                .if_not_exists()
+                .to_owned(),
+        )
+        .await?;
+    manager
+        .create_index(
+            Index::create()
+                .name("idx_work_item_relationships_unique")
+                .table(WorkItemRelationships::Table)
+                .col(WorkItemRelationships::ProjectId)
+                .col(WorkItemRelationships::SourceWorkItemId)
+                .col(WorkItemRelationships::TargetWorkItemId)
+                .col(WorkItemRelationships::Kind)
+                .unique()
+                .if_not_exists()
+                .to_owned(),
+        )
+        .await
 }
 
 async fn update_default_open_work_selector(

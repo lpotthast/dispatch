@@ -45,8 +45,10 @@ use crate::{
         DEFAULT_STATE_LABEL, FEEDBACK_REQUESTED_LABEL_KEY, ProjectGitStatusView, ProjectLabelView,
         ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
         ProjectSystemPromptEventView, ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY,
-        SwimLaneView, UiEvent, WorkItemClaimSourceView, WorkItemLabelView, WorkItemStateView,
-        WorkItemView, WorkspaceEditorView, WorkspaceMode,
+        SwimLaneView, UiEvent, WorkItemClaimSourceView, WorkItemLabelView,
+        WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
+        WorkItemRelationshipListEntry, WorkItemStateView, WorkItemView, WorkspaceEditorView,
+        WorkspaceMode,
     },
 };
 #[cfg(not(feature = "ssr"))]
@@ -182,6 +184,7 @@ pub struct ItemPage {
     pub project: String,
     pub item: WorkItemView,
     pub comments: Vec<CommentView>,
+    pub relationships: Vec<WorkItemRelationshipListEntry>,
     pub label_suggestions: Vec<ProjectLabelView>,
     pub work_item_states: Vec<WorkItemStateView>,
     pub automation_runs: Vec<AgentRunView>,
@@ -2221,6 +2224,7 @@ fn item_content(page: ItemPage) -> AnyView {
         project,
         item,
         comments,
+        relationships,
         label_suggestions,
         work_item_states,
         automation_runs,
@@ -2303,6 +2307,7 @@ fn item_content(page: ItemPage) -> AnyView {
         })
         .collect::<Vec<_>>();
     let labels = item_labels_view(&project, &item, label_suggestions);
+    let relationship_views = item_relationships_view(&project, &item, relationships);
 
     view! {
         <div>
@@ -2335,6 +2340,7 @@ fn item_content(page: ItemPage) -> AnyView {
                     {item_editor}
                 </section>
                 {labels}
+                {relationship_views}
                 {automation_run_views}
                 <section class="comments">
                     <h2>"Comments"</h2>
@@ -2376,6 +2382,120 @@ fn infer_patchbay_run_id(agent_id: &str) -> Option<i64> {
     }
     let run_id = id.parse::<i64>().ok()?;
     (run_id > 0).then_some(run_id)
+}
+
+fn item_relationships_view(
+    project: &str,
+    item: &WorkItemView,
+    relationships: Vec<WorkItemRelationshipListEntry>,
+) -> AnyView {
+    let add_action = format!(
+        "/projects/{}/items/{}/relationships",
+        encode_path(project),
+        item.id
+    );
+    let add_submit = background_form_submit(true);
+    let rows = relationships
+        .into_iter()
+        .map(|entry| item_relationship_row(project, item.id, entry))
+        .collect::<Vec<_>>();
+    let empty = rows.is_empty().then(|| {
+        view! { <p class="muted">"No relationships"</p> }
+    });
+
+    view! {
+        <section class="item-relationships panel">
+            <h2>"Relationships"</h2>
+            <div class="relationship-list">
+                {empty}
+                {rows}
+            </div>
+            <form class="relationship-add-form" method="post" action=add_action on:submit=add_submit>
+                <input
+                    type="number"
+                    min="1"
+                    name="target_work_item_id"
+                    placeholder="target item id"
+                    required
+                />
+                <input name="kind" placeholder="kind" required/>
+                <button>"Add relationship"</button>
+            </form>
+        </section>
+    }
+    .into_any()
+}
+
+fn item_relationship_row(
+    project: &str,
+    item_id: i64,
+    entry: WorkItemRelationshipListEntry,
+) -> impl IntoView + 'static {
+    let relationship = entry.relationship;
+    let related = match entry.direction {
+        WorkItemRelationshipDirection::Outgoing => relationship.target.clone(),
+        WorkItemRelationshipDirection::Incoming => relationship.source.clone(),
+    };
+    let update_action = format!(
+        "/projects/{}/items/{}/relationships/{}/update",
+        encode_path(project),
+        item_id,
+        relationship.id
+    );
+    let delete_action = format!(
+        "/projects/{}/items/{}/relationships/{}/delete",
+        encode_path(project),
+        item_id,
+        relationship.id
+    );
+    let update_submit = background_form_submit(false);
+    let delete_submit = background_form_submit(false);
+    let direction = entry.direction.to_string();
+    let related_href = item_href(project, related.id);
+    let source_link = relationship_endpoint_link(project, &relationship.source);
+    let target_link = relationship_endpoint_link(project, &relationship.target);
+    let related_state = relationship_item_state_label(&related).to_owned();
+
+    view! {
+        <article class="relationship-row">
+            <div class="relationship-main">
+                <span class="relationship-direction">{direction}</span>
+                <strong>{relationship.kind.clone()}</strong>
+                <p>
+                    {source_link}
+                    <span class="relationship-kind">" -- " {relationship.kind.clone()} " --> "</span>
+                    {target_link}
+                </p>
+                <a class="relationship-related" href=related_href>
+                    "#"{related.id} " [" {related_state} "] " {related.title}
+                </a>
+            </div>
+            <form method="post" action=update_action class="relationship-kind-form" on:submit=update_submit>
+                <input name="kind" value=relationship.kind required/>
+                <button>"Update"</button>
+            </form>
+            <form method="post" action=delete_action on:submit=delete_submit>
+                <button class="danger">"Delete"</button>
+            </form>
+        </article>
+    }
+}
+
+fn relationship_endpoint_link(
+    project: &str,
+    item: &WorkItemRelationshipItemSummary,
+) -> impl IntoView + 'static {
+    let href = item_href(project, item.id);
+    let state = relationship_item_state_label(item).to_owned();
+    let title = item.title.clone();
+    let id = item.id;
+    view! {
+        <a href=href>"#"{id} " [" {state} "] " {title}</a>
+    }
+}
+
+fn relationship_item_state_label(item: &WorkItemRelationshipItemSummary) -> &str {
+    item.state.as_deref().unwrap_or("(no state)")
 }
 
 fn item_labels_view(
@@ -2775,6 +2895,10 @@ fn api_docs_content(page: ApiDocsPage) -> AnyView {
         "GET /api/events/ws",
         "GET /api/projects/{project}/events",
         "GET /api/projects/{project}/items/{item_id}/events",
+        "GET /api/projects/{project}/items/{item_id}/relationships",
+        "POST /api/projects/{project}/items/{item_id}/relationships",
+        "PATCH /api/projects/{project}/relationships/{relationship_id}",
+        "DELETE /api/projects/{project}/relationships/{relationship_id}",
         "GET /api/projects/{project}/automation/sessions",
         "POST /projects/{project}/automation/start",
         "POST /projects/{project}/automation/stop",
@@ -6934,6 +7058,10 @@ fn active_class(active: ActivePage, page: ActivePage) -> &'static str {
 
 fn encode_path(value: &str) -> String {
     urlencoding::encode(value).into_owned()
+}
+
+fn item_href(project: &str, item_id: i64) -> String {
+    format!("/projects/{}/items/{}", encode_path(project), item_id)
 }
 
 fn state_label(item: &WorkItemView) -> &str {

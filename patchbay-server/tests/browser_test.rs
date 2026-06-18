@@ -428,6 +428,8 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_contains(driver, "Item details").await?;
         assert_item_detail_description_is_not_duplicated(driver).await?;
         assert_item_detail_description_editor_accepts_click_and_text(driver).await?;
+        let relationship_target_id = create_relationship_target_item(driver).await?;
+        assert_item_relationship_create_delete_flow(driver, relationship_target_id).await?;
         assert_item_detail_dirty_leave_protection(driver).await?;
         click(driver, By::LinkText("Browser item")).await?;
         find(driver, By::Css("section.item-settings")).await?;
@@ -547,6 +549,41 @@ async fn create_alternate_project(driver: &WebDriver) -> Result<(), Report> {
         .context("failed to read alternate project setup response")?;
     assert_that!(created).is_true();
     Ok(())
+}
+
+async fn create_relationship_target_item(driver: &WebDriver) -> Result<i64, Report> {
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            fetch('/api/projects/demo/items', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title: 'Relationship target',
+                    description: 'Created as a browser-test relationship target',
+                    state: 'open',
+                    agent_model_override: null,
+                    agent_reasoning_effort_override: null,
+                }),
+            }).then(async response => {
+                const body = await response.json();
+                done(`${response.status}|${body.id ?? body.error ?? '<missing>'}`);
+            }).catch(error => done(`error|${error}`));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to create relationship target through browser-test API request")?
+        .convert::<String>()
+        .context("failed to read relationship target setup response")?;
+    let Some((status, value)) = result.split_once('|') else {
+        bail!("unexpected relationship target API response {result:?}");
+    };
+    assert_that!(status).is_equal_to("200");
+    Ok(value
+        .parse::<i64>()
+        .context("failed to parse relationship target item id")?)
 }
 
 async fn seed_memory_history(driver: &WebDriver) -> Result<(), Report> {
@@ -1911,19 +1948,7 @@ async fn assert_item_detail_description_editor_accepts_click_and_text(
         .await
         .context("failed to set description editor click marker")?;
 
-    let editor = find(
-        driver,
-        By::Css("section.item-settings [data-rich-text-field='description'] .ProseMirror"),
-    )
-    .await?;
-    editor
-        .scroll_into_view()
-        .await
-        .context("failed to scroll description editor into view")?;
-    editor
-        .click()
-        .await
-        .context("failed to click description editor")?;
+    click_description_editor(driver).await?;
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     let marker = driver
@@ -1976,6 +2001,140 @@ async fn assert_item_detail_description_editor_accepts_click_and_text(
         .convert::<String>()
         .context("failed to read edited description value")?;
     assert_that!(value).contains("Editable after click");
+    Ok(())
+}
+
+async fn click_description_editor(driver: &WebDriver) -> Result<(), Report> {
+    let selector = "section.item-settings [data-rich-text-field='description'] .ProseMirror";
+    let mut last_error = None;
+    for _ in 0..5 {
+        let editor = find(driver, By::Css(selector)).await?;
+        match editor.scroll_into_view().await {
+            Ok(()) => match editor.click().await {
+                Ok(()) => return Ok(()),
+                Err(err) => last_error = Some(format!("click failed: {err}")),
+            },
+            Err(err) => last_error = Some(format!("scroll failed: {err}")),
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    bail!(
+        "failed to click description editor after retries: {}",
+        last_error.unwrap_or_else(|| "no click attempt was made".to_owned())
+    )
+}
+
+async fn assert_item_relationship_create_delete_flow(
+    driver: &WebDriver,
+    target_id: i64,
+) -> Result<(), Report> {
+    find(driver, By::Css("section.item-relationships")).await?;
+    assert_source_contains(driver, "No relationships").await?;
+
+    let add_script = r#"
+        const targetId = TARGET_ID;
+        const form = document.querySelector('.relationship-add-form');
+        if (!form) {
+            throw new Error('missing relationship add form');
+        }
+        window.__patchbayRelationshipUrl = window.location.href;
+        window.__patchbayRelationshipMarker = 'created';
+        document.body.style.minHeight = '5000px';
+        window.scrollTo(0, 1800);
+        form.querySelector('input[name="target_work_item_id"]').value = String(targetId);
+        form.querySelector('input[name="kind"]').value = 'is follow-up of';
+        form.requestSubmit();
+    "#
+    .replace("TARGET_ID", &target_id.to_string());
+    driver
+        .execute(add_script, Vec::new())
+        .await
+        .context("failed to submit relationship add form")?;
+
+    let wait_create_script = r#"
+        const targetId = TARGET_ID;
+        const done = arguments[0];
+        const deadline = Date.now() + 5000;
+        const inspect = () => {
+            const panel = document.querySelector('section.item-relationships');
+            const text = panel?.innerText ?? '';
+            const related = panel?.querySelector(`.relationship-related[href="/projects/demo/items/${targetId}"]`);
+            const summary = [
+                `marker=${window.__patchbayRelationshipMarker ?? '<missing>'}`,
+                `sameUrl=${window.location.href === window.__patchbayRelationshipUrl}`,
+                `scrollKept=${window.scrollY > 1000}`,
+                `hasRow=${Boolean(panel?.querySelector('.relationship-row'))}`,
+                `hasRelated=${Boolean(related)}`,
+                `hasKind=${text.includes('is follow-up of')}`,
+                `hasDirection=${text.includes('outgoing')}`,
+                `hasTitle=${text.includes('Relationship target')}`,
+            ].join(';');
+            if (summary.endsWith('hasTitle=true') || Date.now() > deadline) {
+                done(summary);
+                return;
+            }
+            setTimeout(inspect, 100);
+        };
+        inspect();
+    "#
+    .replace("TARGET_ID", &target_id.to_string());
+    let created_summary = driver
+        .execute_async(wait_create_script, Vec::new())
+        .await
+        .context("failed to wait for relationship row after add")?
+        .convert::<String>()
+        .context("failed to read relationship add summary")?;
+    assert_that!(created_summary).is_equal_to(
+        "marker=created;sameUrl=true;scrollKept=true;hasRow=true;hasRelated=true;hasKind=true;hasDirection=true;hasTitle=true"
+            .to_owned(),
+    );
+
+    driver
+        .execute(
+            r#"
+            const form = document.querySelector('.relationship-row form[action$="/delete"]');
+            if (!form) {
+                throw new Error('missing relationship delete form');
+            }
+            window.__patchbayRelationshipMarker = 'deleted';
+            form.requestSubmit();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to submit relationship delete form")?;
+
+    let deleted_summary = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 5000;
+            const inspect = () => {
+                const panel = document.querySelector('section.item-relationships');
+                const text = panel?.innerText ?? '';
+                const summary = [
+                    `marker=${window.__patchbayRelationshipMarker ?? '<missing>'}`,
+                    `sameUrl=${window.location.href === window.__patchbayRelationshipUrl}`,
+                    `hasRow=${Boolean(panel?.querySelector('.relationship-row'))}`,
+                    `empty=${text.includes('No relationships')}`,
+                ].join(';');
+                if (summary.endsWith('empty=true') || Date.now() > deadline) {
+                    document.body.style.minHeight = '';
+                    done(summary);
+                    return;
+                }
+                setTimeout(inspect, 100);
+            };
+            inspect();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to wait for relationship row after delete")?
+        .convert::<String>()
+        .context("failed to read relationship delete summary")?;
+    assert_that!(deleted_summary)
+        .is_equal_to("marker=deleted;sameUrl=true;hasRow=false;empty=true".to_owned());
     Ok(())
 }
 

@@ -6,9 +6,10 @@ use axum::{
 };
 use patchbay_types::{
     AddCommentRequest, ApiError, ClaimWorkItemRequest, ClaimWorkItemResponse,
-    CreateWorkItemLabelRequest, CreateWorkItemRequest, DEFAULT_STATE_LABEL, FinishWorkItemRequest,
-    ProgressWorkItemRequest, ReleaseWorkItemRequest, RequestFeedbackWorkItemRequest,
-    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
+    CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest, CreateWorkItemRequest,
+    DEFAULT_STATE_LABEL, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
+    RequestFeedbackWorkItemRequest, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
+    UpdateWorkItemRelationshipRequest, UpdateWorkItemRequest,
 };
 use rootcause::Result;
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,7 @@ use crate::backend::{
     comments::AddComment,
     item_label_service, items,
     items::{CreateWorkItem, UpdateWorkItem},
-    projects,
+    projects, relationships,
 };
 
 #[derive(Debug, Deserialize)]
@@ -387,6 +388,80 @@ pub(crate) async fn delete_item_label(
     )
 }
 
+pub(crate) async fn list_item_relationships(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(relationships::list_item_relationships(&state.store, &project, item_id).await)
+}
+
+pub(crate) async fn create_item_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id)): Path<(String, i64)>,
+    Json(request): Json<CreateWorkItemRelationshipRequest>,
+) -> Response {
+    json_result(
+        relationships::create_relationship(
+            &state.store,
+            &project,
+            item_id,
+            request.target_work_item_id,
+            request.kind,
+        )
+        .await,
+    )
+}
+
+pub(crate) async fn update_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, relationship_id)): Path<(String, i64)>,
+    Json(request): Json<UpdateWorkItemRelationshipRequest>,
+) -> Response {
+    json_result(
+        relationships::update_relationship(&state.store, &project, relationship_id, request.kind)
+            .await,
+    )
+}
+
+pub(crate) async fn delete_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, relationship_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(relationships::delete_relationship(&state.store, &project, relationship_id).await)
+}
+
+pub(crate) async fn update_item_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
+    Json(request): Json<UpdateWorkItemRelationshipRequest>,
+) -> Response {
+    json_result(
+        relationships::update_relationship_for_item(
+            &state.store,
+            &project,
+            item_id,
+            relationship_id,
+            request.kind,
+        )
+        .await,
+    )
+}
+
+pub(crate) async fn delete_item_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
+) -> Response {
+    json_result(
+        relationships::delete_relationship_for_item(
+            &state.store,
+            &project,
+            item_id,
+            relationship_id,
+        )
+        .await,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -394,9 +469,11 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use patchbay_types::{
         AUTOMATION_BLOCKED_LABEL_KEY, ClaimWorkItemResponse, CommentView,
+        CreateWorkItemRelationshipRequest, DeleteWorkItemRelationshipResponse,
         FEEDBACK_REQUESTED_LABEL_KEY, ProjectLabelView, ProjectMemoryCompactionView,
-        ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, WorkItemLabelView,
-        WorkItemView,
+        ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView,
+        UpdateWorkItemRelationshipRequest, WorkItemLabelView, WorkItemRelationshipDirection,
+        WorkItemRelationshipListEntry, WorkItemRelationshipView, WorkItemView,
     };
     use serde::de::DeserializeOwned;
     use tempfile::{TempDir, tempdir};
@@ -463,6 +540,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn decode_error(response: Response<Body>) -> String {
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice::<ApiError>(&body).unwrap().error
     }
 
     #[tokio::test]
@@ -729,6 +812,139 @@ mod tests {
         )
         .await;
         assert_eq!(deleted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn relationship_endpoints_create_list_update_delete_and_validate() {
+        let (_temp, state, source_id) = test_state().await;
+        let target_id = items::create_item(
+            &state.store,
+            "demo",
+            CreateWorkItem {
+                title: "Relationship target".to_owned(),
+                description: "Receives a relationship".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+
+        let created: WorkItemRelationshipListEntry = decode(
+            create_item_relationship(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), source_id)),
+                Json(CreateWorkItemRelationshipRequest {
+                    target_work_item_id: target_id,
+                    kind: " is follow-up of ".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(created.direction, WorkItemRelationshipDirection::Outgoing);
+        assert_eq!(created.relationship.kind, "is follow-up of");
+
+        let outgoing: Vec<WorkItemRelationshipListEntry> = decode(
+            list_item_relationships(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), source_id)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(
+            outgoing[0].direction,
+            WorkItemRelationshipDirection::Outgoing
+        );
+
+        let incoming: Vec<WorkItemRelationshipListEntry> = decode(
+            list_item_relationships(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), target_id)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(
+            incoming[0].direction,
+            WorkItemRelationshipDirection::Incoming
+        );
+
+        let duplicate = decode_error(
+            create_item_relationship(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), source_id)),
+                Json(CreateWorkItemRelationshipRequest {
+                    target_work_item_id: target_id,
+                    kind: "is follow-up of".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert!(duplicate.contains("duplicate relationship"));
+
+        let self_link = decode_error(
+            create_item_relationship(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), source_id)),
+                Json(CreateWorkItemRelationshipRequest {
+                    target_work_item_id: source_id,
+                    kind: "relates".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert!(self_link.contains("must differ"));
+
+        let empty_kind = decode_error(
+            create_item_relationship(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), source_id)),
+                Json(CreateWorkItemRelationshipRequest {
+                    target_work_item_id: target_id,
+                    kind: " ".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert!(empty_kind.contains("kind cannot be empty"));
+
+        let updated: WorkItemRelationshipView = decode(
+            update_relationship(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), created.relationship.id)),
+                Json(UpdateWorkItemRelationshipRequest {
+                    kind: "unblocks".to_owned(),
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(updated.kind, "unblocks");
+
+        let deleted: DeleteWorkItemRelationshipResponse = decode(
+            delete_relationship(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), created.relationship.id)),
+            )
+            .await,
+        )
+        .await;
+        assert!(deleted.deleted);
+
+        let outgoing: Vec<WorkItemRelationshipListEntry> = decode(
+            list_item_relationships(Extension(state), Path(("demo".to_owned(), source_id))).await,
+        )
+        .await;
+        assert!(outgoing.is_empty());
     }
 
     #[tokio::test]

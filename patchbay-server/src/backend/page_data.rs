@@ -6,7 +6,7 @@ use crate::{
     backend::{
         automation, automation_controller::AutomationController, codex_app_server, comments,
         item_label_service, items, process_sessions::ProcessSessionRegistry, projects,
-        storage::Store, swim_lanes, work_item_states, workspace,
+        relationships, storage::Store, swim_lanes, work_item_states, workspace,
     },
     frontend::{
         ApiDocsPage, BoardItemsSection, BoardPage, BoardRunSessionView, CodexStatusPage, ItemPage,
@@ -260,6 +260,7 @@ pub(crate) async fn item_page_data(
     let active_project_names = active_project_names(store, automation_controller).await?;
     let item = items::get_item(store, project, item_id).await?;
     let comments = comments::list_comments(store, project, item_id).await?;
+    let relationships = relationships::list_item_relationships(store, project, item_id).await?;
     let label_suggestions = item_label_service::list_project_labels(store, project).await?;
     let work_item_states = work_item_states::list_work_item_states(store, project).await?;
     let automation_runs = automation::list_runs_for_item(store, project, item_id, Some(10)).await?;
@@ -269,6 +270,7 @@ pub(crate) async fn item_page_data(
         project: project.to_owned(),
         item,
         comments,
+        relationships,
         label_suggestions,
         work_item_states,
         automation_runs,

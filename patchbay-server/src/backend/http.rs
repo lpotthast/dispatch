@@ -31,6 +31,7 @@ use crate::{
         crudkit_resources, events, item_label_service,
         items::{self, CreateWorkItem, UpdateWorkItem},
         projects::{self, UpdateProjectSettings},
+        relationships,
         storage::Store,
         workspace::{self, WorkspaceOpenTarget},
     },
@@ -192,6 +193,18 @@ pub(crate) fn router(
             "/projects/{project}/items/{item_id}/labels/{label_id}/delete",
             post(delete_item_label),
         )
+        .route(
+            "/projects/{project}/items/{item_id}/relationships",
+            post(add_item_relationship),
+        )
+        .route(
+            "/projects/{project}/items/{item_id}/relationships/{relationship_id}/update",
+            post(update_item_relationship),
+        )
+        .route(
+            "/projects/{project}/items/{item_id}/relationships/{relationship_id}/delete",
+            post(delete_item_relationship),
+        )
         .route("/agent-tools/discover", post(discover_agent_tools))
         .route("/codex/logout", post(logout_codex))
         .route("/api/projects/{project}", get(api::get_project))
@@ -235,6 +248,19 @@ pub(crate) fn router(
         .route(
             "/api/projects/{project}/items/{item_id}/labels/{label_id}",
             axum::routing::patch(api::update_item_label).delete(api::delete_item_label),
+        )
+        .route(
+            "/api/projects/{project}/items/{item_id}/relationships",
+            get(api::list_item_relationships).post(api::create_item_relationship),
+        )
+        .route(
+            "/api/projects/{project}/items/{item_id}/relationships/{relationship_id}",
+            axum::routing::patch(api::update_item_relationship)
+                .delete(api::delete_item_relationship),
+        )
+        .route(
+            "/api/projects/{project}/relationships/{relationship_id}",
+            axum::routing::patch(api::update_relationship).delete(api::delete_relationship),
         )
         .route(
             "/api/projects/{project}/items/{item_id}/progress",
@@ -1472,6 +1498,75 @@ async fn delete_item_label(
         item_id,
         label_id,
         Some(form.version),
+    )
+    .await
+    {
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AddItemRelationshipForm {
+    target_work_item_id: i64,
+    kind: String,
+}
+
+async fn add_item_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
+    Form(form): Form<AddItemRelationshipForm>,
+) -> Response {
+    match relationships::create_relationship(
+        &state.store,
+        &project,
+        item_id,
+        form.target_work_item_id,
+        form.kind,
+    )
+    .await
+    {
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateItemRelationshipForm {
+    kind: String,
+}
+
+async fn update_item_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
+    Form(form): Form<UpdateItemRelationshipForm>,
+) -> Response {
+    match relationships::update_relationship_for_item(
+        &state.store,
+        &project,
+        item_id,
+        relationship_id,
+        form.kind,
+    )
+    .await
+    {
+        Ok(_) => item_form_success(&headers, &project, item_id),
+        Err(err) => form_error_response(&headers, err).await,
+    }
+}
+
+async fn delete_item_relationship(
+    Extension(state): Extension<AppState>,
+    Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
+) -> Response {
+    match relationships::delete_relationship_for_item(
+        &state.store,
+        &project,
+        item_id,
+        relationship_id,
     )
     .await
     {

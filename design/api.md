@@ -33,6 +33,17 @@ GET   /api/projects/{project}/items/{item_id}
 PATCH /api/projects/{project}/items/{item_id}
 ```
 
+Work item relationship endpoints:
+
+```text
+GET    /api/projects/{project}/items/{item_id}/relationships
+POST   /api/projects/{project}/items/{item_id}/relationships
+PATCH  /api/projects/{project}/relationships/{relationship_id}
+DELETE /api/projects/{project}/relationships/{relationship_id}
+```
+
+Relationship list responses include the relationship id, kind, direction relative to the requested item (`outgoing` when the item is the source, `incoming` when the item is the target), source item summary, target item summary, and timestamps. Create requests use the path item as the source and provide `target_work_item_id` plus a free-form `kind`. Update requests replace only the trimmed kind. Delete responses include the deleted relationship snapshot.
+
 Workflow endpoints:
 
 ```text
@@ -81,6 +92,8 @@ GET /api/projects/{project}/items/{item_id}/events
 
 `PATCH /items/{item_id}` is for item field updates and supports version safety. It is separate from workflow transitions.
 
+Relationship mutations validate that both work items exist in the same project, the source and target differ, the relationship kind is non-empty after trimming, and the exact `(project, source, target, kind)` relationship is not already present. Mutations touch both source and target work items, emit item events for both sides, and publish item-change notifications for both item detail views.
+
 Project memory writes require Patchbay agent attribution in the request body. `PUT /memory` rewrites the complete memory field; `POST /memory/append` appends to the existing memory. Both create `MemoryChanged` events containing the full post-write memory snapshot. Compaction deletes memory history events only; the current project memory remains on the project record.
 
 ## CrudKit Endpoints
@@ -109,6 +122,7 @@ The Leptos UI uses server form handlers for operator actions such as:
 - toggling project auto-commit and updating project commit, revert, and mutable Git command policy;
 - updating the independent read-only automation concurrency limit;
 - creating, updating, moving, deleting, and commenting on work items;
+- creating, updating, and deleting work item relationships from item detail pages;
 - starting, stopping, and recovering automation;
 - canceling an individual active automation run;
 - cleaning up worktrees;
@@ -131,6 +145,11 @@ API errors should be explicit enough for the CLI to show actionable output. Impo
 
 - missing project context;
 - unknown project or item;
+- unknown relationship;
+- cross-project relationship target;
+- relationship source and target are the same item;
+- empty relationship kind;
+- duplicate relationship;
 - invalid state transition;
 - item already claimed;
 - caller does not own the claim;

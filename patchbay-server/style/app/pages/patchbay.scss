@@ -1513,6 +1513,77 @@ button.link-danger {
   }
 }
 
+.item-relationships {
+  display: grid;
+  gap: 12px;
+}
+
+.relationship-list {
+  display: grid;
+  gap: 8px;
+}
+
+.relationship-row,
+.relationship-add-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 0.8fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.relationship-row {
+  padding: 10px;
+  border: 1px solid $border;
+  border-radius: 8px;
+  background: $surface-raised;
+
+  p {
+    margin: 4px 0;
+    color: $ink-soft;
+    font-size: 13px;
+  }
+}
+
+.relationship-main {
+  min-width: 0;
+}
+
+.relationship-direction {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  margin-right: 7px;
+  padding: 2px 7px;
+  border: 1px solid rgba($accent, 0.28);
+  border-radius: 999px;
+  background: $accent-soft;
+  color: $accent-strong;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.relationship-kind {
+  color: $muted;
+}
+
+.relationship-related {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relationship-kind-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .claim-badge {
   display: inline-flex;
   max-width: 100%;
@@ -2462,6 +2533,9 @@ dd {
 
   .label-row,
   .label-add-form,
+  .relationship-row,
+  .relationship-add-form,
+  .relationship-kind-form,
   .label-row form {
     grid-template-columns: 1fr;
   }

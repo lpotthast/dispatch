@@ -784,6 +784,55 @@ pub struct WorkItemLabelView {
     pub updated_at: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemRelationshipDirection {
+    Outgoing,
+    Incoming,
+}
+
+impl WorkItemRelationshipDirection {
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::Outgoing => "outgoing",
+            Self::Incoming => "incoming",
+        }
+    }
+}
+
+impl fmt::Display for WorkItemRelationshipDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_storage())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkItemRelationshipItemSummary {
+    pub id: i64,
+    pub title: String,
+    pub state: Option<String>,
+    pub version: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkItemRelationshipView {
+    pub id: i64,
+    pub project_id: i64,
+    pub kind: String,
+    pub source_work_item_id: i64,
+    pub target_work_item_id: i64,
+    pub source: WorkItemRelationshipItemSummary,
+    pub target: WorkItemRelationshipItemSummary,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkItemRelationshipListEntry {
+    pub relationship: WorkItemRelationshipView,
+    pub direction: WorkItemRelationshipDirection,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProjectLabelView {
     pub key: String,
@@ -1327,6 +1376,23 @@ pub struct DeleteWorkItemLabelResponse {
     pub deleted: bool,
     pub label_id: i64,
     pub work_item: WorkItemView,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CreateWorkItemRelationshipRequest {
+    pub target_work_item_id: i64,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UpdateWorkItemRelationshipRequest {
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DeleteWorkItemRelationshipResponse {
+    pub deleted: bool,
+    pub relationship: WorkItemRelationshipView,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

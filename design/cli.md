@@ -59,6 +59,10 @@ Commands that operate on an existing item accept an optional item id and may def
 - `item watch [item-id]`;
 - `comment list [item-id]`;
 - `comment add [item-id]`.
+- `relationship list [item-id]`;
+- `relationship add [item-id] --target <item-id> --kind "..."`.
+
+Relationship update and delete commands take a relationship id directly and do not require a claimed-item context.
 
 ## Commands
 
@@ -81,6 +85,17 @@ patchbay item release [item-id] [--comment "..."] [--json]
 patchbay item request-feedback [item-id] --body "..." [--json]
 patchbay item watch [item-id] [--since-version <n>] [--json]
 ```
+
+Relationship commands:
+
+```text
+patchbay relationship list [item-id] [--json]
+patchbay relationship add [item-id] --target <item-id> --kind "is follow-up of" [--json]
+patchbay relationship update <relationship-id> --kind "blocks" [--json]
+patchbay relationship delete <relationship-id> [--json]
+```
+
+Relationship commands call the Patchbay JSON API. List output includes incoming and outgoing relationships touching the item, direction relative to that item, the source and target item summaries, and the free-form kind. Add uses the command item as the source and the `--target` item as the target. Update replaces only the kind. Delete removes only the specified relationship; it does not create or remove inverse relationships.
 
 Comment commands:
 

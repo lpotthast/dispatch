@@ -17,7 +17,8 @@ use crate::{
         },
         events, item_labels, projects,
         storage::{Store, utc_now},
-        work_item_comments, work_item_events, work_item_labels, work_items,
+        work_item_comments, work_item_events, work_item_labels, work_item_relationships,
+        work_items,
     },
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, AgentReasoningEffort, AuthorType,
@@ -693,6 +694,8 @@ pub async fn delete_item(store: &Store, project_name: &str, item_id: i64) -> Res
         .await
         .context("failed to start item delete")?;
     work_items::get(&txn, project_id, item_id).await?;
+    let related_item_ids =
+        work_item_relationships::related_item_ids_for_item(&txn, project_id, item_id).await?;
 
     work_item_events::record_event_in_tx(
         &txn,
@@ -702,12 +705,25 @@ pub async fn delete_item(store: &Store, project_name: &str, item_id: i64) -> Res
         "Deleted item",
     )
     .await?;
+    for related_item_id in &related_item_ids {
+        work_item_events::record_event_in_tx(
+            &txn,
+            project_id,
+            Some(*related_item_id),
+            "relationship_deleted",
+            &format!("Deleted relationships touching removed item #{item_id}"),
+        )
+        .await?;
+    }
     WorkItem::delete_by_id(item_id)
         .exec(&txn)
         .await
         .context("failed to delete work item")?;
     txn.commit().await.context("failed to commit item delete")?;
     events::publish_work_item_changed(project_name, item_id);
+    for related_item_id in related_item_ids {
+        events::publish_work_item_changed(project_name, related_item_id);
+    }
     Ok(())
 }
 

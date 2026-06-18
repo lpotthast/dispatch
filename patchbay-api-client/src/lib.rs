@@ -1,11 +1,13 @@
 use patchbay_types::{
     AddCommentRequest, AgentRunView, ApiError, ClaimWorkItemRequest, ClaimWorkItemResponse,
-    CommentView, CreateWorkItemLabelRequest, CreateWorkItemRequest, DeleteWorkItemLabelResponse,
+    CommentView, CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest,
+    CreateWorkItemRequest, DeleteWorkItemLabelResponse, DeleteWorkItemRelationshipResponse,
     FinishWorkItemRequest, ProgressWorkItemRequest, ProjectLabelView, ProjectMemoryCompactionView,
     ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView,
     ProjectView, ReleaseWorkItemRequest, RequestFeedbackWorkItemRequest, RunLogView,
-    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
-    WorkItemLabelView, WorkItemView,
+    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRelationshipRequest,
+    UpdateWorkItemRequest, WorkItemLabelView, WorkItemRelationshipListEntry,
+    WorkItemRelationshipView, WorkItemView,
 };
 use rootcause::{Result, prelude::*};
 use serde::{Serialize, de::DeserializeOwned};
@@ -166,6 +168,56 @@ impl PatchbayClient {
             path.push_str(&expect_version.to_string());
         }
         self.delete(&path).await
+    }
+
+    pub async fn list_item_relationships(
+        &self,
+        project: &str,
+        item_id: i64,
+    ) -> Result<Vec<WorkItemRelationshipListEntry>> {
+        self.get(&project_path(
+            project,
+            &format!("/items/{item_id}/relationships"),
+        ))
+        .await
+    }
+
+    pub async fn create_item_relationship(
+        &self,
+        project: &str,
+        source_item_id: i64,
+        request: &CreateWorkItemRelationshipRequest,
+    ) -> Result<WorkItemRelationshipListEntry> {
+        self.post(
+            &project_path(project, &format!("/items/{source_item_id}/relationships")),
+            request,
+        )
+        .await
+    }
+
+    pub async fn update_relationship(
+        &self,
+        project: &str,
+        relationship_id: i64,
+        request: &UpdateWorkItemRelationshipRequest,
+    ) -> Result<WorkItemRelationshipView> {
+        self.patch(
+            &project_path(project, &format!("/relationships/{relationship_id}")),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_relationship(
+        &self,
+        project: &str,
+        relationship_id: i64,
+    ) -> Result<DeleteWorkItemRelationshipResponse> {
+        self.delete(&project_path(
+            project,
+            &format!("/relationships/{relationship_id}"),
+        ))
+        .await
     }
 
     pub async fn claim_item(

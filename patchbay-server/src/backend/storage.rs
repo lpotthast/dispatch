@@ -290,6 +290,7 @@ mod tests {
             "m20260618_000032_remove_refinement_concurrency_setting",
             "m20260618_000033_add_feedback_request_workflow",
             "m20260618_000034_add_automation_run_mutability",
+            "m20260618_000035_add_work_item_relationships",
         ];
 
         assert_eq!(names.as_slice(), expected.as_slice());
