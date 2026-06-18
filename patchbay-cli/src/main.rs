@@ -1,17 +1,20 @@
 mod context;
 mod git_guard;
+mod render;
 
-use std::time::Duration;
+use std::{
+    io::{self, Write},
+    time::Duration,
+};
 
 use clap::{Args, Parser, Subcommand};
 use context::{ContextOverrides, ResolvedContext, resolve_context};
 use git_guard::run_git;
 use patchbay_types::{
-    AddCommentRequest, AgentReasoningEffort, AgentRunOutputPiece, AgentRunTokenUsageView,
-    AgentRunView, AuthorType, ClaimWorkItemRequest, CreateWorkItemLabelRequest,
-    CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
-    RequestFeedbackWorkItemRequest, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
-    UpdateWorkItemRequest, WorkItemView,
+    AddCommentRequest, AgentReasoningEffort, AuthorType, ClaimWorkItemRequest,
+    CreateWorkItemLabelRequest, CreateWorkItemRequest, FinishWorkItemRequest,
+    ProgressWorkItemRequest, ReleaseWorkItemRequest, RequestFeedbackWorkItemRequest,
+    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRequest,
 };
 use rootcause::{Result, prelude::*};
 use serde::Serialize;
@@ -486,45 +489,16 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
     match command {
         ItemCommand::List(args) => {
             let items = client.list_items(project, args.state.as_deref()).await?;
-            output(args.json, &items, || {
-                for item in &items {
-                    println!(
-                        "#{}\t{}\tv{}\t{}",
-                        item.id,
-                        item_state_label(item),
-                        item.version,
-                        item.title
-                    );
-                }
+            output(args.json, &items, |output| {
+                render::write_item_rows(output, &items)
             })
         }
         ItemCommand::Show(args) => {
             let item = client
                 .get_item(project, context.item_id(args.item_id)?)
                 .await?;
-            output(args.json, &item, || {
-                println!(
-                    "#{} [{}] v{}",
-                    item.id,
-                    item_state_label(&item),
-                    item.version
-                );
-                println!("{}", item.title);
-                if let Some(agent) = &item.claimed_by {
-                    println!("claimed by: {agent}");
-                }
-                if !item.labels.is_empty() {
-                    println!(
-                        "labels: {}",
-                        item.labels
-                            .iter()
-                            .map(|label| format_label(&label.key, label.value.as_deref()))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
-                println!();
-                println!("{}", item.description);
+            output(args.json, &item, |output| {
+                render::write_item_detail(output, &item)
             })
         }
         ItemCommand::Create(args) => {
@@ -540,8 +514,8 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                     },
                 )
                 .await?;
-            output(args.json, &item, || {
-                println!("Created item #{}: {}", item.id, item.title);
+            output(args.json, &item, |output| {
+                writeln!(output, "Created item #{}: {}", item.id, item.title)
             })
         }
         ItemCommand::Update(args) => {
@@ -558,8 +532,8 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                 expect_version: args.expect_version,
             };
             let item = client.update_item(project, item_id, &request).await?;
-            output(args.json, &item, || {
-                println!("Updated item #{} v{}", item.id, item.version);
+            output(args.json, &item, |output| {
+                writeln!(output, "Updated item #{} v{}", item.id, item.version)
             })
         }
         ItemCommand::Claim(args) => {
@@ -574,8 +548,8 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                 )
                 .await?;
             if let Some(item) = claimed.item {
-                output(args.json, &item, || {
-                    println!("Claimed item #{} for {}", item.id, agent_id);
+                output(args.json, &item, |output| {
+                    writeln!(output, "Claimed item #{} for {}", item.id, agent_id)
                 })
             } else if args.json {
                 println!(
@@ -605,8 +579,8 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                     },
                 )
                 .await?;
-            output(args.json, &comment, || {
-                println!("Recorded progress comment #{}", comment.id);
+            output(args.json, &comment, |output| {
+                writeln!(output, "Recorded progress comment #{}", comment.id)
             })
         }
         ItemCommand::Finish(args) => {
@@ -622,8 +596,8 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                     },
                 )
                 .await?;
-            output(args.json, &item, || {
-                println!("Finished item #{} v{}", item.id, item.version);
+            output(args.json, &item, |output| {
+                writeln!(output, "Finished item #{} v{}", item.id, item.version)
             })
         }
         ItemCommand::Release(args) => {
@@ -639,12 +613,13 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                     },
                 )
                 .await?;
-            output(args.json, &item, || {
-                println!(
+            output(args.json, &item, |output| {
+                writeln!(
+                    output,
                     "Released item #{} back to {}",
                     item.id,
-                    item_state_label(&item)
-                );
+                    render::item_state_label(&item)
+                )
             })
         }
         ItemCommand::RequestFeedback(args) => {
@@ -660,12 +635,13 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                     },
                 )
                 .await?;
-            output(args.json, &item, || {
-                println!(
+            output(args.json, &item, |output| {
+                writeln!(
+                    output,
                     "Requested feedback for item #{} and restored state to {}",
                     item.id,
-                    item_state_label(&item)
-                );
+                    render::item_state_label(&item)
+                )
             })
         }
         ItemCommand::Watch(args) => {
@@ -675,14 +651,8 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
                 let item = client.get_item(project, item_id).await?;
                 if item.version > last_version {
                     last_version = item.version;
-                    output(args.json, &item, || {
-                        println!(
-                            "#{}\t{}\tv{}\t{}",
-                            item.id,
-                            item_state_label(&item),
-                            item.version,
-                            item.title
-                        );
+                    output(args.json, &item, |output| {
+                        render::write_item_row(output, &item)
                     })?;
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -698,14 +668,8 @@ async fn run_label(command: LabelCommand, context: ResolvedContext) -> Result<()
         LabelCommand::List(args) => {
             let item_id = context.item_id(args.item_id)?;
             let labels = client.list_item_labels(project, item_id).await?;
-            output(args.json, &labels, || {
-                for label in &labels {
-                    println!(
-                        "#{}\t{}",
-                        label.id,
-                        format_label(&label.key, label.value.as_deref())
-                    );
-                }
+            output(args.json, &labels, |output| {
+                render::write_item_labels(output, &labels)
             })
         }
         LabelCommand::Add(args) => {
@@ -721,8 +685,8 @@ async fn run_label(command: LabelCommand, context: ResolvedContext) -> Result<()
                     args.expect_version,
                 )
                 .await?;
-            output(args.json, &item, || {
-                println!("Added label on item #{} v{}", item.id, item.version);
+            output(args.json, &item, |output| {
+                writeln!(output, "Added label on item #{} v{}", item.id, item.version)
             })
         }
         LabelCommand::Update(args) => {
@@ -735,11 +699,12 @@ async fn run_label(command: LabelCommand, context: ResolvedContext) -> Result<()
             let item = client
                 .update_item_label(project, item_id, args.label_id, &request)
                 .await?;
-            output(args.json, &item, || {
-                println!(
+            output(args.json, &item, |output| {
+                writeln!(
+                    output,
                     "Updated label #{} on item #{} v{}",
                     args.label_id, item.id, item.version
-                );
+                )
             })
         }
         LabelCommand::Delete(args) => {
@@ -747,20 +712,14 @@ async fn run_label(command: LabelCommand, context: ResolvedContext) -> Result<()
             let deleted = client
                 .delete_item_label(project, item_id, args.label_id, args.expect_version)
                 .await?;
-            output(args.json, &deleted, || {
-                println!("Deleted label #{}", deleted.label_id);
+            output(args.json, &deleted, |output| {
+                writeln!(output, "Deleted label #{}", deleted.label_id)
             })
         }
         LabelCommand::Suggestions(args) => {
             let labels = client.list_project_labels(project).await?;
-            output(args.json, &labels, || {
-                for label in &labels {
-                    println!(
-                        "{}\t{}",
-                        format_label(&label.key, label.value.as_deref()),
-                        label.usage_count
-                    );
-                }
+            output(args.json, &labels, |output| {
+                render::write_project_label_suggestions(output, &labels)
             })
         }
     }
@@ -783,27 +742,20 @@ async fn run_comment(command: CommentCommand, context: ResolvedContext) -> Resul
                     },
                 )
                 .await?;
-            output(args.json, &comment, || {
-                println!(
+            output(args.json, &comment, |output| {
+                writeln!(
+                    output,
                     "Added comment #{} to item #{}",
                     comment.id, comment.work_item_id
-                );
+                )
             })
         }
         CommentCommand::List(args) => {
             let comments = client
                 .list_comments(project, context.item_id(args.item_id)?)
                 .await?;
-            output(args.json, &comments, || {
-                for comment in &comments {
-                    println!(
-                        "#{}\t{}\t{}\t{}",
-                        comment.id,
-                        comment.author_type,
-                        comment.author_name.as_deref().unwrap_or(""),
-                        comment.body
-                    );
-                }
+            output(args.json, &comments, |output| {
+                render::write_comments(output, &comments)
             })
         }
     }
@@ -815,26 +767,14 @@ async fn run_memory(command: MemoryCommand, context: ResolvedContext) -> Result<
     match command {
         MemoryCommand::Show(args) => {
             let memory = client.get_project_memory(project).await?;
-            output(args.json, &memory, || {
-                println!("{}", memory.memory);
+            output(args.json, &memory, |output| {
+                writeln!(output, "{}", memory.memory)
             })
         }
         MemoryCommand::History(args) => {
             let events = client.list_project_memory_events(project).await?;
-            output(args.json, &events, || {
-                for event in &events {
-                    println!(
-                        "#{}\t{}\t{}\t{}",
-                        event.id,
-                        event.operation,
-                        event.created_at,
-                        event
-                            .actor_id
-                            .as_deref()
-                            .or(event.actor_type.as_deref())
-                            .unwrap_or("")
-                    );
-                }
+            output(args.json, &events, |output| {
+                render::write_memory_events(output, &events)
             })
         }
         MemoryCommand::Set(args) => {
@@ -849,11 +789,12 @@ async fn run_memory(command: MemoryCommand, context: ResolvedContext) -> Result<
                     },
                 )
                 .await?;
-            output(args.json, &update, || {
-                println!(
+            output(args.json, &update, |output| {
+                writeln!(
+                    output,
                     "Updated memory for project {} with event #{}",
                     update.project.name, update.event.id
-                );
+                )
             })
         }
         MemoryCommand::Append(args) => {
@@ -868,11 +809,12 @@ async fn run_memory(command: MemoryCommand, context: ResolvedContext) -> Result<
                     },
                 )
                 .await?;
-            output(args.json, &update, || {
-                println!(
+            output(args.json, &update, |output| {
+                writeln!(
+                    output,
                     "Appended memory for project {} with event #{}",
                     update.project.name, update.event.id
-                );
+                )
             })
         }
     }
@@ -884,36 +826,14 @@ async fn run_automation(command: AutomationCommand, context: ResolvedContext) ->
     match command {
         AutomationCommand::Runs(args) => {
             let runs = client.list_runs(project, args.limit).await?;
-            output(args.json, &runs, || {
-                for run in &runs {
-                    println!(
-                        "#{}\t{}\t{}\t{}\t{}\t{}",
-                        run.id,
-                        run.status,
-                        run.tool_name,
-                        run.mutability,
-                        run_token_usage_text(run),
-                        run.result_summary
-                    );
-                }
+            output(args.json, &runs, |output| {
+                render::write_automation_runs(output, &runs)
             })
         }
         AutomationCommand::Log(args) => {
             let log = client.read_run_log(project, args.run_id).await?;
-            output(args.json, &log, || {
-                println!("run #{} {}", log.run.id, log.run.status);
-                println!("mutability: {}", log.run.mutability);
-                println!("summary: {}", log.run.result_summary);
-                println!("tokens: {}", run_token_usage_text(&log.run));
-                println!("commit: {}", run_commit_outcome_text(&log.run));
-                println!();
-                println!("output:");
-                print_output_pieces(&log.output);
-                if let Some(prompt) = &log.prompt {
-                    println!();
-                    println!("prompt:");
-                    println!("{prompt}");
-                }
+            output(args.json, &log, |output| {
+                render::write_run_log(output, &log)
             })
         }
     }
@@ -923,122 +843,21 @@ fn optional_override<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
     if clear { Some(None) } else { value.map(Some) }
 }
 
-fn item_state_label(item: &WorkItemView) -> &str {
-    item.state.as_deref().unwrap_or("(no state)")
-}
-
-fn format_label(key: &str, value: Option<&str>) -> String {
-    match value {
-        Some(value) => format!("{key}={value}"),
-        None => key.to_owned(),
-    }
-}
-
-fn run_commit_outcome_text(run: &AgentRunView) -> String {
-    let requirement = if run.commit_required {
-        "required"
-    } else {
-        "not required"
-    };
-    let base = match run.commit_outcome {
-        patchbay_types::AgentCommitOutcome::NotEvaluated => "not evaluated".to_owned(),
-        patchbay_types::AgentCommitOutcome::NotRequired => "not required by policy".to_owned(),
-        patchbay_types::AgentCommitOutcome::Committed => {
-            if run.commit_shas.is_empty() {
-                "committed".to_owned()
-            } else {
-                format!("committed {}", run.commit_shas.join(", "))
-            }
-        }
-        patchbay_types::AgentCommitOutcome::SkippedNoChanges => "skipped: no changes".to_owned(),
-        patchbay_types::AgentCommitOutcome::SkippedNoGitRepo => {
-            "skipped: no git repository".to_owned()
-        }
-        patchbay_types::AgentCommitOutcome::MissingRequired => "missing required commit".to_owned(),
-        patchbay_types::AgentCommitOutcome::Unknown => "unknown".to_owned(),
-    };
-    format!("{base} ({requirement})")
-}
-
-fn run_token_usage_text(run: &AgentRunView) -> String {
-    run.token_usage
-        .map(run_token_usage_label)
-        .unwrap_or_else(|| "not reported".to_owned())
-}
-
-fn run_token_usage_label(usage: AgentRunTokenUsageView) -> String {
-    format!(
-        "{} total ({} input, {} cached input, {} output)",
-        format_number(usage.total_tokens),
-        format_number(usage.input_tokens),
-        format_number(usage.cached_input_tokens),
-        format_number(usage.output_tokens)
-    )
-}
-
-fn format_number(value: i64) -> String {
-    let absolute = if value < 0 {
-        -(value as i128)
-    } else {
-        value as i128
-    };
-    let mut chars = absolute.to_string().chars().rev().collect::<Vec<_>>();
-    let mut formatted = String::new();
-    for (index, ch) in chars.drain(..).enumerate() {
-        if index > 0 && index % 3 == 0 {
-            formatted.push(',');
-        }
-        formatted.push(ch);
-    }
-    let mut formatted = formatted.chars().rev().collect::<String>();
-    if value < 0 {
-        formatted.insert(0, '-');
-    }
-    formatted
-}
-
-fn print_output_pieces(output: &[AgentRunOutputPiece]) {
-    if output.is_empty() {
-        println!("(empty)");
-        return;
-    }
-    for piece in output {
-        println!("[#{} {}] {}", piece.sequence, piece.kind, piece.title);
-        if !piece.body.trim().is_empty() {
-            println!("{}", piece.body);
-        }
-        if let Some(tool_output) = output_metadata_text(piece) {
-            println!("output:");
-            println!("{tool_output}");
-        }
-    }
-}
-
-fn output_metadata_text(piece: &AgentRunOutputPiece) -> Option<String> {
-    ["output", "result", "content_items", "error"]
-        .into_iter()
-        .find_map(|key| metadata_value_text(&piece.metadata, key))
-}
-
-fn metadata_value_text(metadata: &serde_json::Value, key: &str) -> Option<String> {
-    let value = metadata.get(key)?;
-    match value {
-        serde_json::Value::Null => None,
-        serde_json::Value::String(value) => Some(value.clone()),
-        serde_json::Value::Array(values) if values.is_empty() => None,
-        serde_json::Value::Object(values) if values.is_empty() => None,
-        value => serde_json::to_string_pretty(value).ok(),
-    }
-}
-
-fn output<T>(json: bool, value: &T, text: impl FnOnce()) -> Result<()>
+fn output<T>(
+    json: bool,
+    value: &T,
+    text: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> Result<()>
 where
     T: Serialize,
 {
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
     if json {
-        println!("{}", serde_json::to_string_pretty(value)?);
+        serde_json::to_writer_pretty(&mut output, value).context("failed to write JSON output")?;
+        writeln!(output).context("failed to write CLI output")?;
     } else {
-        text();
+        text(&mut output).context("failed to write CLI output")?;
     }
     Ok(())
 }
