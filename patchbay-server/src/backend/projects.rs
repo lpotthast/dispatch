@@ -60,7 +60,6 @@ pub struct UpdateProject {
 pub struct UpdateProjectSettings {
     pub workspace_mode: Option<WorkspaceMode>,
     pub max_code_edit_agents: Option<i64>,
-    pub allow_refinement_agents_during_editing: Option<bool>,
     pub create_pr: Option<bool>,
     pub auto_commit: Option<bool>,
     pub commit_standard: Option<String>,
@@ -142,7 +141,6 @@ impl From<ProjectModel> for ProjectView {
                 .parse::<WorkspaceMode>()
                 .expect("project workspace mode must be valid"),
             max_code_edit_agents: project.max_code_edit_agents,
-            allow_refinement_agents_during_editing: project.allow_refinement_agents_during_editing,
             create_pr: project.create_pr,
             auto_commit: project.auto_commit,
             commit_standard: project.commit_standard,
@@ -227,7 +225,6 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         memory: Set(memory),
         workspace_mode: Set(WorkspaceMode::CurrentBranch.as_storage().to_owned()),
         max_code_edit_agents: Set(1),
-        allow_refinement_agents_during_editing: Set(false),
         create_pr: Set(false),
         auto_commit: Set(true),
         commit_standard: Set(String::new()),
@@ -695,7 +692,6 @@ pub async fn update_settings(
 ) -> Result<ProjectSettingsView> {
     if update.workspace_mode.is_none()
         && update.max_code_edit_agents.is_none()
-        && update.allow_refinement_agents_during_editing.is_none()
         && update.create_pr.is_none()
         && update.auto_commit.is_none()
         && update.commit_standard.is_none()
@@ -780,11 +776,6 @@ pub async fn update_settings(
     let mut active: ProjectActiveModel = existing.into();
     active.workspace_mode = Set(workspace_mode.as_storage().to_owned());
     active.max_code_edit_agents = Set(max_code_edit_agents);
-    if let Some(allow_refinement_agents_during_editing) =
-        update.allow_refinement_agents_during_editing
-    {
-        active.allow_refinement_agents_during_editing = Set(allow_refinement_agents_during_editing);
-    }
     active.create_pr = Set(create_pr);
     active.auto_commit = Set(auto_commit);
     active.commit_standard = Set(commit_standard);
@@ -1097,7 +1088,6 @@ fn project_settings_to_view(project: ProjectModel) -> Result<ProjectSettingsView
         project_id: project.id,
         workspace_mode: WorkspaceMode::from_str(&project.workspace_mode)?,
         max_code_edit_agents: project.max_code_edit_agents,
-        allow_refinement_agents_during_editing: project.allow_refinement_agents_during_editing,
         create_pr: project.create_pr,
         auto_commit: project.auto_commit,
         commit_standard: project.commit_standard,

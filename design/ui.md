@@ -34,6 +34,7 @@ The main workflow surface should make these states easy to inspect:
 - Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, and `patchbay:automation-blocked`.
 
 Board and item-detail interactions call server actions or custom API endpoints so workflow rules remain centralized.
+Human-authored rich prose fields such as work item descriptions and automation prompts should use the Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists, memory history, and commit policy text stay plain text controls.
 
 ## Admin Surfaces
 
@@ -67,7 +68,6 @@ Project settings should expose:
 - system prompt and memory history snapshots, with manual history compaction;
 - workspace mode;
 - agent concurrency;
-- refinement policy;
 - pull request creation;
 - current-branch auto-commit behavior;
 - commit standard text for generated agent commit messages;
@@ -78,6 +78,7 @@ Project settings should expose:
 - default agent tool, model, and reasoning effort.
 
 Settings changes should go through server handlers and be reflected in automation launches without requiring agents to know settings internals.
+Selector/prompt-based automations do not expose a project-level refinement concurrency exception in settings. Any future read-only automation concurrency policy should be explicit and is tracked separately by #78.
 
 Codex configuration generated from project settings should not be exposed as raw TOML in the main UI. Operators configure supported policy fields, and Patchbay generates the per-project Codex config and rules.
 

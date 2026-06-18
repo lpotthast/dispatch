@@ -1037,6 +1037,90 @@ textarea {
   resize: vertical;
 }
 
+.rich-text-field {
+  display: grid;
+  gap: 0;
+
+  .leptonic-tiptap-editor,
+  leptonic-tiptap-editor {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+  }
+
+  .leptonic-tiptap-menu,
+  leptonic-tiptap-menu {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px;
+    border: 1px solid $border-strong;
+    border-bottom: 0;
+    border-radius: 6px 6px 0 0;
+    background: $subtle;
+  }
+
+  .leptonic-btn[variant="filled"].leptonic-tiptap-btn {
+    min-height: 30px;
+    padding: 4px 7px;
+    border-color: $border-strong;
+    border-radius: 5px;
+    background: $surface;
+    color: $ink;
+    font-size: 12px;
+    font-weight: 680;
+
+    &.active,
+    &:hover {
+      border-color: rgba($accent, 0.36);
+      background: $accent-soft;
+      color: $accent;
+    }
+  }
+
+  leptos-tiptap-instance {
+    display: block;
+    min-height: 150px;
+    padding: 8px 10px;
+    border: 1px solid $border-strong;
+    border-radius: 0 0 6px 6px;
+    background: $surface;
+    color: $ink;
+    overflow: auto;
+
+    &[aria-disabled] {
+      background: $surface-raised;
+      color: $muted;
+      cursor: not-allowed;
+    }
+  }
+
+  .ProseMirror {
+    min-height: 132px;
+    line-height: 1.45;
+
+    &:focus {
+      outline: none;
+    }
+
+    p {
+      margin: 0 0 8px;
+    }
+  }
+}
+
+.crud-rich-text-field leptos-tiptap-instance {
+  min-height: 140px;
+}
+
+.item-description-rich-text leptos-tiptap-instance {
+  min-height: 180px;
+}
+
+.new-item-description-rich-text leptos-tiptap-instance {
+  min-height: 150px;
+}
+
 button,
 .button-link {
   display: inline-flex;

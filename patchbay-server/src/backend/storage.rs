@@ -92,6 +92,8 @@ mod tests {
     use sea_orm::{ConnectionTrait, Statement};
     use tempfile::TempDir;
 
+    use crate::backend::migrations::REMOVED_REFINEMENT_CONCURRENCY_COLUMN;
+
     use super::*;
 
     #[tokio::test]
@@ -114,6 +116,52 @@ mod tests {
         let count: i64 = row.try_get("", "count").unwrap();
 
         assert_eq!(count as usize, Migrator::migrations().len());
+    }
+
+    #[tokio::test]
+    async fn refinement_concurrency_column_is_removed_from_projects() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("patchbay.sqlite3");
+        let url = sqlite_url(&path);
+        let db = Database::connect(&url).await.unwrap();
+        db.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            "PRAGMA foreign_keys = ON".to_owned(),
+        ))
+        .await
+        .unwrap();
+
+        let migration_count_before_cleanup = Migrator::migrations().len() as u32 - 1;
+        Migrator::up(&db, Some(migration_count_before_cleanup))
+            .await
+            .unwrap();
+        db.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            format!(
+                r#"ALTER TABLE "projects" ADD COLUMN "{REMOVED_REFINEMENT_CONCURRENCY_COLUMN}" BOOLEAN NOT NULL DEFAULT 0;"#
+            ),
+        ))
+        .await
+        .unwrap();
+
+        Migrator::up(&db, None).await.unwrap();
+        let row = db
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                r#"
+                SELECT COUNT(*) AS count
+                FROM pragma_table_info('projects')
+                WHERE name = ?1;
+                "#
+                .to_owned(),
+                vec![REMOVED_REFINEMENT_CONCURRENCY_COLUMN.into()],
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let count: i64 = row.try_get("", "count").unwrap();
+
+        assert_eq!(count, 0);
     }
 
     #[test]
@@ -156,6 +204,7 @@ mod tests {
             "m20260617_000029_add_automation_run_token_usage",
             "m20260618_000030_add_refiner_verifier_automations",
             "m20260618_000031_remove_automation_modes",
+            "m20260618_000032_remove_refinement_concurrency_setting",
         ];
 
         assert_eq!(names.as_slice(), expected.as_slice());

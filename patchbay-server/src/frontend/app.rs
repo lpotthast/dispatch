@@ -64,9 +64,11 @@ use crudkit_leptos::{
 use indexmap::indexmap;
 use leptonic::components::prelude::{
     LeptonicTheme, Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle, Root, Select,
+    TiptapEditor,
 };
 #[cfg(not(feature = "ssr"))]
 use leptonic::components::prelude::{Toast, ToastTimeout, ToastVariant, Toasts};
+use leptonic::prelude::TiptapContent;
 use leptos::prelude::LeptosOptions;
 use leptos::prelude::*;
 #[cfg(feature = "ssr")]
@@ -1819,6 +1821,7 @@ fn item_content(page: ItemPage) -> AnyView {
     );
     let update_title = item.title.clone();
     let update_description = item.description.clone();
+    let (description_draft, set_description_draft) = signal(update_description);
     let header_title = item.title.clone();
     let item_state_display = state_label(&item).to_owned();
     let model_override_options =
@@ -1875,7 +1878,12 @@ fn item_content(page: ItemPage) -> AnyView {
                         </label>
                         <label>
                             <span>"Description"</span>
-                            <textarea class="item-description-text" name="description" required>{update_description}</textarea>
+                            {rich_text_form_field(
+                                "description",
+                                "item-description-rich-text",
+                                description_draft,
+                                set_description_draft,
+                            )}
                         </label>
                         <label>
                             <span>"Agent model override"</span>
@@ -2495,13 +2503,6 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
                     },
                 ),
                 Elem::field(
-                    ProjectField::AllowRefinementAgentsDuringEditing,
-                    FieldOptions {
-                        label: Some(Label::new("Allow refinement while editing")),
-                        ..Default::default()
-                    },
-                ),
-                Elem::field(
                     ProjectField::CreatePr,
                     FieldOptions {
                         label: Some(Label::new("Create PR")),
@@ -2859,6 +2860,10 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
             .build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(
+                CreateWorkItemField::Description,
+                rich_text_field_renderer::<DynCreateField>("Description"),
+            )
+            .register(
                 CreateWorkItemField::AgentModelOverride,
                 agent_model_field_renderer::<DynCreateField>(Some("Project default")),
             )
@@ -2868,6 +2873,10 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
             )
             .build(),
         update_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                WorkItemField::Description,
+                rich_text_field_renderer::<DynUpdateField>("Description"),
+            )
             .register(
                 WorkItemField::AgentModelOverride,
                 agent_model_field_renderer::<DynUpdateField>(Some("Project default")),
@@ -3716,11 +3725,19 @@ fn automation_triggers_crudkit_config(
                 CreateAutomationTriggerField::Activation,
                 activation_field_renderer::<DynCreateField>(kind.activation_choices()),
             )
+            .register(
+                CreateAutomationTriggerField::Prompt,
+                rich_text_field_renderer::<DynCreateField>("Prompt"),
+            )
             .build(),
         update_field_renderer: FieldRendererRegistry::builder()
             .register(
                 AutomationTriggerField::Activation,
                 activation_field_renderer::<DynUpdateField>(kind.activation_choices()),
+            )
+            .register(
+                AutomationTriggerField::Prompt,
+                rich_text_field_renderer::<DynUpdateField>("Prompt"),
             )
             .build(),
     }
@@ -3813,6 +3830,39 @@ fn multiline_text_field_renderer<F: TypeErasedField>(
                                 value_changed.run(Ok(Value::String(event_target_value(&event))));
                             }
                         />
+                    }
+                    .into_any()
+                }
+            }
+        },
+    )
+}
+
+fn rich_text_field_renderer<F: TypeErasedField>(label: &'static str) -> FieldRenderer<F> {
+    FieldRenderer::new(
+        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+            let current =
+                Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
+
+            match field_mode {
+                FieldMode::Display => {
+                    view! { {move || rich_text_plain_text(&current.get())} }.into_any()
+                }
+                FieldMode::Readable | FieldMode::Editable => {
+                    let disabled = field_mode != FieldMode::Editable || field_options.disabled;
+                    let editor_value =
+                        Signal::derive(move || rich_text_editor_html(&current.get()));
+                    view! {
+                        {render_label(field_options.label.clone().or_else(|| Some(Label::new(label))))}
+                        <div class="rich-text-field crud-rich-text-field">
+                            <TiptapEditor
+                                value=editor_value
+                                disabled=Signal::derive(move || disabled)
+                                set_value=move |content| {
+                                    value_changed.run(Ok(Value::String(tiptap_content_to_string(content))));
+                                }
+                            />
+                        </div>
                     }
                     .into_any()
                 }
@@ -5550,6 +5600,7 @@ fn create_item_modal(
     set_selected_state: WriteSignal<String>,
 ) -> impl IntoView + 'static {
     let action = StoredValue::new(format!("/projects/{}/items", encode_path(project)));
+    let (description_draft, set_description_draft) = signal(String::new());
     view! {
         <Modal
             id="new-item-modal"
@@ -5576,7 +5627,12 @@ fn create_item_modal(
                     </label>
                     <label>
                         <span>"Description"</span>
-                        <textarea name="description" placeholder="Description" required></textarea>
+                        {rich_text_form_field(
+                            "description",
+                            "new-item-description-rich-text",
+                            description_draft,
+                            set_description_draft,
+                        )}
                     </label>
                     <label>
                         <span>"State"</span>
@@ -5621,6 +5677,34 @@ fn create_item_modal(
                 </ModalFooter>
             </form>
         </Modal>
+    }
+}
+
+fn rich_text_form_field(
+    name: &'static str,
+    class_name: &'static str,
+    value: ReadSignal<String>,
+    set_value: WriteSignal<String>,
+) -> impl IntoView + 'static {
+    let editor_value = Signal::derive(move || rich_text_editor_html(&value.get()));
+    let field_class = format!("rich-text-field {class_name}");
+    let input_class = format!("rich-text-input {class_name}-input");
+
+    view! {
+        <div class=field_class data-rich-text-field=name>
+            <input
+                type="hidden"
+                class=input_class
+                name=name
+                value=move || value.get()
+            />
+            <TiptapEditor
+                value=editor_value
+                set_value=move |content| {
+                    set_value.set(tiptap_content_to_string(content));
+                }
+            />
+        </div>
     }
 }
 
@@ -6322,16 +6406,146 @@ fn format_label(key: &str, value: Option<&str>) -> String {
 
 fn preview(value: &str) -> String {
     const MAX_PREVIEW_CHARS: usize = 140;
+    let value = rich_text_plain_text(value);
     if value.chars().count() <= MAX_PREVIEW_CHARS {
-        return value.to_owned();
+        return value;
     }
 
     value.chars().take(MAX_PREVIEW_CHARS).collect::<String>() + "..."
 }
 
+fn rich_text_editor_html(value: &str) -> String {
+    if looks_like_rich_text_html(value) {
+        value.to_owned()
+    } else {
+        plain_text_to_editor_html(value)
+    }
+}
+
+fn looks_like_rich_text_html(value: &str) -> bool {
+    let value = value.trim_start().to_ascii_lowercase();
+    [
+        "<blockquote",
+        "<br",
+        "<div",
+        "<h1",
+        "<h2",
+        "<h3",
+        "<h4",
+        "<h5",
+        "<h6",
+        "<ol",
+        "<p",
+        "<pre",
+        "<ul",
+    ]
+    .iter()
+    .any(|prefix| value.starts_with(prefix))
+}
+
+fn plain_text_to_editor_html(value: &str) -> String {
+    let value = value.replace("\r\n", "\n").replace('\r', "\n");
+    if value.is_empty() {
+        return String::new();
+    }
+
+    value
+        .split("\n\n")
+        .map(|paragraph| {
+            let lines = paragraph
+                .lines()
+                .map(escape_html_text)
+                .collect::<Vec<_>>()
+                .join("<br>");
+            if lines.is_empty() {
+                "<p><br></p>".to_owned()
+            } else {
+                format!("<p>{lines}</p>")
+            }
+        })
+        .collect::<String>()
+}
+
+fn escape_html_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn rich_text_plain_text(value: &str) -> String {
+    if !looks_like_rich_text_html(value) {
+        return value.to_owned();
+    }
+
+    let mut text = String::with_capacity(value.len());
+    let mut tag = String::new();
+    let mut inside_tag = false;
+    for character in value.chars() {
+        if inside_tag {
+            if character == '>' {
+                append_text_boundary_for_html_tag(&tag, &mut text);
+                tag.clear();
+                inside_tag = false;
+            } else {
+                tag.push(character);
+            }
+        } else if character == '<' {
+            inside_tag = true;
+        } else {
+            text.push(character);
+        }
+    }
+
+    decode_basic_html_entities(text.trim())
+}
+
+fn append_text_boundary_for_html_tag(tag: &str, text: &mut String) {
+    let tag = tag.trim().trim_start_matches('/');
+    let Some(name) = tag.split_whitespace().next() else {
+        return;
+    };
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "blockquote" | "br" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "p" | "pre"
+    ) && !text.ends_with('\n')
+        && !text.is_empty()
+    {
+        text.push('\n');
+    }
+}
+
+fn decode_basic_html_entities(value: &str) -> String {
+    value
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
+fn tiptap_content_to_string(content: TiptapContent) -> String {
+    match content {
+        TiptapContent::Html(content) => content,
+        TiptapContent::Json(content) => content.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_patchbay_run_id};
+    use super::{
+        claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_patchbay_run_id, preview,
+        rich_text_editor_html,
+    };
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
     #[test]
@@ -6367,5 +6581,21 @@ mod tests {
             Some(0)
         );
         assert_eq!(claim_elapsed_seconds_at("not a timestamp", now), None);
+    }
+
+    #[test]
+    fn rich_text_editor_html_preserves_plain_text_line_breaks() {
+        assert_eq!(
+            rich_text_editor_html("First line\nSecond line\n\nThird"),
+            "<p>First line<br>Second line</p><p>Third</p>"
+        );
+    }
+
+    #[test]
+    fn preview_omits_rich_text_markup() {
+        assert_eq!(
+            preview("<p>First <strong>item</strong></p><p>Second</p>"),
+            "First item\nSecond"
+        );
     }
 }

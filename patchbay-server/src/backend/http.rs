@@ -566,7 +566,6 @@ async fn compact_memory_events(
 struct UpdateSettingsForm {
     workspace_mode: String,
     max_code_edit_agents: i64,
-    allow_refinement_agents_during_editing: Option<String>,
     create_pr: Option<String>,
     auto_commit: Option<String>,
     commit_standard: Option<String>,
@@ -633,9 +632,6 @@ async fn update_settings(
         UpdateProjectSettings {
             workspace_mode: Some(workspace_mode),
             max_code_edit_agents: Some(form.max_code_edit_agents),
-            allow_refinement_agents_during_editing: Some(
-                form.allow_refinement_agents_during_editing.is_some(),
-            ),
             create_pr: Some(form.create_pr.is_some()),
             auto_commit: parse_optional_checkbox(form.auto_commit),
             commit_standard: form.commit_standard,

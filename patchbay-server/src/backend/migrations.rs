@@ -1,6 +1,9 @@
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::Statement;
 
+pub(crate) const REMOVED_REFINEMENT_CONCURRENCY_COLUMN: &str =
+    "allow_refinement_agents_during_editing";
+
 #[derive(Iden)]
 enum CrudkitValidation {
     #[iden = "CrudkitValidation"]
@@ -28,7 +31,6 @@ enum Projects {
     Memory,
     WorkspaceMode,
     MaxCodeEditAgents,
-    AllowRefinementAgentsDuringEditing,
     CreatePr,
     AutoCommit,
     CommitStandard,
@@ -278,6 +280,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddAutomationRunTokenUsage),
             Box::new(AddRefinerVerifierAutomations),
             Box::new(RemoveAutomationModes),
+            Box::new(RemoveRefinementConcurrencySetting),
         ]
     }
 }
@@ -436,12 +439,6 @@ async fn create_projects(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                         .big_integer()
                         .not_null()
                         .default(1),
-                )
-                .col(
-                    ColumnDef::new(Projects::AllowRefinementAgentsDuringEditing)
-                        .boolean()
-                        .not_null()
-                        .default(false),
                 )
                 .col(
                     ColumnDef::new(Projects::CreatePr)
@@ -1251,11 +1248,6 @@ impl MigrationTrait for MoveRunSettingsIntoProjects {
                             FROM "project_settings"
                             WHERE "project_settings"."project_id" = "projects"."id"
                         ), "max_code_edit_agents"),
-                        "allow_refinement_agents_during_editing" = COALESCE((
-                            SELECT "allow_refinement_agents_during_editing"
-                            FROM "project_settings"
-                            WHERE "project_settings"."project_id" = "projects"."id"
-                        ), "allow_refinement_agents_during_editing"),
                         "create_pr" = COALESCE((
                             SELECT "create_pr"
                             FROM "project_settings"
@@ -2363,6 +2355,35 @@ impl MigrationTrait for RemoveAutomationModes {
     }
 }
 
+struct RemoveRefinementConcurrencySetting;
+
+impl MigrationName for RemoveRefinementConcurrencySetting {
+    fn name(&self) -> &str {
+        "m20260618_000032_remove_refinement_concurrency_setting"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for RemoveRefinementConcurrencySetting {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        drop_column_if_present(manager, "projects", REMOVED_REFINEMENT_CONCURRENCY_COLUMN).await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        add_column_if_missing(
+            manager,
+            "projects",
+            REMOVED_REFINEMENT_CONCURRENCY_COLUMN,
+            "BOOLEAN NOT NULL DEFAULT 0",
+        )
+        .await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+}
+
 async fn update_default_open_work_selector(
     manager: &SchemaManager<'_>,
     target_selector: &str,
@@ -3038,13 +3059,6 @@ async fn add_project_run_settings_columns(manager: &SchemaManager<'_>) -> Result
         "projects",
         "max_code_edit_agents",
         "BIGINT NOT NULL DEFAULT 1",
-    )
-    .await?;
-    add_column_if_missing(
-        manager,
-        "projects",
-        "allow_refinement_agents_during_editing",
-        "BOOLEAN NOT NULL DEFAULT 0",
     )
     .await?;
     add_column_if_missing(

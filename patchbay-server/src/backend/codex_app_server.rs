@@ -1033,7 +1033,6 @@ mod tests {
             project_id: 7,
             workspace_mode: WorkspaceMode::GitWorktree,
             max_code_edit_agents: 1,
-            allow_refinement_agents_during_editing: false,
             create_pr: false,
             auto_commit: true,
             commit_standard: String::new(),

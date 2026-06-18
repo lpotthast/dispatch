@@ -226,6 +226,8 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_does_not_contain(driver, "/memory/append").await?;
         assert_source_does_not_contain(driver, "memory-history-entry").await?;
         assert_source_does_not_contain(driver, "memory-snapshot").await?;
+        assert_source_does_not_contain(driver, "Allow refinement while editing").await?;
+        assert_settings_response_omits_refinement_policy(driver).await?;
         find(driver, By::Css("#project-system-prompt-version")).await?;
         find(driver, By::Css("textarea.project-system-prompt-text")).await?;
         assert_system_prompt_history_selector_behaviour(driver).await?;
@@ -356,9 +358,9 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
             "Browser item",
         )
         .await?;
-        send_keys(
+        set_input_value(
             driver,
-            By::Css("#new-item-modal textarea[name='description']"),
+            "#new-item-modal input[name='description']",
             "Created through browser-test\nSecond line",
         )
         .await?;
@@ -1135,6 +1137,35 @@ async fn assert_auto_commit_toggle_updates_without_navigation(
     Ok(())
 }
 
+async fn assert_settings_response_omits_refinement_policy(
+    driver: &WebDriver,
+) -> Result<(), Report> {
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            fetch('/api/projects/demo/settings')
+                .then(async (response) => {
+                    if (!response.ok) {
+                        done(`status ${response.status}`);
+                        return;
+                    }
+                    const settings = await response.json();
+                    const legacyKey = ['allow', 'refinement', 'agents', 'during', 'editing'].join('_');
+                    done(Object.hasOwn(settings, legacyKey) ? 'present' : 'absent');
+                })
+                .catch((error) => done(String(error)));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect project settings API response")?
+        .convert::<String>()
+        .context("failed to read project settings API field check")?;
+    assert_that!(result).is_equal_to("absent".to_owned());
+    Ok(())
+}
+
 async fn create_trigger(driver: &WebDriver) -> Result<(), Report> {
     let created = driver
         .execute_async(
@@ -1267,13 +1298,20 @@ async fn assert_item_detail_description_is_not_duplicated(
             r#"
             const expected = 'Created through browser-test\nSecond line';
             const headerText = document.querySelector('.item-header')?.textContent ?? '';
-            const textarea = document.querySelector(
-                'section.item-settings textarea[name="description"]'
+            const input = document.querySelector(
+                'section.item-settings input[name="description"]'
             );
+            const editor = document.querySelector(
+                'section.item-settings .item-description-rich-text leptonic-tiptap-editor'
+            );
+            const descriptionValue = input?.value ?? '';
             return [
                 headerText.includes(expected),
-                textarea?.value === expected,
-                textarea?.classList.contains('item-description-text') ?? false
+                descriptionValue === expected || (
+                    descriptionValue.includes('Created through browser-test') &&
+                    descriptionValue.includes('Second line')
+                ),
+                Boolean(editor)
             ].join('|');
             "#,
             Vec::new(),
@@ -1407,6 +1445,26 @@ async fn submit_label_add_form(driver: &WebDriver) -> Result<(), Report> {
         )
         .await
         .context("failed to submit label add form")?;
+    Ok(())
+}
+
+async fn set_input_value(driver: &WebDriver, selector: &str, value: &str) -> Result<(), Report> {
+    let script = format!(
+        r#"
+        const input = document.querySelector({selector:?});
+        if (!input) {{
+            throw new Error('missing input ' + {selector:?});
+        }}
+        input.value = {value:?};
+        input.setAttribute('value', {value:?});
+        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        "#
+    );
+    driver
+        .execute(script, Vec::new())
+        .await
+        .context("failed to set browser-test input value")?;
     Ok(())
 }
 

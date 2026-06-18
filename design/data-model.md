@@ -126,7 +126,6 @@ Project settings control automation behavior:
 
 - workspace mode: current branch, Git branch, or Git worktree;
 - maximum concurrent code-edit agents;
-- whether refinement agents can run while editing agents are active;
 - pull request creation;
 - auto-commit behavior for current-branch automation;
 - commit standard text used in generated agent commit instructions;
@@ -138,3 +137,4 @@ Project settings control automation behavior:
 - agent sandbox mode and extra writable roots.
 
 Settings are applied by server services at launch and workflow boundaries, not by the agent-facing CLI.
+Selector/prompt-based automations do not have a separate project-level refinement concurrency exception. A first-class distinction between mutating and read-only automation runs is separate future work tracked by #78.
