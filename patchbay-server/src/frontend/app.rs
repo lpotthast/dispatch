@@ -37,7 +37,7 @@ use crate::{
         AgentRunTokenUsageView, AgentRunView, AuthorType, AutomationStatusView,
         CLAIMED_FROM_STATE_LABEL_KEY, CodexAgentModel, CodexAppServerStatusView,
         CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView, CommentView,
-        FEEDBACK_REQUESTED_LABEL_KEY, ProjectGitStatusView, ProjectLabelView,
+        DEFAULT_STATE_LABEL, FEEDBACK_REQUESTED_LABEL_KEY, ProjectGitStatusView, ProjectLabelView,
         ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
         ProjectSystemPromptEventView, ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY,
         SwimLaneView, UiEvent, WorkItemClaimSourceView, WorkItemLabelView, WorkItemStateView,
@@ -55,7 +55,9 @@ use crudkit_leptos::crudkit_core::{
 };
 use crudkit_leptos::fields::{FieldRenderer, render_label};
 use crudkit_leptos::{
-    crud_instance_config::{FieldRendererRegistry, Header, ItemsPerPage, ModelHandler, PageNr},
+    crud_instance_config::{
+        CrudNavigationConfig, FieldRendererRegistry, Header, ItemsPerPage, ModelHandler, PageNr,
+    },
     crudkit_web::{
         HeaderOptions, Label, reqwest_executor::NewClientPerRequestExecutor,
         view::SerializableCrudView,
@@ -190,6 +192,7 @@ pub struct ItemPage {
     pub label_suggestions: Vec<ProjectLabelView>,
     pub work_item_states: Vec<WorkItemStateView>,
     pub automation_runs: Vec<AgentRunView>,
+    pub api_base_url: String,
     pub codex_status: CodexAppServerStatusView,
 }
 
@@ -530,7 +533,10 @@ pub fn PageItem() -> impl IntoView {
         .and_then(|value| value.parse::<i64>().ok());
     let project_for_loader = project.clone();
     let project_for_events = project;
-    let page = LocalResource::new(move || load_item_page(project_for_loader.clone(), item_id));
+    let api_base_url = api_base_url();
+    let page = LocalResource::new(move || {
+        load_item_page(project_for_loader.clone(), item_id, api_base_url.clone())
+    });
     refetch_on_live_event(page, move |event| {
         item_event_matches(event, project_for_events.clone(), item_id)
     });
@@ -545,6 +551,7 @@ pub fn PageItem() -> impl IntoView {
 async fn load_item_page(
     project: Option<String>,
     item_id: Option<i64>,
+    api_base_url: String,
 ) -> Result<ItemPage, ServerFnError> {
     let state = app_state::app_state();
     let codex_status = state.codex_status.read().await.clone();
@@ -554,6 +561,7 @@ async fn load_item_page(
             &state.automation_controller,
             &project,
             item_id,
+            api_base_url,
             codex_status,
         )
         .await
@@ -722,8 +730,6 @@ fn runs_page_event_matches(event: &UiEvent) -> bool {
         event,
         UiEvent::ProjectListChanged { .. }
             | UiEvent::ProjectChanged { .. }
-            | UiEvent::AutomationChanged { .. }
-            | UiEvent::AgentRunChanged { .. }
             | UiEvent::CodexStatusChanged { .. }
     )
 }
@@ -1048,16 +1054,16 @@ fn board_content(page: BoardPage) -> AnyView {
                 set_create_item_states=set_create_item_states
             />
         };
+        let admin_project_id = project_view.id;
         let create_item = create_item_modal(
-            &project,
+            api_base_url.clone(),
+            admin_project_id,
             show_create_item_modal,
             set_show_create_item_modal,
             create_item_state_options,
             create_item_state,
-            set_create_item_state,
         );
         let work_items_api_base_url = api_base_url.clone();
-        let admin_project_id = project_view.id;
         let project_settings = project_settings_view(
             &project,
             project_view,
@@ -1793,6 +1799,7 @@ fn item_content(page: ItemPage) -> AnyView {
         label_suggestions,
         work_item_states,
         automation_runs,
+        api_base_url,
         codex_status,
     } = page;
     let topbar = top_bar(
@@ -1810,25 +1817,42 @@ fn item_content(page: ItemPage) -> AnyView {
         item.id
     );
     let automation_action = format!("/projects/{}/automation/start", encode_path(&project));
-    let update_action = format!(
-        "/projects/{}/items/{}/update",
-        encode_path(&project),
-        item.id
-    );
     let comment_action = format!(
         "/projects/{}/items/{}/comments",
         encode_path(&project),
         item.id
     );
-    let update_title = item.title.clone();
-    let update_description = item.description.clone();
-    let (description_draft, set_description_draft) = signal(update_description);
     let header_title = item.title.clone();
     let item_state_display = state_label(&item).to_owned();
-    let model_override_options =
-        agent_model_options(item.agent_model_override.clone(), "Project default");
-    let reasoning_override_options =
-        agent_reasoning_options(item.agent_reasoning_effort_override, "Project default");
+    let item_project_id = item.project_id;
+    let item_id = item.id;
+    let (item_editor_context, set_item_editor_context) = signal(None::<CrudInstanceContext>);
+    let navigate = use_navigate();
+    let board_href_for_exit = board_href.clone();
+    let exit_to_board = Callback::new(move |()| {
+        navigate(&board_href_for_exit, NavigateOptions::default());
+    });
+    let exit_to_board_for_link = exit_to_board;
+    let editor_default_create_state = Signal::derive(|| DEFAULT_STATE_LABEL.to_owned());
+    let item_editor = view! {
+        <div class="crudkit-item-detail" data-crudkit-leptos="work-item-detail">
+            <CrudInstance
+                name="work-item-detail"
+                config=work_items_crudkit_config_for_view(
+                    api_base_url,
+                    item_project_id,
+                    SerializableCrudView::Edit(crudkit_i64_id(item_id)),
+                    CrudNavigationConfig::embedded_single_entity(),
+                    editor_default_create_state,
+                    None,
+                )
+                on_exit=exit_to_board
+                on_context_created=Callback::new(move |context| {
+                    set_item_editor_context.set(Some(context));
+                })
+            />
+        </div>
+    };
     let claim = item
         .claimed_by
         .clone()
@@ -1860,7 +1884,19 @@ fn item_content(page: ItemPage) -> AnyView {
             {topbar}
             <main class="page-shell item-page">
                 <section class="item-header">
-                    <a href=board_href>"Board"</a>
+                    <button
+                        type="button"
+                        class="link-button item-board-link"
+                        on:click=move |_| {
+                            if let Some(context) = item_editor_context.get_untracked() {
+                                context.request_leave();
+                            } else {
+                                exit_to_board_for_link.run(());
+                            }
+                        }
+                    >
+                        "Board"
+                    </button>
                     <h1>{header_title}</h1>
                 </section>
                 <section class="item-meta">
@@ -1871,35 +1907,7 @@ fn item_content(page: ItemPage) -> AnyView {
                 </section>
                 <section class="item-settings panel">
                     <h2>"Item details"</h2>
-                    <form method="post" action=update_action>
-                        <input type="hidden" name="version" value=item.version.to_string()/>
-                        <label>
-                            <span>"Title"</span>
-                            <input name="title" value=update_title required/>
-                        </label>
-                        <label>
-                            <span>"Description"</span>
-                            {rich_text_form_field(
-                                "description",
-                                "item-description-rich-text",
-                                description_draft,
-                                set_description_draft,
-                            )}
-                        </label>
-                        <label>
-                            <span>"Agent model override"</span>
-                            <select name="agent_model_override">
-                                {model_override_options}
-                            </select>
-                        </label>
-                        <label>
-                            <span>"Reasoning override"</span>
-                            <select name="agent_reasoning_effort_override">
-                                {reasoning_override_options}
-                            </select>
-                        </label>
-                        <button>"Save item"</button>
-                    </form>
+                    {item_editor}
                 </section>
                 <section class="actions">
                     <form method="post" action=delete_action>
@@ -2255,12 +2263,12 @@ fn run_log_content(page: RunLogPage) -> AnyView {
                     </dl>
                 </section>
                 <section>
-                    <h2>"Output"</h2>
-                    {output}
-                </section>
-                <section>
                     <h2>"Prompt"</h2>
                     <pre>{prompt}</pre>
+                </section>
+                <section>
+                    <h2>"Output"</h2>
+                    {output}
                 </section>
             </main>
         </div>
@@ -2623,6 +2631,7 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
         model_handler: ModelHandler::new::<CreateProject, ReadProject, CrudProject>(),
         actions: vec![],
         entity_actions: vec![],
+        navigation: CrudNavigationConfig::default(),
         read_field_renderer: FieldRendererRegistry::builder()
             .register(
                 ReadProjectField::PathExists,
@@ -2748,9 +2757,54 @@ fn work_items_crudkit_instance(
 }
 
 fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
+    let default_create_state = Signal::derive(|| DEFAULT_STATE_LABEL.to_owned());
+    work_items_crudkit_config_for_view(
+        api_base_url,
+        project_id,
+        SerializableCrudView::List,
+        CrudNavigationConfig::default(),
+        default_create_state,
+        None,
+    )
+}
+
+fn work_items_crudkit_config_for_view(
+    api_base_url: String,
+    project_id: i64,
+    view: SerializableCrudView,
+    navigation: CrudNavigationConfig,
+    default_create_state: Signal<String>,
+    create_state_options: Option<Signal<Vec<CreateItemStateOption>>>,
+) -> CrudInstanceConfig {
+    let create_elements = work_item_create_elements(create_state_options.is_some());
+    let create_field_renderer = {
+        let builder = FieldRendererRegistry::builder()
+            .register(
+                CreateWorkItemField::Description,
+                rich_text_field_renderer::<DynCreateField>("Description"),
+            )
+            .register(
+                CreateWorkItemField::AgentModelOverride,
+                agent_model_field_renderer::<DynCreateField>(Some("Project default")),
+            )
+            .register(
+                CreateWorkItemField::AgentReasoningEffortOverride,
+                agent_reasoning_field_renderer::<DynCreateField>(Some("Project default")),
+            );
+        let builder = if let Some(options) = create_state_options {
+            builder.register(
+                CreateWorkItemField::State,
+                create_item_state_field_renderer::<DynCreateField>(options),
+            )
+        } else {
+            builder
+        };
+        builder.build()
+    };
+
     CrudInstanceConfig {
         api_base_url,
-        view: SerializableCrudView::List,
+        view,
         list_columns: vec![
             Header::showing(
                 ReadWorkItemField::Id,
@@ -2798,39 +2852,7 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
                 },
             ),
         ],
-        create_elements: CreateElements::Custom(vec![Elem::Enclosing(Enclosing::None(Group {
-            layout: Layout::default(),
-            children: vec![
-                Elem::create_field(
-                    CreateWorkItemField::Title,
-                    FieldOptions {
-                        label: Some(Label::new("Title")),
-                        ..Default::default()
-                    },
-                ),
-                Elem::create_field(
-                    CreateWorkItemField::Description,
-                    FieldOptions {
-                        label: Some(Label::new("Description")),
-                        ..Default::default()
-                    },
-                ),
-                Elem::create_field(
-                    CreateWorkItemField::AgentModelOverride,
-                    FieldOptions {
-                        label: Some(Label::new("Agent model override")),
-                        ..Default::default()
-                    },
-                ),
-                Elem::create_field(
-                    CreateWorkItemField::AgentReasoningEffortOverride,
-                    FieldOptions {
-                        label: Some(Label::new("Reasoning override")),
-                        ..Default::default()
-                    },
-                ),
-            ],
-        }))]),
+        create_elements,
         elements: vec![Elem::Enclosing(Enclosing::None(Group {
             layout: Layout::default(),
             children: vec![
@@ -2880,29 +2902,17 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
         base_condition: Some(project_id_condition(project_id)),
         resource_name: CrudWorkItemResource::resource_name().to_owned(),
         reqwest_executor: Arc::new(NewClientPerRequestExecutor),
-        model_handler: work_item_model_handler(project_id),
+        model_handler: work_item_model_handler(project_id, default_create_state),
         actions: vec![],
         entity_actions: vec![],
+        navigation,
         read_field_renderer: FieldRendererRegistry::builder()
             .register(
                 ReadWorkItemField::AgentModelOverride,
                 agent_model_field_renderer::<DynReadField>(Some("Project default")),
             )
             .build(),
-        create_field_renderer: FieldRendererRegistry::builder()
-            .register(
-                CreateWorkItemField::Description,
-                rich_text_field_renderer::<DynCreateField>("Description"),
-            )
-            .register(
-                CreateWorkItemField::AgentModelOverride,
-                agent_model_field_renderer::<DynCreateField>(Some("Project default")),
-            )
-            .register(
-                CreateWorkItemField::AgentReasoningEffortOverride,
-                agent_reasoning_field_renderer::<DynCreateField>(Some("Project default")),
-            )
-            .build(),
+        create_field_renderer,
         update_field_renderer: FieldRendererRegistry::builder()
             .register(
                 WorkItemField::Description,
@@ -2920,11 +2930,67 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
     }
 }
 
-fn work_item_model_handler(project_id: i64) -> ModelHandler {
+fn work_item_create_elements(include_state: bool) -> CreateElements {
+    let mut children = vec![
+        Elem::create_field(
+            CreateWorkItemField::Title,
+            FieldOptions {
+                label: Some(Label::new("Title")),
+                ..Default::default()
+            },
+        ),
+        Elem::create_field(
+            CreateWorkItemField::Description,
+            FieldOptions {
+                label: Some(Label::new("Description")),
+                ..Default::default()
+            },
+        ),
+    ];
+    if include_state {
+        children.push(Elem::create_field(
+            CreateWorkItemField::State,
+            FieldOptions {
+                label: Some(Label::new("State")),
+                ..Default::default()
+            },
+        ));
+    }
+    children.extend([
+        Elem::create_field(
+            CreateWorkItemField::AgentModelOverride,
+            FieldOptions {
+                label: Some(Label::new("Agent model override")),
+                ..Default::default()
+            },
+        ),
+        Elem::create_field(
+            CreateWorkItemField::AgentReasoningEffortOverride,
+            FieldOptions {
+                label: Some(Label::new("Reasoning override")),
+                ..Default::default()
+            },
+        ),
+    ]);
+
+    CreateElements::Custom(vec![Elem::Enclosing(Enclosing::None(Group {
+        layout: Layout::default(),
+        children,
+    }))])
+}
+
+fn work_item_model_handler(project_id: i64, default_create_state: Signal<String>) -> ModelHandler {
     let mut handler = ModelHandler::new::<CrudCreateWorkItem, ReadWorkItem, CrudWorkItem>();
     handler.get_default_create_model = Callback::new(move |()| {
+        let state = default_create_state.get_untracked();
+        let state = if state.trim().is_empty() {
+            DEFAULT_STATE_LABEL.to_owned()
+        } else {
+            state
+        };
         DynCreateModel::from(CrudCreateWorkItem {
             project_id,
+            state,
             ..Default::default()
         })
     });
@@ -3069,6 +3135,7 @@ fn work_item_states_crudkit_config(api_base_url: String, project_id: i64) -> Cru
         model_handler: work_item_state_model_handler(project_id),
         actions: vec![],
         entity_actions: vec![],
+        navigation: CrudNavigationConfig::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder().build(),
         update_field_renderer: FieldRendererRegistry::builder().build(),
@@ -3293,6 +3360,7 @@ fn swim_lanes_crudkit_config(
         model_handler: swim_lane_model_handler(project_id),
         actions: vec![],
         entity_actions: vec![],
+        navigation: CrudNavigationConfig::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(
@@ -3456,6 +3524,7 @@ fn agent_tools_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
         model_handler: ModelHandler::new::<CreateAgentTool, ReadAgentTool, AgentTool>(),
         actions: vec![],
         entity_actions: vec![],
+        navigation: CrudNavigationConfig::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder().build(),
         update_field_renderer: FieldRendererRegistry::builder().build(),
@@ -3777,6 +3846,7 @@ fn automation_triggers_crudkit_config(
         model_handler: automation_trigger_model_handler(project_id, kind),
         actions: vec![],
         entity_actions: vec![],
+        navigation: CrudNavigationConfig::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(
@@ -3912,7 +3982,10 @@ fn multiline_text_field_renderer<F: TypeErasedField>(
 
 fn rich_text_field_renderer<F: TypeErasedField>(label: &'static str) -> FieldRenderer<F> {
     FieldRenderer::new(
-        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+        move |_signals, field: F, field_mode, field_options, value, value_changed| {
+            let field_name = field.name().into_owned();
+            let field_name_attr = field_name.clone();
+            let field_name_input = field_name.clone();
             let current =
                 Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
 
@@ -3922,16 +3995,44 @@ fn rich_text_field_renderer<F: TypeErasedField>(label: &'static str) -> FieldRen
                 }
                 FieldMode::Readable | FieldMode::Editable => {
                     let disabled = field_mode != FieldMode::Editable || field_options.disabled;
+                    let seen_editor_update = RwSignal::new(false);
                     let editor_value =
                         Signal::derive(move || rich_text_editor_html(&current.get()));
                     view! {
                         {render_label(field_options.label.clone().or_else(|| Some(Label::new(label))))}
-                        <div class="rich-text-field crud-rich-text-field">
+                        <div
+                            class="rich-text-field crud-rich-text-field"
+                            data-rich-text-field=field_name_attr
+                            on:click=|event| {
+                                // TipTap may render anchors/buttons; editor clicks should not activate page-level defaults.
+                                event.prevent_default();
+                            }
+                        >
+                            <input
+                                type="hidden"
+                                class="rich-text-input crud-input-field"
+                                name=field_name_input
+                                value=move || current.get()
+                                on:input=move |event| {
+                                    value_changed.run(Ok(Value::String(event_target_value(&event))));
+                                }
+                            />
                             <TiptapEditor
                                 value=editor_value
                                 disabled=Signal::derive(move || disabled)
                                 set_value=move |content| {
-                                    value_changed.run(Ok(Value::String(tiptap_content_to_string(content))));
+                                    let current_value = current.get_untracked();
+                                    let next_value = normalize_tiptap_storage_value(tiptap_content_to_string(content));
+                                    let first_editor_update = !seen_editor_update.get_untracked();
+                                    seen_editor_update.set(true);
+                                    if first_editor_update
+                                        && rich_text_plain_text(&next_value) == rich_text_plain_text(&current_value)
+                                    {
+                                        return;
+                                    }
+                                    if next_value != current_value {
+                                        value_changed.run(Ok(Value::String(next_value)));
+                                    }
                                 }
                             />
                         </div>
@@ -4311,7 +4412,6 @@ fn workspace_actions(
     let open_available = copy_available && path_exists.unwrap_or(true);
     let display_path = path.clone().unwrap_or_else(|| "not configured".to_owned());
     let copy_path = path.clone().unwrap_or_default();
-    let copy_cd = path.as_deref().map(shell_cd_command).unwrap_or_default();
     let (copy_message, set_copy_message) = signal(None::<String>);
     let status = path_exists.map(|exists| {
         view! {
@@ -4335,13 +4435,15 @@ fn workspace_actions(
                 let editor_return = return_to.clone();
                 let target = editor.target.clone();
                 let label = format!("Open {}", editor.label);
-                let icon_target = editor.target.clone();
+                let icon_src = workspace_editor_icon_src(&editor.target);
                 view! {
                     <form method="post" action=editor_action>
                         <input type="hidden" name="target" value=target/>
                         <input type="hidden" name="return_to" value=editor_return/>
                         <button type="submit" class="secondary workspace-button" disabled=!open_available>
-                            {workspace_editor_icon(&icon_target)}
+                            {icon_src.map(|src| view! {
+                                <img class="workspace-button-icon" src=src alt="" aria-hidden="true"/>
+                            })}
                             <span>{label}</span>
                         </button>
                     </form>
@@ -4362,7 +4464,6 @@ fn workspace_actions(
         }
     });
     let path_for_copy = copy_path.clone();
-    let cd_for_copy = copy_cd.clone();
 
     view! {
         <div class="workspace-actions">
@@ -4386,20 +4487,6 @@ fn workspace_actions(
                     }
                 >
                     "Copy path"
-                </button>
-                <button
-                    type="button"
-                    class="secondary workspace-button"
-                    disabled=!copy_available
-                    on:click=move |_| {
-                        copy_workspace_text(
-                            cd_for_copy.clone(),
-                            "Copied cd",
-                            set_copy_message,
-                        );
-                    }
-                >
-                    "Copy cd"
                 </button>
                 {open_controls}
                 {move || {
@@ -4457,25 +4544,11 @@ fn workspace_git_status(status: ProjectGitStatusView) -> AnyView {
     .into_any()
 }
 
-fn workspace_editor_icon(target: &str) -> AnyView {
+fn workspace_editor_icon_src(target: &str) -> Option<&'static str> {
     match target {
-        "rustrover" => view! {
-            <svg class="workspace-button-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
-                <rect width="18" height="18" rx="4" fill="#111318"/>
-                <rect x="2" y="2" width="14" height="14" rx="3" fill="#6d3df5"/>
-                <rect x="4" y="4" width="10" height="10" rx="1.5" fill="#111318"/>
-                <text x="9" y="11.5" text-anchor="middle" font-size="6.3" font-weight="800" fill="#ffffff">"RR"</text>
-            </svg>
-        }
-        .into_any(),
-        "vscode" => view! {
-            <svg class="workspace-button-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
-                <path fill="#007acc" d="M14.4 2.1 6.7 7.9 3.7 5.4 2 6.6l2.8 2.4L2 11.4l1.7 1.2 3-2.5 7.7 5.8c.7.5 1.6 0 1.6-.8V2.9c0-.8-.9-1.3-1.6-.8z"/>
-                <path fill="#2aa7f4" d="M14.6 4.2v9.6L8.3 9l6.3-4.8z"/>
-            </svg>
-        }
-        .into_any(),
-        _ => view! { <span class="workspace-button-icon"></span> }.into_any(),
+        "rustrover" => Some("/icons/workspace-rustrover.svg"),
+        "vscode" => Some("/icons/workspace-vscode.svg"),
+        _ => None,
     }
 }
 
@@ -4554,21 +4627,6 @@ fn readonly_path_row(label: &'static str, path: String) -> AnyView {
 fn non_empty_string(value: String) -> Option<String> {
     let value = value.trim().to_owned();
     (!value.is_empty()).then_some(value)
-}
-
-fn shell_cd_command(path: &str) -> String {
-    format!("cd {}", shell_quote(path))
-}
-
-fn shell_quote(value: &str) -> String {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':'))
-    {
-        return value.to_owned();
-    }
-
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn copy_workspace_text(
@@ -4746,6 +4804,7 @@ fn LiveRunsSection(
             status_note=status_note
             run_sessions=run_sessions
             workspace_editors=workspace_editors
+            sync_selection_with_url=true
             empty_message="No runs yet."
         />
     }
@@ -5137,6 +5196,7 @@ fn trigger_runs_panel(
                                 status_note=Signal::derive(|| None::<String>)
                                 run_sessions=run_sessions
                                 workspace_editors=workspace_editors.clone()
+                                sync_selection_with_url=false
                                 empty_message="No runs for this automation yet."
                             />
                         }.into_any()
@@ -5164,9 +5224,33 @@ fn RunSessionsPanel(
     #[prop(into)] status_note: Signal<Option<String>>,
     #[prop(into)] run_sessions: ReadSignal<Vec<BoardRunSessionView>>,
     workspace_editors: Vec<WorkspaceEditorView>,
+    sync_selection_with_url: bool,
     empty_message: &'static str,
 ) -> impl IntoView + 'static {
-    let (selected_run_id, set_selected_run_id) = signal(None::<i64>);
+    let query = use_query_map();
+    let initial_selected_run_id = if sync_selection_with_url {
+        query
+            .read_untracked()
+            .get("run")
+            .and_then(|value| value.parse::<i64>().ok())
+    } else {
+        None
+    };
+    let (selected_run_id, set_selected_run_id) = signal(initial_selected_run_id);
+    Effect::new(move |_| {
+        if !sync_selection_with_url {
+            return;
+        }
+        let query_selected = query
+            .read()
+            .get("run")
+            .and_then(|value| value.parse::<i64>().ok());
+        if let Some(run_id) = query_selected
+            && selected_run_id.get_untracked() != Some(run_id)
+        {
+            set_selected_run_id.set(Some(run_id));
+        }
+    });
     Effect::new(move |_| {
         let sessions = run_sessions.get();
         let selected = selected_run_id.get_untracked();
@@ -5182,6 +5266,26 @@ fn RunSessionsPanel(
         };
         if selected != next {
             set_selected_run_id.set(next);
+        }
+    });
+
+    let navigate = use_navigate();
+    let selection_project = project.clone();
+    let select_run = Callback::new(move |run_id: i64| {
+        set_selected_run_id.set(Some(run_id));
+        if sync_selection_with_url {
+            let href = format!(
+                "/runs?project={}&run={run_id}",
+                encode_path(&selection_project)
+            );
+            navigate(
+                &href,
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..NavigateOptions::default()
+                },
+            );
         }
     });
 
@@ -5212,7 +5316,8 @@ fn RunSessionsPanel(
                             };
                             format!("run-session {status_class}{selected}")
                         }
-                        on:click=move |_| set_selected_run_id.set(Some(run_id))
+                        aria-pressed=move || selected_signal.get() == Some(run_id)
+                        on:click=move |_| select_run.run(run_id)
                     >
                         <div class="session-head">
                             <strong>"#" {run_id}</strong>
@@ -5701,177 +5806,146 @@ fn create_item_state_option_views(
         .collect()
 }
 
+fn create_item_state_field_renderer<F: TypeErasedField>(
+    options: Signal<Vec<CreateItemStateOption>>,
+) -> FieldRenderer<F> {
+    FieldRenderer::new(
+        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+            let current =
+                Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
+
+            match field_mode {
+                FieldMode::Display => view! {
+                    {move || {
+                        let current = current.get();
+                        options
+                            .get()
+                            .into_iter()
+                            .find(|option| option.identifier == current)
+                            .map(|option| option.name)
+                            .unwrap_or(current)
+                    }}
+                }
+                .into_any(),
+                FieldMode::Readable | FieldMode::Editable => {
+                    let disabled = field_mode != FieldMode::Editable || field_options.disabled;
+                    view! {
+                        {render_label(field_options.label.clone())}
+                        <select
+                            name="state"
+                            class="crud-input-field work-item-state-select"
+                            prop:value=move || current.get()
+                            disabled=move || disabled || options.get().is_empty()
+                            on:change=move |event| {
+                                value_changed.run(Ok(Value::String(event_target_value(&event))));
+                            }
+                        >
+                            {move || create_item_state_option_views(options.get(), current.get())}
+                        </select>
+                    }
+                    .into_any()
+                }
+            }
+        },
+    )
+}
+
 fn create_item_modal(
-    project: &str,
+    api_base_url: String,
+    project_id: i64,
     show_when: ReadSignal<bool>,
     set_show_when: WriteSignal<bool>,
     state_options: ReadSignal<Vec<CreateItemStateOption>>,
     selected_state: ReadSignal<String>,
-    set_selected_state: WriteSignal<String>,
 ) -> impl IntoView + 'static {
-    let action = StoredValue::new(format!("/projects/{}/items", encode_path(project)));
-    let (description_draft, set_description_draft) = signal(String::new());
+    let api_base_url = StoredValue::new(api_base_url);
+    let (context, set_context) = signal(None::<CrudInstanceContext>);
+    let close_modal = Callback::new(move |()| set_show_when.set(false));
+    let close_modal_for_exit = close_modal;
+    let request_close = Callback::new(move |()| {
+        if let Some(context) = context.get_untracked() {
+            context.request_leave();
+        } else {
+            close_modal.run(());
+        }
+    });
+    Effect::new(move |_| {
+        if !show_when.get() {
+            set_context.set(None);
+        }
+    });
+    let default_create_state = Signal::derive(move || selected_state.get());
+    let crud_state_options = Signal::derive(move || state_options.get());
+    let request_close_on_escape = request_close;
+    let request_close_on_backdrop = request_close;
+    let request_close_on_header = request_close;
+    let request_close_on_footer = request_close;
     view! {
         <Modal
             id="new-item-modal"
             class="new-item-modal"
             show_when=show_when
-            on_escape=move || set_show_when.set(false)
-            on_backdrop_interaction=move || set_show_when.set(false)
+            on_escape=move || request_close_on_escape.run(())
+            on_backdrop_interaction=move || request_close_on_backdrop.run(())
         >
-            <form class="new-item-form" method="post" action=move || action.get_value()>
-                <ModalHeader>
-                    <ModalTitle>"New item"</ModalTitle>
-                    <button
-                        type="button"
-                        class="secondary"
-                        on:click=move |_| set_show_when.set(false)
-                    >
-                        "Close"
-                    </button>
-                </ModalHeader>
-                <ModalBody>
-                    <label>
-                        <span>"Title"</span>
-                        <input name="title" placeholder="Title" required/>
-                    </label>
-                    <label>
-                        <span>"Description"</span>
-                        {rich_text_form_field(
-                            "description",
-                            "new-item-description-rich-text",
-                            description_draft,
-                            set_description_draft,
-                        )}
-                    </label>
-                    <label>
-                        <span>"State"</span>
-                        <select
-                            name="state"
-                            prop:value=move || selected_state.get()
-                            disabled=move || state_options.get().is_empty()
-                            on:change=move |event| {
-                                set_selected_state.set(event_target_value(&event));
-                            }
-                        >
-                            {move || create_item_state_option_views(
-                                state_options.get(),
-                                selected_state.get(),
-                            )}
-                        </select>
-                    </label>
-                    <label>
-                        <span>"Agent model override"</span>
-                        <select name="agent_model_override">
-                            {agent_model_options(None, "Project default")}
-                        </select>
-                    </label>
-                    <label>
-                        <span>"Reasoning override"</span>
-                        <select name="agent_reasoning_effort_override">
-                            {agent_reasoning_options(None, "Project default")}
-                        </select>
-                    </label>
-                </ModalBody>
-                <ModalFooter>
-                    <button
-                        type="button"
-                        class="secondary"
-                        on:click=move |_| set_show_when.set(false)
-                    >
-                        "Cancel"
-                    </button>
-                    <button type="submit" disabled=move || state_options.get().is_empty()>
-                        "Create item"
-                    </button>
-                </ModalFooter>
-            </form>
+            <ModalHeader>
+                <ModalTitle>"New item"</ModalTitle>
+                <button
+                    type="button"
+                    class="secondary"
+                    on:click=move |_| request_close_on_header.run(())
+                >
+                    "Close"
+                </button>
+            </ModalHeader>
+            <ModalBody>
+                {move || {
+                    if !show_when.get() {
+                        return ().into_any();
+                    }
+                    if state_options.get().is_empty() {
+                        return view! {
+                            <p class="muted">"No states available."</p>
+                        }
+                        .into_any();
+                    }
+                    let api_base_url = api_base_url.get_value();
+                    let on_exit = close_modal_for_exit;
+                    view! {
+                        <div class="new-item-form crudkit-new-item" data-crudkit-leptos="work-item-create">
+                            <CrudInstanceMgr>
+                                <CrudInstance
+                                    name="work-item-create"
+                                    config=work_items_crudkit_config_for_view(
+                                        api_base_url.clone(),
+                                        project_id,
+                                        SerializableCrudView::Create,
+                                        CrudNavigationConfig::embedded_single_entity(),
+                                        default_create_state,
+                                        Some(crud_state_options),
+                                    )
+                                    on_exit=on_exit
+                                    on_context_created=Callback::new(move |context| {
+                                        set_context.set(Some(context));
+                                    })
+                                />
+                            </CrudInstanceMgr>
+                        </div>
+                    }
+                    .into_any()
+                }}
+            </ModalBody>
+            <ModalFooter>
+                <button
+                    type="button"
+                    class="secondary"
+                    on:click=move |_| request_close_on_footer.run(())
+                >
+                    "Cancel"
+                </button>
+            </ModalFooter>
         </Modal>
     }
-}
-
-fn rich_text_form_field(
-    name: &'static str,
-    class_name: &'static str,
-    value: ReadSignal<String>,
-    set_value: WriteSignal<String>,
-) -> impl IntoView + 'static {
-    let editor_value = Signal::derive(move || rich_text_editor_html(&value.get()));
-    let field_class = format!("rich-text-field {class_name}");
-    let input_class = format!("rich-text-input {class_name}-input");
-
-    view! {
-        <div class=field_class data-rich-text-field=name>
-            <input
-                type="hidden"
-                class=input_class
-                name=name
-                value=move || value.get()
-            />
-            <TiptapEditor
-                value=editor_value
-                set_value=move |content| {
-                    set_value.set(tiptap_content_to_string(content));
-                }
-            />
-        </div>
-    }
-}
-
-fn agent_model_options(selected: Option<String>, empty_label: &'static str) -> Vec<AnyView> {
-    let selected = selected
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
-    let mut options = vec![
-        view! {
-            <option value="" selected=selected.is_none()>{empty_label}</option>
-        }
-        .into_any(),
-    ];
-    if let Some(value) = selected
-        .as_ref()
-        .filter(|value| !CodexAgentModel::is_available_model(value))
-    {
-        let option_value = value.clone();
-        let label = format!("{value} (unavailable)");
-        options.push(
-            view! {
-                <option value=option_value selected=true>{label}</option>
-            }
-            .into_any(),
-        );
-    }
-    options.extend(CodexAgentModel::all().into_iter().map(|model| {
-        let value = model.as_storage();
-        view! {
-            <option value=value selected=selected.as_deref() == Some(value)>
-                {value}
-            </option>
-        }
-        .into_any()
-    }));
-    options
-}
-
-fn agent_reasoning_options(
-    selected: Option<AgentReasoningEffort>,
-    empty_label: &'static str,
-) -> Vec<AnyView> {
-    let mut options = vec![
-        view! {
-            <option value="" selected=selected.is_none()>{empty_label}</option>
-        }
-        .into_any(),
-    ];
-    options.extend(AgentReasoningEffort::all().into_iter().map(|effort| {
-        view! {
-            <option value=effort.as_storage() selected=selected == Some(effort)>
-                {effort.to_string()}
-            </option>
-        }
-        .into_any()
-    }));
-    options
 }
 
 fn board_view(
@@ -6698,11 +6772,19 @@ fn tiptap_content_to_string(content: TiptapContent) -> String {
     }
 }
 
+fn normalize_tiptap_storage_value(value: String) -> String {
+    if rich_text_plain_text(&value).trim().is_empty() {
+        String::new()
+    } else {
+        value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_patchbay_run_id, preview,
-        rich_text_editor_html,
+        UiEvent, claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_patchbay_run_id,
+        preview, rich_text_editor_html, runs_page_event_matches,
     };
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -6755,5 +6837,45 @@ mod tests {
             preview("<p>First <strong>item</strong></p><p>Second</p>"),
             "First item\nSecond"
         );
+    }
+
+    #[test]
+    fn runs_page_shell_ignores_live_run_events() {
+        assert!(!runs_page_event_matches(&UiEvent::AutomationChanged {
+            sequence: 1,
+            timestamp: "2026-06-18T00:00:00Z".to_owned(),
+            project: "demo".to_owned(),
+        }));
+        assert!(!runs_page_event_matches(&UiEvent::AgentRunChanged {
+            sequence: 2,
+            timestamp: "2026-06-18T00:00:01Z".to_owned(),
+            project: "demo".to_owned(),
+            run_id: 42,
+            item_id: Some(7),
+        }));
+        assert!(!runs_page_event_matches(&UiEvent::AgentOutputChanged {
+            sequence: 3,
+            timestamp: "2026-06-18T00:00:02Z".to_owned(),
+            project: "demo".to_owned(),
+            run_id: 42,
+            item_id: Some(7),
+        }));
+    }
+
+    #[test]
+    fn runs_page_shell_refreshes_for_shell_context_events() {
+        assert!(runs_page_event_matches(&UiEvent::ProjectListChanged {
+            sequence: 1,
+            timestamp: "2026-06-18T00:00:00Z".to_owned(),
+        }));
+        assert!(runs_page_event_matches(&UiEvent::ProjectChanged {
+            sequence: 2,
+            timestamp: "2026-06-18T00:00:01Z".to_owned(),
+            project: "demo".to_owned(),
+        }));
+        assert!(runs_page_event_matches(&UiEvent::CodexStatusChanged {
+            sequence: 3,
+            timestamp: "2026-06-18T00:00:02Z".to_owned(),
+        }));
     }
 }

@@ -30,12 +30,14 @@ The main workflow surface should make these states easy to inspect:
 - automation status;
 - stale or blocked work;
 - feedback-requested work that is waiting for a user answer;
-- run logs and run outcomes, including linked operated work items, live output for active runs, active-run cancellation, commit outcome, and created commit SHA visibility.
+- run logs and run outcomes, including linked operated work items, prompt-before-output detail ordering, live output for active runs, stable selected-run inspection during live refreshes, active-run cancellation, commit outcome, and created commit SHA visibility.
 - per-run Codex token usage when reported by the agent runtime.
 - Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, `patchbay:automation-blocked`, and `patchbay:feedback-requested`.
 
 Board and item-detail interactions call server actions or custom API endpoints so workflow rules remain centralized.
+Board swim-lanes cap their height at roughly 80% of the viewport, with overflowing work item cards scrolling inside each lane so large lanes do not lengthen the page indefinitely.
 Human-authored rich prose fields such as work item descriptions and automation prompts should use the Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists, memory history, and commit policy text stay plain text controls.
+Ordinary work item create and edit fields may be embedded CrudKit forms, including the Board new-item modal and item-detail editor, so those flows share field configuration and CrudKit dirty-state leave protection while Patchbay workflow controls remain custom.
 
 ## Admin Surfaces
 

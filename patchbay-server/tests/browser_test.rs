@@ -1,9 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::{borrow::Cow, env, time::Duration};
+use std::{borrow::Cow, env, fs, path::Path, time::Duration};
 
 use assertr::prelude::*;
-use browser_test::thirtyfour::{By, ChromiumLikeCapabilities, WebDriver};
+use browser_test::thirtyfour::{By, ChromiumLikeCapabilities, Key, WebDriver};
 use browser_test::{
     BrowserTest, BrowserTestFailurePolicy, BrowserTestParallelism, BrowserTestRunner,
     BrowserTestVisibility, BrowserTests, BrowserTimeouts, ChromeBinary, PauseConfig, async_trait,
@@ -72,12 +72,25 @@ impl PatchbayTestApp {
         let tmpdir =
             tempfile::tempdir().context("failed to create Patchbay browser-test temp dir")?;
         let database = tmpdir.path().join("patchbay.sqlite3");
+        let editor_bin_dir = tmpdir.path().join("bin");
+        fs::create_dir(&editor_bin_dir).context("failed to create browser-test editor bin dir")?;
+        for program in [
+            "rustrover",
+            "rustrover64.exe",
+            "code",
+            "code.cmd",
+            "code.exe",
+        ] {
+            write_test_executable(&editor_bin_dir.join(program))?;
+        }
+        let test_path = path_with_prefix(&editor_bin_dir)?;
 
         let app = LeptosTestAppConfig::new(env!("CARGO_MANIFEST_DIR"))
             .with_app_name("patchbay browser test")
             .with_forward_logs(true)
             .with_startup_line("Serving Patchbay")
             .with_env("PATCHBAY_DATABASE", database.as_os_str())
+            .with_env("PATH", test_path.as_os_str())
             .start()
             .await
             .map_err(Report::into_dynamic)?;
@@ -94,6 +107,30 @@ impl PatchbayTestApp {
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
+}
+
+fn path_with_prefix(prefix: &Path) -> Result<std::ffi::OsString, Report> {
+    let mut entries = vec![prefix.to_path_buf()];
+    if let Some(path) = env::var_os("PATH") {
+        entries.extend(env::split_paths(&path));
+    }
+    Ok(env::join_paths(entries).context("failed to build browser-test PATH")?)
+}
+
+fn write_test_executable(path: &Path) -> Result<(), Report> {
+    fs::write(path, "#!/bin/sh\nexit 0\n").context("failed to write browser-test editor shim")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(path)
+            .context("failed to stat browser-test editor shim")?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)
+            .context("failed to make browser-test editor shim executable")?;
+    }
+    Ok(())
 }
 
 struct PatchbayBoardTest;
@@ -201,7 +238,20 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_that!(driver.title().await.context("failed to read page title")?)
             .is_equal_to("Patchbay");
         assert_source_contains(driver, "Copy path").await?;
+        assert_source_does_not_contain(driver, "Copy cd").await?;
         assert_source_contains(driver, "Open folder").await?;
+        assert_source_contains(driver, "Open RustRover").await?;
+        assert_source_contains(driver, "Open VS Code").await?;
+        find(
+            driver,
+            By::Css("img.workspace-button-icon[src=\"/icons/workspace-rustrover.svg\"]"),
+        )
+        .await?;
+        find(
+            driver,
+            By::Css("img.workspace-button-icon[src=\"/icons/workspace-vscode.svg\"]"),
+        )
+        .await?;
         assert_source_contains(driver, "Git repository").await?;
         find(driver, By::Css(".workspace-git-status")).await?;
         find(driver, By::Css(".workspace-git-diff")).await?;
@@ -351,25 +401,20 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         open_new_item_modal(driver).await?;
         find(driver, By::Css("#new-item-modal select[name='state']")).await?;
         assert_new_item_lane_options(driver).await?;
-        find(
-            driver,
-            By::Css("#new-item-modal select[name='agent_model_override']"),
-        )
-        .await?;
+        close_clean_new_item_modal(driver).await?;
+        assert_lane_add_preselects_state(driver).await?;
+        assert_new_item_modal_dirty_leave_protection(driver).await?;
+        open_new_item_modal(driver).await?;
+        find(driver, By::Css("#new-item-modal select.agent-model-select")).await?;
         assert_source_contains(driver, "Project default").await?;
-        send_keys(
-            driver,
-            By::Css("#new-item-modal input[name='title']"),
-            "Browser item",
-        )
-        .await?;
+        set_input_value(driver, "#new-item-modal .crud-input-field", "Browser item").await?;
         set_input_value(
             driver,
             "#new-item-modal input[name='description']",
             "Created through browser-test\nSecond line",
         )
         .await?;
-        click(driver, By::Css("#new-item-modal button[type='submit']")).await?;
+        click_new_item_save(driver).await?;
 
         find(driver, By::LinkText("Browser item")).await?;
         assert_source_contains(driver, "Created through browser-test").await?;
@@ -380,6 +425,10 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         find(driver, By::Css("section.comments")).await?;
         assert_source_contains(driver, "Item details").await?;
         assert_item_detail_description_is_not_duplicated(driver).await?;
+        assert_item_detail_description_editor_accepts_click_and_text(driver).await?;
+        assert_item_detail_dirty_leave_protection(driver).await?;
+        click(driver, By::LinkText("Browser item")).await?;
+        find(driver, By::Css("section.item-settings")).await?;
         assert_source_does_not_contain(driver, "automation can claim this item").await?;
         assert_source_does_not_contain(driver, "Set state").await?;
         assert_source_contains(driver, "Start agent").await?;
@@ -1067,6 +1116,13 @@ async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Resul
         .convert::<String>()
         .context("failed to read request error toast result")?;
     assert_that!(result).is_equal_to("ok".to_owned());
+    driver
+        .action_chain()
+        .send_keys(Key::Escape)
+        .perform()
+        .await
+        .context("failed to dismiss project switcher after request-failure assertion")?;
+    wait_for_no_modal_backdrop_blocking(driver, "after request-failure assertion").await?;
 
     Ok(())
 }
@@ -1209,20 +1265,23 @@ async fn create_trigger(driver: &WebDriver) -> Result<(), Report> {
 }
 
 async fn open_new_item_modal(driver: &WebDriver) -> Result<(), Report> {
+    let mut last_state = inspect_new_item_modal_state(driver).await?;
     for _ in 0..20 {
-        click(driver, By::Css("section.board-toolbar > button")).await?;
-        if driver
-            .find(By::Css("leptonic-modal#new-item-modal"))
-            .await
-            .is_ok()
-        {
+        if last_state.starts_with("modalVisible=true;") && last_state.contains("formReady=true") {
             return Ok(());
         }
+        if !last_state.starts_with("modalVisible=true;") {
+            click_css_after_modal_backdrops_clear(
+                driver,
+                "section.board-toolbar > button",
+                "opening new item modal",
+            )
+            .await?;
+        }
         tokio::time::sleep(Duration::from_millis(250)).await;
+        last_state = inspect_new_item_modal_state(driver).await?;
     }
-    find(driver, By::Css("leptonic-modal#new-item-modal"))
-        .await
-        .map(|_| ())
+    bail!("new item modal did not open: {last_state}");
 }
 
 async fn assert_lane_add_button_count(driver: &WebDriver, expected: usize) -> Result<(), Report> {
@@ -1296,29 +1355,428 @@ async fn assert_new_item_lane_options(driver: &WebDriver) -> Result<(), Report> 
     Ok(())
 }
 
+async fn assert_lane_add_preselects_state(driver: &WebDriver) -> Result<(), Report> {
+    click_css_after_modal_backdrops_clear(
+        driver,
+        ".lane:nth-child(2) .lane-add",
+        "opening lane-preselected new item modal",
+    )
+    .await?;
+    find(driver, By::Css("#new-item-modal select[name='state']")).await?;
+    let summary = driver
+        .execute(
+            r#"
+            const select = document.querySelector('#new-item-modal select[name="state"]');
+            if (!select) {
+                throw new Error('missing new item state select');
+            }
+            return `${select.value}|${Array.from(select.options).map(option => option.value).join(',')}`;
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect lane-preselected new item state")?
+        .convert::<String>()
+        .context("failed to read lane-preselected new item state")?;
+    assert_that!(summary).is_equal_to("open|open".to_owned());
+    close_clean_new_item_modal(driver).await?;
+    Ok(())
+}
+
+async fn assert_new_item_modal_dirty_leave_protection(driver: &WebDriver) -> Result<(), Report> {
+    open_new_item_modal(driver).await?;
+    set_input_value(
+        driver,
+        "#new-item-modal .crud-input-field",
+        "Unsaved modal title",
+    )
+    .await?;
+
+    click(
+        driver,
+        By::Css("#new-item-modal leptonic-modal-header button"),
+    )
+    .await?;
+    find_leave_modal(driver).await?;
+    click_leave_modal_cancel(driver).await?;
+    assert_new_item_title_value(driver, "Unsaved modal title").await?;
+
+    driver
+        .action_chain()
+        .send_keys(Key::Escape)
+        .perform()
+        .await
+        .context("failed to press Escape for new item modal")?;
+    find_leave_modal(driver).await?;
+    click_leave_modal_cancel(driver).await?;
+    assert_new_item_title_value(driver, "Unsaved modal title").await?;
+
+    click_backdrop(driver).await?;
+    find_leave_modal(driver).await?;
+    click_leave_modal_accept(driver).await?;
+    wait_for_new_item_modal_closed(driver).await?;
+    Ok(())
+}
+
+async fn assert_item_detail_dirty_leave_protection(driver: &WebDriver) -> Result<(), Report> {
+    set_input_value(
+        driver,
+        "section.item-settings .crud-input-field",
+        "Unsaved detail title",
+    )
+    .await?;
+
+    click(driver, By::Css("button.item-board-link")).await?;
+    find_leave_modal(driver).await?;
+    click_leave_modal_cancel(driver).await?;
+    assert_source_contains(driver, "Unsaved detail title").await?;
+
+    click(driver, By::Css("button.item-board-link")).await?;
+    find_leave_modal(driver).await?;
+    click_leave_modal_accept(driver).await?;
+    find(driver, By::Css("section.board")).await?;
+    Ok(())
+}
+
+async fn close_clean_new_item_modal(driver: &WebDriver) -> Result<(), Report> {
+    click(
+        driver,
+        By::Css("#new-item-modal leptonic-modal-footer button"),
+    )
+    .await?;
+    wait_for_new_item_modal_closed(driver).await
+}
+
+async fn click_new_item_save(driver: &WebDriver) -> Result<(), Report> {
+    click(
+        driver,
+        By::XPath("//leptonic-modal[@id='new-item-modal']//button[contains(., 'Speichern')]"),
+    )
+    .await
+}
+
+async fn find_leave_modal(driver: &WebDriver) -> Result<(), Report> {
+    find(
+        driver,
+        By::XPath("//leptonic-modal[contains(., 'Ungespeicherte Änderungen')]"),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn click_leave_modal_cancel(driver: &WebDriver) -> Result<(), Report> {
+    click(
+        driver,
+        By::XPath(
+            "//leptonic-modal[contains(., 'Ungespeicherte Änderungen')]//button[contains(., 'Zurück')]",
+        ),
+    )
+    .await
+}
+
+async fn click_leave_modal_accept(driver: &WebDriver) -> Result<(), Report> {
+    click(
+        driver,
+        By::XPath(
+            "//leptonic-modal[contains(., 'Ungespeicherte Änderungen')]//button[contains(., 'Verlassen')]",
+        ),
+    )
+    .await
+}
+
+async fn assert_new_item_title_value(driver: &WebDriver, expected: &str) -> Result<(), Report> {
+    let value = driver
+        .execute(
+            r#"
+            const editable = (field) => {
+                if (!field) {
+                    return null;
+                }
+                if (field.matches('input, textarea, select')) {
+                    return field;
+                }
+                return field.querySelector('input, textarea, select');
+            };
+            const field = document.querySelector('#new-item-modal .crud-input-field');
+            const input = editable(field);
+            return input?.value ?? '<missing>';
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect new item title draft")?
+        .convert::<String>()
+        .context("failed to read new item title draft")?;
+    assert_that!(value).is_equal_to(expected.to_owned());
+    Ok(())
+}
+
+async fn click_backdrop(driver: &WebDriver) -> Result<(), Report> {
+    driver
+        .action_chain()
+        .move_to(4, 4)
+        .click()
+        .perform()
+        .await
+        .context("failed to click modal backdrop")?;
+    Ok(())
+}
+
+async fn wait_for_new_item_modal_closed(driver: &WebDriver) -> Result<(), Report> {
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 5000;
+            const isVisible = (element) => {
+                if (!element) {
+                    return false;
+                }
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    rect.width > 0 &&
+                    rect.height > 0;
+            };
+            const check = () => {
+                const modal = document.querySelector('leptonic-modal#new-item-modal');
+                const modalVisible = isVisible(modal);
+                const backdropState = Array.from(
+                    document.querySelectorAll('leptonic-modal-backdrop')
+                ).map((backdrop) => {
+                    const style = getComputedStyle(backdrop);
+                    return {
+                        visible: isVisible(backdrop),
+                        blocking: style.pointerEvents !== 'none',
+                    };
+                });
+                const backdropVisible = backdropState.some((state) => state.visible);
+                const backdropBlocking = backdropState.some((state) => state.blocking);
+                const hit = document.elementFromPoint(
+                    Math.max(1, document.documentElement.clientWidth - 68),
+                    143
+                );
+                const hitBackdrop = hit?.tagName === 'LEPTONIC-MODAL-BACKDROP' ||
+                    Boolean(hit?.closest?.('leptonic-modal-backdrop'));
+                if (!modalVisible && !backdropVisible && !backdropBlocking && !hitBackdrop) {
+                    done('closed');
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    const host = document.querySelector('leptonic-modal-host');
+                    const hostStyle = host ? getComputedStyle(host) : null;
+                    const modalSummary = Array.from(document.querySelectorAll('leptonic-modal'))
+                        .map((modal) => {
+                            const style = getComputedStyle(modal);
+                            const text = (modal.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+                            return `${modal.id || '<no-id>'}:${style.display}:${style.visibility}:${text}`;
+                        })
+                        .join(' || ');
+                    done([
+                        `still-open: modal=${modalVisible}`,
+                        `backdrop=${backdropVisible}`,
+                        `blocking=${backdropBlocking}`,
+                        `hit=${hit?.tagName ?? '<none>'}`,
+                        `hostHasModals=${host?.getAttribute('data-has-modals') ?? '<missing>'}`,
+                        `hostDisplay=${hostStyle?.display ?? '<missing>'}`,
+                        `modals=${modalSummary}`,
+                    ].join('; '));
+                    return;
+                }
+                setTimeout(check, 100);
+            };
+            check();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to wait for new item modal close")?
+        .convert::<String>()
+        .context("failed to read new item modal close state")?;
+    assert_that!(result).is_equal_to("closed".to_owned());
+    Ok(())
+}
+
+async fn wait_for_no_modal_backdrop_blocking(
+    driver: &WebDriver,
+    context: &str,
+) -> Result<(), Report> {
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 3000;
+            const check = () => {
+                const hit = document.elementFromPoint(
+                    Math.max(1, document.documentElement.clientWidth - 68),
+                    143
+                );
+                const blocking = hit?.tagName === 'LEPTONIC-MODAL-BACKDROP' ||
+                    Boolean(hit?.closest?.('leptonic-modal-backdrop'));
+                if (!blocking) {
+                    done('clear');
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    const modalSummary = Array.from(document.querySelectorAll('leptonic-modal'))
+                        .map((modal) => {
+                            const style = getComputedStyle(modal);
+                            const rect = modal.getBoundingClientRect();
+                            const text = (modal.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+                            return `${modal.id || '<no-id>'}:${style.display}:${style.visibility}:${Math.round(rect.width)}x${Math.round(rect.height)}:${text}`;
+                        })
+                        .join(' || ');
+                    const selectSummary = Array.from(document.querySelectorAll('leptonic-select, leptonic-select-overlay, leptonic-select-options'))
+                        .map((select) => {
+                            const style = getComputedStyle(select);
+                            const rect = select.getBoundingClientRect();
+                            const text = (select.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+                            return `${select.tagName}:${style.display}:${style.visibility}:${Math.round(rect.width)}x${Math.round(rect.height)}:${text}`;
+                        })
+                        .join(' || ');
+                    done(`blocked-by=${hit?.tagName ?? '<none>'}; modals=${modalSummary}; selects=${selectSummary}`);
+                    return;
+                }
+                setTimeout(check, 100);
+            };
+            check();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to wait for modal backdrop hit-test")?
+        .convert::<String>()
+        .context("failed to read modal backdrop hit-test state")?;
+    if result != "clear" {
+        bail!("modal backdrop still blocking {context}: {result}");
+    }
+    Ok(())
+}
+
+async fn click_css_after_modal_backdrops_clear(
+    driver: &WebDriver,
+    selector: &str,
+    context: &str,
+) -> Result<(), Report> {
+    let mut last_error = None;
+    for _ in 0..20 {
+        wait_for_no_modal_backdrop_blocking(driver, context).await?;
+        let element = find(driver, By::Css(selector)).await?;
+        element
+            .scroll_into_view()
+            .await
+            .context("failed to scroll browser-test element into view")?;
+        driver
+            .action_chain()
+            .move_to_element_center(&element)
+            .perform()
+            .await
+            .context("failed to move pointer to browser-test element")?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        match element.click().await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+
+    bail!(
+        "failed to click browser-test element {selector:?} while {context}: {}",
+        last_error.unwrap_or_else(|| "no click attempt was made".to_owned())
+    );
+}
+
+async fn inspect_new_item_modal_state(driver: &WebDriver) -> Result<String, Report> {
+    Ok(driver
+        .execute(
+            r#"
+            const modal = document.querySelector('leptonic-modal#new-item-modal');
+            const button = document.querySelector('section.board-toolbar > button');
+            const host = document.querySelector('leptonic-modal-host');
+            const hostStyle = host ? getComputedStyle(host) : null;
+            const bodyText = document.body.textContent ?? '';
+            const isVisible = (element) => {
+                if (!element) {
+                    return false;
+                }
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    rect.width > 0 &&
+                    rect.height > 0;
+            };
+            const editable = (field) => {
+                if (!field) {
+                    return null;
+                }
+                if (field.matches('input, textarea, select')) {
+                    return field;
+                }
+                return field.querySelector('input, textarea, select');
+            };
+            const titleField = modal?.querySelector('.crud-input-field');
+            const titleInput = editable(titleField);
+            const stateSelect = modal?.querySelector('select[name="state"]');
+            return [
+                `modalVisible=${isVisible(modal)}`,
+                `modal=${Boolean(modal)}`,
+                `formReady=${Boolean(titleInput && stateSelect)}`,
+                `buttonDisabled=${button?.disabled ?? '<missing>'}`,
+                `buttonText=${(button?.textContent ?? '<missing>').trim()}`,
+                `hostHasModals=${host?.getAttribute('data-has-modals') ?? '<missing>'}`,
+                `hostDisplay=${hostStyle?.display ?? '<missing>'}`,
+                `hostContainsModal=${Boolean(host?.querySelector('leptonic-modal'))}`,
+                `htmlOverflow=${document.documentElement.style.overflow || '<empty>'}`,
+                `lanes=${document.querySelectorAll('.lane').length}`,
+                `laneAdds=${document.querySelectorAll('.lane .lane-add').length}`,
+                `boardWarning=${bodyText.includes('No work item states') || bodyText.includes('state')}`,
+            ].join('; ');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect new item modal state")?
+        .convert::<String>()
+        .context("failed to read new item modal state")?)
+}
+
 async fn assert_item_detail_description_is_not_duplicated(
     driver: &WebDriver,
 ) -> Result<(), Report> {
     let summary = driver
-        .execute(
+        .execute_async(
             r#"
+            const done = arguments[0];
             const expected = 'Created through browser-test\nSecond line';
-            const headerText = document.querySelector('.item-header')?.textContent ?? '';
-            const input = document.querySelector(
-                'section.item-settings input[name="description"]'
-            );
-            const editor = document.querySelector(
-                'section.item-settings .item-description-rich-text leptonic-tiptap-editor'
-            );
-            const descriptionValue = input?.value ?? '';
-            return [
-                headerText.includes(expected),
-                descriptionValue === expected || (
-                    descriptionValue.includes('Created through browser-test') &&
-                    descriptionValue.includes('Second line')
-                ),
-                Boolean(editor)
-            ].join('|');
+            const deadline = Date.now() + 5000;
+            const inspect = () => {
+                const headerText = document.querySelector('.item-header')?.textContent ?? '';
+                const input = document.querySelector(
+                    'section.item-settings input[name="description"]'
+                );
+                const editor = document.querySelector(
+                    'section.item-settings [data-rich-text-field="description"] leptonic-tiptap-editor'
+                );
+                const descriptionValue = input?.value ?? '';
+                const result = [
+                    headerText.includes(expected),
+                    descriptionValue === expected || (
+                        descriptionValue.includes('Created through browser-test') &&
+                        descriptionValue.includes('Second line')
+                    ),
+                    Boolean(editor)
+                ].join('|');
+                if (result === 'false|true|true' || Date.now() > deadline) {
+                    done(result);
+                    return;
+                }
+                setTimeout(inspect, 100);
+            };
+            inspect();
             "#,
             Vec::new(),
         )
@@ -1327,6 +1785,80 @@ async fn assert_item_detail_description_is_not_duplicated(
         .convert::<String>()
         .context("failed to read item detail description placement")?;
     assert_that!(summary).is_equal_to("false|true|true".to_owned());
+    Ok(())
+}
+
+async fn assert_item_detail_description_editor_accepts_click_and_text(
+    driver: &WebDriver,
+) -> Result<(), Report> {
+    driver
+        .execute(
+            r#"window.__patchbayDescriptionEditorClickMarker = 'kept';"#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to set description editor click marker")?;
+
+    let editor = find(
+        driver,
+        By::Css("section.item-settings [data-rich-text-field='description'] .ProseMirror"),
+    )
+    .await?;
+    editor
+        .scroll_into_view()
+        .await
+        .context("failed to scroll description editor into view")?;
+    editor
+        .click()
+        .await
+        .context("failed to click description editor")?;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let marker = driver
+        .execute(
+            r#"
+            return window.__patchbayDescriptionEditorClickMarker === 'kept'
+                ? 'kept'
+                : 'lost';
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect description editor click marker")?
+        .convert::<String>()
+        .context("failed to read description editor click marker")?;
+    assert_that!(marker).is_equal_to("kept".to_owned());
+
+    editor
+        .send_keys(" Editable after click")
+        .await
+        .context("failed to type in description editor after click")?;
+
+    let value = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 5000;
+            const inspect = () => {
+                const input = document.querySelector(
+                    'section.item-settings input[name="description"]'
+                );
+                const value = input?.value ?? '';
+                if (value.includes('Editable after click') || Date.now() > deadline) {
+                    done(value);
+                    return;
+                }
+                setTimeout(inspect, 100);
+            };
+            inspect();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect edited description value")?
+        .convert::<String>()
+        .context("failed to read edited description value")?;
+    assert_that!(value).contains("Editable after click");
     Ok(())
 }
 
@@ -1457,20 +1989,57 @@ async fn submit_label_add_form(driver: &WebDriver) -> Result<(), Report> {
 async fn set_input_value(driver: &WebDriver, selector: &str, value: &str) -> Result<(), Report> {
     let script = format!(
         r#"
-        const input = document.querySelector({selector:?});
-        if (!input) {{
-            throw new Error('missing input ' + {selector:?});
-        }}
-        input.value = {value:?};
-        input.setAttribute('value', {value:?});
-        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        const done = arguments[0];
+        const selector = {selector:?};
+        const value = {value:?};
+        const deadline = Date.now() + 5000;
+        const editable = (field) => {{
+            if (!field) {{
+                return null;
+            }}
+            if (field.matches('input, textarea, select')) {{
+                return field;
+            }}
+            return field.querySelector('input, textarea, select');
+        }};
+        const findInput = () => {{
+            const controls = Array.from(document.querySelectorAll(selector))
+                .map(editable)
+                .filter(Boolean);
+            return controls.find((control) =>
+                !control.disabled &&
+                !control.readOnly &&
+                control.type !== 'hidden'
+            ) ?? controls[0] ?? null;
+        }};
+        const setValue = () => {{
+            const input = findInput();
+            if (!input) {{
+                if (Date.now() > deadline) {{
+                    done('missing input ' + selector);
+                    return;
+                }}
+                setTimeout(setValue, 100);
+                return;
+            }}
+            input.value = value;
+            input.setAttribute('value', value);
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            done('ok');
+        }};
+        setValue();
         "#
     );
-    driver
-        .execute(script, Vec::new())
+    let result = driver
+        .execute_async(script, Vec::new())
         .await
-        .context("failed to set browser-test input value")?;
+        .context("failed to set browser-test input value")?
+        .convert::<String>()
+        .context("failed to read browser-test input set result")?;
+    if result != "ok" {
+        bail!("failed to set browser-test input value: {result}");
+    }
     Ok(())
 }
 

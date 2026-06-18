@@ -253,6 +253,7 @@ pub(crate) async fn item_page_data(
     automation_controller: &AutomationController,
     project: &str,
     item_id: i64,
+    api_base_url: String,
     codex_status: CodexAppServerStatusView,
 ) -> Result<ItemPage> {
     let projects = projects::list_projects(store).await?;
@@ -271,6 +272,7 @@ pub(crate) async fn item_page_data(
         label_suggestions,
         work_item_states,
         automation_runs,
+        api_base_url,
         codex_status,
     })
 }

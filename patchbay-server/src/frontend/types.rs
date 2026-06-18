@@ -294,6 +294,7 @@ pub mod work_item {
         pub project_id: i64,
         pub title: String,
         pub description: String,
+        pub state: String,
         pub agent_model_override: Option<String>,
         pub agent_reasoning_effort_override: Option<String>,
     }

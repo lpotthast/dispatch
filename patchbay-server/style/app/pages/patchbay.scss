@@ -40,6 +40,11 @@ body {
   line-height: 1.45;
 }
 
+leptonic-modal-host:not(:has(leptonic-modal)) {
+  display: none !important;
+  pointer-events: none;
+}
+
 h1,
 h2,
 h3,
@@ -71,6 +76,21 @@ h3 {
 a {
   color: $accent;
   text-decoration: none;
+
+  &:hover {
+    color: $accent-strong;
+    text-decoration: underline;
+  }
+}
+
+.link-button {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: $accent;
+  font: inherit;
+  cursor: pointer;
 
   &:hover {
     color: $accent-strong;
@@ -975,9 +995,11 @@ a {
 }
 
 .workspace-button-icon {
+  display: block;
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
+  object-fit: contain;
 }
 
 .workspace-copy-status {
@@ -1214,6 +1236,8 @@ button.link-danger {
   display: flex;
   flex-direction: column;
   min-height: 340px;
+  max-height: 80vh;
+  overflow: hidden;
   padding: 12px;
   background: rgba(255, 255, 255, 0.58);
   border: 1px solid $border;
@@ -1285,8 +1309,12 @@ button.link-danger {
 .lane-cards {
   display: grid;
   flex: 1;
+  min-height: 0;
   gap: 10px;
   align-content: start;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .lane-add {
@@ -1824,6 +1852,17 @@ a.claim-badge {
   }
 }
 
+.crudkit-item-detail,
+.crudkit-new-item {
+  .crud-instance {
+    min-width: 0;
+  }
+
+  .crud-nav {
+    margin-bottom: 12px;
+  }
+}
+
 .project-path-field {
   display: grid;
   gap: 8px;
@@ -1892,6 +1931,7 @@ a.claim-badge {
 }
 
 .run-session {
+  position: relative;
   display: grid;
   gap: 6px;
   width: 100%;
@@ -1950,6 +1990,16 @@ a.claim-badge {
     &.selected {
       border-color: rgba($amber, 0.46);
       background: $amber-soft;
+    }
+  }
+
+  &.selected {
+    outline: 2px solid rgba($accent, 0.62);
+    outline-offset: 1px;
+    box-shadow: 0 0 0 4px rgba($accent, 0.12);
+
+    .session-head strong {
+      color: $accent-strong;
     }
   }
 }

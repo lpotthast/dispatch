@@ -1,12 +1,15 @@
 use std::{convert::Infallible, fmt, path::PathBuf, sync::Arc};
 
-use crudkit_core::collaboration::CollabMessage;
+use crudkit_core::{Order, collaboration::CollabMessage, condition::Condition};
 use crudkit_rs::{
     collaboration::CollaborationService, lifetime::NoopLifetimeHooks, prelude::*,
     resource::ResourceType, validate::GlobalValidationState,
 };
 use crudkit_sea_orm::{CrudColumns, SeaOrmResource, repo::SeaOrmRepo};
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+use indexmap::IndexMap;
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, DatabaseConnection, DbErr, EntityTrait, TransactionTrait,
+};
 use utoipa::ToSchema;
 
 use crate::{
@@ -16,7 +19,7 @@ use crate::{
             agent_run, agent_tool, automation_trigger, comment, project, swim_lane, work_item,
             work_item_label, work_item_state,
         },
-        events, projects,
+        events, item_labels, projects,
         storage::{Store, utc_now},
         swim_lanes, work_item_events, work_item_states,
     },
@@ -417,6 +420,231 @@ impl fmt::Display for WorkItemHookError {
 
 impl std::error::Error for WorkItemHookError {}
 
+#[derive(Clone, Debug, PartialEq, Eq, crudkit_sea_orm::CkField, ToSchema, serde::Deserialize)]
+pub struct CrudCreateWorkItem {
+    pub project_id: i64,
+    pub title: String,
+    pub description: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    pub agent_model_override: Option<String>,
+    pub agent_reasoning_effort_override: Option<String>,
+}
+
+impl crudkit_rs::data::CreateModel for CrudCreateWorkItem {}
+
+impl crudkit_sea_orm::SeaOrmCreateModel<work_item::ActiveModel> for CrudCreateWorkItem {
+    async fn into_active_model(self) -> work_item::ActiveModel {
+        work_item::ActiveModel {
+            project_id: Set(self.project_id),
+            title: Set(self.title),
+            description: Set(self.description),
+            agent_model_override: Set(self.agent_model_override),
+            agent_reasoning_effort_override: Set(self.agent_reasoning_effort_override),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum WorkItemRepositoryError {
+    Db(DbErr),
+    SeaOrm(crudkit_sea_orm::repo::SeaOrmRepoError),
+    Internal(String),
+}
+
+impl fmt::Display for WorkItemRepositoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Db(err) => write!(f, "work item repository database error: {err}"),
+            Self::SeaOrm(err) => write!(f, "work item repository SeaORM error: {err:?}"),
+            Self::Internal(err) => write!(f, "work item repository internal error: {err}"),
+        }
+    }
+}
+
+impl RepositoryError for WorkItemRepositoryError {}
+
+pub struct WorkItemRepository {
+    db: Arc<DatabaseConnection>,
+    fallback: SeaOrmRepo,
+}
+
+impl WorkItemRepository {
+    fn new(db: Arc<DatabaseConnection>) -> Self {
+        Self {
+            fallback: SeaOrmRepo::new(db.clone()),
+            db,
+        }
+    }
+}
+
+impl Repository<CrudWorkItemResource> for WorkItemRepository {
+    type Error = WorkItemRepositoryError;
+
+    async fn insert(
+        &self,
+        create_model: CrudCreateWorkItem,
+    ) -> Result<work_item::Model, Self::Error> {
+        let state_label = create_model
+            .state
+            .as_deref()
+            .unwrap_or(DEFAULT_STATE_LABEL)
+            .to_owned();
+        let now = utc_now();
+        let txn = self.db.begin().await.map_err(WorkItemRepositoryError::Db)?;
+        let active = work_item::ActiveModel {
+            project_id: Set(create_model.project_id),
+            title: Set(create_model.title),
+            description: Set(create_model.description),
+            agent_model_override: Set(create_model.agent_model_override),
+            agent_reasoning_effort_override: Set(create_model.agent_reasoning_effort_override),
+            version: Set(1),
+            created_at: Set(now.clone()),
+            updated_at: Set(now.clone()),
+            ..Default::default()
+        };
+        let model = active
+            .insert(&txn)
+            .await
+            .map_err(WorkItemRepositoryError::Db)?;
+        let state_label = work_item_label::ActiveModel {
+            project_id: Set(model.project_id),
+            work_item_id: Set(model.id),
+            key: Set(STATE_LABEL_KEY.to_owned()),
+            value: Set(Some(state_label)),
+            created_at: Set(now.clone()),
+            updated_at: Set(now),
+            ..Default::default()
+        };
+        state_label
+            .insert(&txn)
+            .await
+            .map_err(WorkItemRepositoryError::Db)?;
+        work_item_events::record_event_in_tx(
+            &txn,
+            model.project_id,
+            Some(model.id),
+            "item_created",
+            "Created item",
+        )
+        .await
+        .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        txn.commit().await.map_err(WorkItemRepositoryError::Db)?;
+        Ok(model)
+    }
+
+    async fn count(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<work_item::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<u64, Self::Error> {
+        <SeaOrmRepo as Repository<CrudWorkItemResource>>::count(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(WorkItemRepositoryError::SeaOrm)
+    }
+
+    async fn fetch_one(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<work_item::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Option<work_item::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudWorkItemResource>>::fetch_one(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(WorkItemRepositoryError::SeaOrm)
+    }
+
+    async fn fetch_many(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<work_item::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Vec<work_item::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudWorkItemResource>>::fetch_many(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(WorkItemRepositoryError::SeaOrm)
+    }
+
+    async fn read_one(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<work_item::read_view::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Option<work_item::read_view::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudWorkItemResource>>::read_one(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(WorkItemRepositoryError::SeaOrm)
+    }
+
+    async fn read_many(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<work_item::read_view::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Vec<work_item::read_view::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudWorkItemResource>>::read_many(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(WorkItemRepositoryError::SeaOrm)
+    }
+
+    async fn update(
+        &self,
+        existing: work_item::Model,
+        update_model: work_item::UpdateModel,
+    ) -> Result<work_item::Model, Self::Error> {
+        <SeaOrmRepo as Repository<CrudWorkItemResource>>::update(
+            &self.fallback,
+            existing,
+            update_model,
+        )
+        .await
+        .map_err(WorkItemRepositoryError::SeaOrm)
+    }
+
+    async fn delete(&self, model: work_item::Model) -> Result<DeleteResult, Self::Error> {
+        <SeaOrmRepo as Repository<CrudWorkItemResource>>::delete(&self.fallback, model)
+            .await
+            .map_err(WorkItemRepositoryError::SeaOrm)
+    }
+}
+
 #[derive(Debug)]
 pub struct WorkItemLifetime;
 
@@ -443,12 +671,14 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
     }
 
     async fn before_create(
-        create_model: &mut work_item::CreateModel,
+        create_model: &mut CrudCreateWorkItem,
         _context: &WorkItemResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
         validate_work_item_text(&create_model.title, &create_model.description)?;
+        let normalized_state = normalize_work_item_create_state(create_model.state.take())?;
+        create_model.state = Some(normalized_state);
         create_model.agent_model_override =
             projects::normalize_optional(create_model.agent_model_override.take());
         create_model.agent_reasoning_effort_override = create_model
@@ -466,35 +696,12 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
     }
 
     async fn after_create(
-        _create_model: &work_item::CreateModel,
+        _create_model: &CrudCreateWorkItem,
         model: &work_item::Model,
         context: &WorkItemResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
-        let now = utc_now();
-        let active = work_item_label::ActiveModel {
-            project_id: Set(model.project_id),
-            work_item_id: Set(model.id),
-            key: Set(STATE_LABEL_KEY.to_owned()),
-            value: Set(Some(DEFAULT_STATE_LABEL.to_owned())),
-            created_at: Set(now.clone()),
-            updated_at: Set(now),
-            ..Default::default()
-        };
-        active
-            .insert(context.store.db().as_ref())
-            .await
-            .map_err(work_item_internal_error)?;
-        work_item_events::record_event_in_tx(
-            context.store.db().as_ref(),
-            model.project_id,
-            Some(model.id),
-            "item_created",
-            "Created item",
-        )
-        .await
-        .map_err(work_item_internal_error)?;
         publish_work_item_crud_event(&context.store, model.project_id, model.id).await;
         Ok(data)
     }
@@ -589,12 +796,17 @@ fn validate_work_item_text(
     Ok(())
 }
 
-fn work_item_unprocessable_error(reason: String) -> HookError<WorkItemHookError> {
-    HookError::UnprocessableEntity { reason }
+fn normalize_work_item_create_state(
+    state: Option<String>,
+) -> Result<String, HookError<WorkItemHookError>> {
+    item_labels::normalize_state_value(
+        projects::normalize_optional(state).unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned()),
+    )
+    .map_err(|err| work_item_unprocessable_error(err.to_string()))
 }
 
-fn work_item_internal_error(error: impl fmt::Display) -> HookError<WorkItemHookError> {
-    HookError::Internal(WorkItemHookError(error.to_string()))
+fn work_item_unprocessable_error(reason: String) -> HookError<WorkItemHookError> {
+    HookError::UnprocessableEntity { reason }
 }
 
 #[derive(Debug, ToSchema)]
@@ -605,8 +817,8 @@ impl CrudResource for CrudWorkItemResource {
     type ReadModelId = work_item::read_view::ModelId;
     type ReadModelField = work_item::read_view::ModelField;
 
-    type CreateModel = work_item::CreateModel;
-    type CreateModelField = work_item::ModelField;
+    type CreateModel = CrudCreateWorkItem;
+    type CreateModelField = CrudCreateWorkItemField;
 
     type UpdateModel = work_item::UpdateModel;
     type UpdateModelField = work_item::ModelField;
@@ -615,7 +827,7 @@ impl CrudResource for CrudWorkItemResource {
     type Id = work_item::WorkItemId;
     type ModelField = work_item::ModelField;
 
-    type Repository = SeaOrmRepo;
+    type Repository = WorkItemRepository;
     type ValidationResultRepository =
         crudkit_sea_orm::validation::unified::repository::UnifiedValidationRepository;
     type CollaborationService = NoopCollaborationService;
@@ -1672,7 +1884,7 @@ pub fn build_contexts(store: Store) -> CrudContexts {
             res_context: Arc::new(WorkItemResourceContext {
                 store: store.clone(),
             }),
-            repository: repository.clone(),
+            repository: Arc::new(WorkItemRepository::new(store.db())),
             validators: vec![],
             resource_validators: vec![],
             validation_result_repository: validation_result_repository.clone(),
@@ -1737,5 +1949,41 @@ pub fn build_contexts(store: Store) -> CrudContexts {
             collab_service,
             global_validation_state: Arc::new(GlobalValidationState::new()),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn work_item_create_state_uses_explicit_state() {
+        let state = normalize_work_item_create_state(Some(" review ".to_owned()))
+            .expect("state should normalize");
+
+        assert_eq!(state, "review");
+    }
+
+    #[test]
+    fn work_item_create_state_defaults_to_open() {
+        let missing = normalize_work_item_create_state(None).expect("missing state should default");
+        let blank = normalize_work_item_create_state(Some("  ".to_owned()))
+            .expect("blank state should default");
+
+        assert_eq!(missing, DEFAULT_STATE_LABEL);
+        assert_eq!(blank, DEFAULT_STATE_LABEL);
+    }
+
+    #[test]
+    fn work_item_create_state_rejects_invalid_state() {
+        let err = normalize_work_item_create_state(Some("bad=value".to_owned()))
+            .expect_err("state containing '=' should be rejected");
+
+        match err {
+            HookError::UnprocessableEntity { reason } => {
+                assert!(reason.contains("cannot contain '='"));
+            }
+            other => panic!("expected unprocessable state error, got {other:?}"),
+        }
     }
 }

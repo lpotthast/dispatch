@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map::DefaultHasher},
     fmt, fs,
     hash::{Hash, Hasher},
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::Command as StdCommand,
     str::FromStr,
@@ -10,8 +11,8 @@ use std::{
 };
 
 use codex_app_server_sdk::{
-    ApprovalMode, ModelReasoningEffort as CodexReasoningEffort, ReviewModeItem, SandboxMode,
-    ThreadEvent, ThreadItem, ThreadOptions, TurnOptions,
+    ApprovalMode, ClientError, ModelReasoningEffort as CodexReasoningEffort, ReviewModeItem,
+    SandboxMode, StreamedTurn, Thread, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions,
 };
 use crudkit_core::condition::Condition;
 use git2::{
@@ -46,9 +47,15 @@ use crate::{
 };
 
 const AGENT_PROCESS_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
+const CODEX_STREAM_RECOVERY_MAX_ATTEMPTS: usize = 12;
 const MAX_AGENT_OUTPUT_BYTES: usize = 1024 * 1024;
 static SERVER_API_URL: OnceLock<String> = OnceLock::new();
 const PATCHBAY_AGENT_INSTRUCTIONS: &str = include_str!("../../../AGENT_INSTRUCTIONS.md");
+const CODEX_STREAM_RECOVERY_PROMPT: &str = "\
+Patchbay recovered from a transient Codex app-server reconnect or transport interruption during \
+this automation run. Continue from the existing thread context, current repository state, and \
+current Patchbay item state. Do not repeat completed work; proceed to the final answer when the \
+task is complete.";
 
 fn patchbay_agent_instructions_body() -> &'static str {
     PATCHBAY_AGENT_INSTRUCTIONS
@@ -114,11 +121,37 @@ struct PromptContext<'a> {
     agent_git_command_policy: &'a patchbay_types::AgentGitCommandPolicy,
 }
 
+#[derive(Debug)]
 struct AgentProcessOutput {
     process_id: Option<i64>,
     output: Vec<AgentRunOutputPiece>,
     final_response: String,
     token_usage: Option<AgentRunTokenUsageView>,
+}
+
+#[derive(Debug)]
+enum CodexStreamStartError {
+    Spawn(Report),
+    Run(ClientError),
+}
+
+impl fmt::Display for CodexStreamStartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spawn(err) => write!(f, "{err}"),
+            Self::Run(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for CodexStreamStartError {}
+
+struct CodexStreamRecoveryContext<'a> {
+    start: &'a AgentProcessStart,
+    sessions: &'a Option<ProcessSessionRegistry>,
+    env: &'a HashMap<String, String>,
+    thread_options: &'a ThreadOptions,
+    output: &'a mut Vec<AgentRunOutputPiece>,
 }
 
 struct AgentProcessStart {
@@ -2218,10 +2251,20 @@ async fn run_agent_process_inner(
     session_cancellation: Option<watch::Receiver<bool>>,
     external_cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentProcessOutput> {
-    let turn = timeout(
-        AGENT_PROCESS_TIMEOUT,
+    run_agent_process_turn_with_cancellation(
         run_codex_app_server_turn(start, sessions),
-    );
+        session_cancellation,
+        external_cancellation,
+    )
+    .await
+}
+
+async fn run_agent_process_turn_with_cancellation(
+    turn: impl std::future::Future<Output = Result<AgentProcessOutput>>,
+    session_cancellation: Option<watch::Receiver<bool>>,
+    external_cancellation: Option<watch::Receiver<bool>>,
+) -> Result<AgentProcessOutput> {
+    let turn = timeout(AGENT_PROCESS_TIMEOUT, turn);
 
     if session_cancellation.is_some() || external_cancellation.is_some() {
         tokio::select! {
@@ -2308,12 +2351,6 @@ async fn run_codex_app_server_turn(
         start.claimed_item_id,
         SERVER_API_URL.get().map(String::as_str),
     );
-    let codex = codex_app_server::spawn_codex_with_home_and_env(
-        &start.codex_binary,
-        &start.codex_home,
-        env,
-    )
-    .await?;
     let mut thread_options = ThreadOptions::builder()
         .working_directory(working_dir)
         .sandbox_mode(agent_sandbox_mode_for_run(
@@ -2328,7 +2365,7 @@ async fn run_codex_app_server_turn(
             &start.agent_extra_writable_roots,
         ))
         .config(codex_memory_config_overrides());
-    if let Some(agent_model) = start.agent_model {
+    if let Some(agent_model) = start.agent_model.as_deref() {
         thread_options = thread_options.model(agent_model);
     }
     if let Some(agent_reasoning_effort) = start.agent_reasoning_effort {
@@ -2336,35 +2373,78 @@ async fn run_codex_app_server_turn(
             thread_options.model_reasoning_effort(to_codex_reasoning(agent_reasoning_effort));
     }
     let thread_options = thread_options.build();
-    let mut thread = codex.start_thread(thread_options);
-    let mut streamed = thread
-        .run_streamed(prompt, TurnOptions::default())
-        .await
-        .context("failed to start Codex app-server turn")?;
+    let (mut thread, mut streamed) =
+        start_codex_streamed_turn(&start, &env, &thread_options, None, prompt)
+            .await
+            .map_err(|err| report!(err))
+            .context("failed to start Codex app-server turn")?;
+    let mut thread_id = thread.id().map(ToOwned::to_owned);
 
-    let mut saw_terminal = false;
     let mut final_answer = None;
     let mut fallback_answer = None;
-    let mut token_usage = None;
-    while let Some(event) = streamed.next_event().await {
-        let event = event.context("Codex app-server stream failed")?;
+    let mut recovery_attempts = 0;
+    let token_usage = loop {
+        let event = match streamed.next_event().await {
+            Some(Ok(event)) => event,
+            Some(Err(err)) => {
+                let resumed = recover_codex_streamed_turn(
+                    CodexStreamRecoveryContext {
+                        start: &start,
+                        sessions: &sessions,
+                        env: &env,
+                        thread_options: &thread_options,
+                        output: &mut output,
+                    },
+                    thread_id.as_deref(),
+                    &mut recovery_attempts,
+                    err,
+                )
+                .await?;
+                thread = resumed.0;
+                streamed = resumed.1;
+                thread_id = thread.id().map(ToOwned::to_owned).or(thread_id);
+                continue;
+            }
+            None => {
+                let resumed = recover_codex_streamed_turn(
+                    CodexStreamRecoveryContext {
+                        start: &start,
+                        sessions: &sessions,
+                        env: &env,
+                        thread_options: &thread_options,
+                        output: &mut output,
+                    },
+                    thread_id.as_deref(),
+                    &mut recovery_attempts,
+                    ClientError::TransportClosed,
+                )
+                .await?;
+                thread = resumed.0;
+                streamed = resumed.1;
+                thread_id = thread.id().map(ToOwned::to_owned).or(thread_id);
+                continue;
+            }
+        };
         if let Some(piece) = thread_event_output_piece(&event) {
             push_codex_output_piece(&sessions, start.run_id, &mut output, piece).await;
         }
 
         match &event {
+            ThreadEvent::ThreadStarted {
+                thread_id: started_thread_id,
+            } => {
+                thread_id = Some(started_thread_id.clone());
+            }
             ThreadEvent::ItemCompleted { item } => {
                 update_response_candidates(item, &mut final_answer, &mut fallback_answer);
             }
             ThreadEvent::TurnCompleted { usage } => {
-                token_usage = usage.as_ref().map(|usage| AgentRunTokenUsageView {
+                break usage.as_ref().map(|usage| AgentRunTokenUsageView {
                     input_tokens: usage.input_tokens,
                     cached_input_tokens: usage.cached_input_tokens,
                     output_tokens: usage.output_tokens,
                     total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
                 });
-                saw_terminal = true;
-                break;
             }
             ThreadEvent::TurnFailed { error } => {
                 bail!("Codex app-server turn failed: {}", error.message);
@@ -2372,16 +2452,11 @@ async fn run_codex_app_server_turn(
             ThreadEvent::Error { message } => {
                 bail!("Codex app-server stream error: {message}");
             }
-            ThreadEvent::ThreadStarted { .. }
-            | ThreadEvent::TurnStarted
+            ThreadEvent::TurnStarted
             | ThreadEvent::ItemStarted { .. }
             | ThreadEvent::ItemUpdated { .. } => {}
         }
-    }
-
-    if !saw_terminal {
-        bail!("Codex app-server stream ended before turn completion");
-    }
+    };
 
     Ok(AgentProcessOutput {
         process_id: None,
@@ -2389,6 +2464,253 @@ async fn run_codex_app_server_turn(
         final_response: final_answer.or(fallback_answer).unwrap_or_default(),
         token_usage,
     })
+}
+
+async fn start_codex_streamed_turn(
+    start: &AgentProcessStart,
+    env: &HashMap<String, String>,
+    thread_options: &ThreadOptions,
+    thread_id: Option<&str>,
+    input: impl Into<String>,
+) -> std::result::Result<(Thread, StreamedTurn), CodexStreamStartError> {
+    let codex = codex_app_server::spawn_codex_with_home_and_env(
+        &start.codex_binary,
+        &start.codex_home,
+        env.clone(),
+    )
+    .await
+    .map_err(CodexStreamStartError::Spawn)?;
+    let mut thread = if let Some(thread_id) = thread_id {
+        codex.resume_thread_by_id(thread_id.to_owned(), thread_options.clone())
+    } else {
+        codex.start_thread(thread_options.clone())
+    };
+    let streamed = thread
+        .run_streamed(input.into(), TurnOptions::default())
+        .await
+        .map_err(CodexStreamStartError::Run)?;
+    Ok((thread, streamed))
+}
+
+async fn recover_codex_streamed_turn(
+    context: CodexStreamRecoveryContext<'_>,
+    thread_id: Option<&str>,
+    recovery_attempts: &mut usize,
+    err: ClientError,
+) -> Result<(Thread, StreamedTurn)> {
+    let Some(reason) = recoverable_codex_stream_error_reason(&err) else {
+        return Err(report!(err)
+            .context("Codex app-server stream failed")
+            .into_dynamic());
+    };
+    let Some(thread_id) = thread_id else {
+        return Err(report!(err)
+            .context("Codex app-server stream failed before a resumable thread id was available")
+            .into_dynamic());
+    };
+    if *recovery_attempts >= CODEX_STREAM_RECOVERY_MAX_ATTEMPTS {
+        bail!(
+            "Codex app-server stream failed after {} recovery attempt(s): {err}",
+            CODEX_STREAM_RECOVERY_MAX_ATTEMPTS
+        );
+    }
+
+    loop {
+        *recovery_attempts += 1;
+        let attempt = *recovery_attempts;
+        let backoff = codex_stream_recovery_backoff(attempt);
+        push_codex_output_piece(
+            context.sessions,
+            context.start.run_id,
+            context.output,
+            codex_stream_recovery_piece(thread_id, attempt, reason, &err, backoff),
+        )
+        .await;
+        tokio::time::sleep(backoff).await;
+
+        match start_codex_streamed_turn(
+            context.start,
+            context.env,
+            context.thread_options,
+            Some(thread_id),
+            CODEX_STREAM_RECOVERY_PROMPT,
+        )
+        .await
+        {
+            Ok(resumed) => {
+                push_codex_output_piece(
+                    context.sessions,
+                    context.start.run_id,
+                    context.output,
+                    OutputPieceDraft {
+                        kind: AgentRunOutputKind::System,
+                        item_id: None,
+                        title: "stream recovery resumed".to_owned(),
+                        body: format!("resumed Codex thread {thread_id} after reconnect"),
+                        metadata: serde_json::json!({
+                            "thread_id": thread_id,
+                            "recovery_attempt": attempt,
+                            "recoverable": true,
+                        }),
+                    },
+                )
+                .await;
+                return Ok(resumed);
+            }
+            Err(start_err) if recoverable_codex_stream_start_error(&start_err) => {
+                if *recovery_attempts >= CODEX_STREAM_RECOVERY_MAX_ATTEMPTS {
+                    return Err(report!(start_err)
+                        .context(format!(
+                            "Codex app-server stream did not recover after {} attempt(s)",
+                            CODEX_STREAM_RECOVERY_MAX_ATTEMPTS
+                        ))
+                        .into_dynamic());
+                }
+                push_codex_output_piece(
+                    context.sessions,
+                    context.start.run_id,
+                    context.output,
+                    OutputPieceDraft {
+                        kind: AgentRunOutputKind::System,
+                        item_id: None,
+                        title: "stream recovery retry".to_owned(),
+                        body: format!(
+                            "reconnect attempt {attempt} did not resume yet: {start_err}"
+                        ),
+                        metadata: serde_json::json!({
+                            "thread_id": thread_id,
+                            "recovery_attempt": attempt,
+                            "max_recovery_attempts": CODEX_STREAM_RECOVERY_MAX_ATTEMPTS,
+                            "recoverable": true,
+                            "error": start_err.to_string(),
+                        }),
+                    },
+                )
+                .await;
+            }
+            Err(start_err) => {
+                return Err(report!(start_err)
+                    .context("Codex app-server stream recovery failed with a non-retryable error")
+                    .into_dynamic());
+            }
+        }
+    }
+}
+
+fn codex_stream_recovery_piece(
+    thread_id: &str,
+    attempt: usize,
+    reason: &'static str,
+    err: &ClientError,
+    backoff: Duration,
+) -> OutputPieceDraft {
+    OutputPieceDraft {
+        kind: AgentRunOutputKind::System,
+        item_id: None,
+        title: "recoverable stream interruption".to_owned(),
+        body: format!(
+            "Codex app-server stream interrupted ({reason}); reconnect attempt {attempt}/{} in {}s",
+            CODEX_STREAM_RECOVERY_MAX_ATTEMPTS,
+            backoff.as_secs()
+        ),
+        metadata: serde_json::json!({
+            "thread_id": thread_id,
+            "recovery_attempt": attempt,
+            "max_recovery_attempts": CODEX_STREAM_RECOVERY_MAX_ATTEMPTS,
+            "reason": reason,
+            "recoverable": true,
+            "error": err.to_string(),
+        }),
+    }
+}
+
+fn recoverable_codex_stream_start_error(err: &CodexStreamStartError) -> bool {
+    match err {
+        CodexStreamStartError::Spawn(_) => false,
+        CodexStreamStartError::Run(err) => recoverable_codex_stream_error_reason(err).is_some(),
+    }
+}
+
+fn recoverable_codex_stream_error_reason(err: &ClientError) -> Option<&'static str> {
+    match err {
+        ClientError::TransportClosed => Some("transport closed"),
+        ClientError::TransportSend(message) if recoverable_transport_message(message) => {
+            Some("transport send failed")
+        }
+        ClientError::Io(err) if recoverable_transport_io_error(err.kind()) => {
+            Some("transport I/O interrupted")
+        }
+        ClientError::Timeout { .. } => Some("request timed out"),
+        ClientError::Rpc { error } if recoverable_rpc_message(&error.message) => {
+            Some("turn still active during reconnect")
+        }
+        ClientError::NotInitialized { .. }
+        | ClientError::NotReady { .. }
+        | ClientError::AlreadyInitialized
+        | ClientError::TransportSend(_)
+        | ClientError::InvalidMessage(_)
+        | ClientError::Serialization(_)
+        | ClientError::Io(_)
+        | ClientError::Rpc { .. }
+        | ClientError::UnexpectedResult { .. } => None,
+    }
+}
+
+fn recoverable_transport_io_error(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::Interrupted
+            | ErrorKind::NotConnected
+            | ErrorKind::TimedOut
+            | ErrorKind::UnexpectedEof
+    )
+}
+
+fn recoverable_transport_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "event channel receive failed",
+        "failed to send outbound frame",
+        "transport closed",
+        "connection aborted",
+        "connection closed",
+        "connection lost",
+        "connection reset",
+        "broken pipe",
+        "channel closed",
+        "timed out",
+        "timeout",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn recoverable_rpc_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "active turn",
+        "turn already",
+        "turn is already",
+        "turn is still",
+        "currently running",
+        "in progress",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn codex_stream_recovery_backoff(attempt: usize) -> Duration {
+    let seconds = match attempt {
+        0 | 1 => 2,
+        2 => 5,
+        3 => 10,
+        4 => 20,
+        _ => 30,
+    };
+    Duration::from_secs(seconds)
 }
 
 async fn create_pull_request(working_dir: &Path) -> Result<String> {
@@ -4099,6 +4421,110 @@ mod tests {
             config.get("memories.generate_memories"),
             Some(&serde_json::Value::Bool(false))
         );
+    }
+
+    #[test]
+    fn codex_stream_recovery_classifies_transport_interruptions() {
+        assert_eq!(
+            recoverable_codex_stream_error_reason(&ClientError::TransportClosed),
+            Some("transport closed")
+        );
+        assert_eq!(
+            recoverable_codex_stream_error_reason(&ClientError::TransportSend(
+                "event channel receive failed: channel closed".to_owned()
+            )),
+            Some("transport send failed")
+        );
+        assert_eq!(
+            recoverable_codex_stream_error_reason(&ClientError::Io(std::io::Error::from(
+                ErrorKind::BrokenPipe
+            ))),
+            Some("transport I/O interrupted")
+        );
+        assert_eq!(
+            recoverable_codex_stream_error_reason(&ClientError::Timeout {
+                method: "turn/start".to_owned(),
+                timeout_ms: 30_000,
+            }),
+            Some("request timed out")
+        );
+    }
+
+    #[test]
+    fn codex_stream_recovery_leaves_non_retryable_errors_terminal() {
+        assert_eq!(
+            recoverable_codex_stream_error_reason(&ClientError::TransportSend(
+                "thread id unavailable after start/resume".to_owned()
+            )),
+            None
+        );
+        assert_eq!(
+            recoverable_codex_stream_error_reason(&ClientError::InvalidMessage(
+                "expected JSON object".to_owned()
+            )),
+            None
+        );
+        assert_eq!(
+            recoverable_codex_stream_error_reason(&ClientError::Rpc {
+                error: codex_app_server_sdk::RpcError {
+                    code: -32_000,
+                    message: "model rejected the request".to_owned(),
+                    data: None,
+                },
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_stream_recovery_logs_concise_system_note() {
+        let err = ClientError::TransportClosed;
+        let piece = codex_stream_recovery_piece(
+            "thread-1",
+            1,
+            "transport closed",
+            &err,
+            Duration::from_secs(2),
+        );
+
+        assert_eq!(piece.kind, AgentRunOutputKind::System);
+        assert_eq!(piece.title, "recoverable stream interruption");
+        assert!(piece.body.contains("reconnect attempt 1/"));
+        assert_eq!(piece.metadata["recoverable"], true);
+        assert_eq!(piece.metadata["thread_id"], "thread-1");
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_still_cancels_waiting_turn() {
+        let (cancel, cancellation) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(run_agent_process_turn_with_cancellation(
+            std::future::pending::<Result<AgentProcessOutput>>(),
+            None,
+            Some(cancellation),
+        ));
+
+        cancel.send(true).unwrap();
+        let err = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+
+        assert!(is_automation_cancelled(&err));
+    }
+
+    #[tokio::test]
+    async fn non_retryable_turn_error_still_fails() {
+        let err = run_agent_process_turn_with_cancellation(
+            async { bail!("permanent Codex SDK failure") },
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(!is_automation_cancelled(&err));
+        assert!(err.to_string().contains("permanent Codex SDK failure"));
     }
 
     #[test]
