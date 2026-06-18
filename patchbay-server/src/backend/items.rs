@@ -210,21 +210,13 @@ pub async fn has_unclaimed_item_matching_condition(
 ) -> Result<bool> {
     item_labels::validate_condition(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
-    let items = WorkItem::find()
-        .filter(work_item::Column::ProjectId.eq(project_id))
-        .filter(work_item::Column::ClaimedBy.is_null())
-        .order_by_asc(work_item::Column::UpdatedAt)
-        .order_by_asc(work_item::Column::Id)
-        .all(store.db().as_ref())
-        .await
-        .context("failed to list unclaimed work items")?;
+    let items = unclaimed_items_in_claim_order(store.db().as_ref(), project_id).await?;
+    let labels_by_item =
+        labels_for_candidate_items(store.db().as_ref(), project_id, &items).await?;
 
     for item in items {
-        let labels = work_item_labels::for_item(store.db().as_ref(), project_id, item.id).await?;
-        if item_labels::is_automation_blocked(&labels) {
-            continue;
-        }
-        if item_labels::condition_matches(condition, &labels)? {
+        let labels = labels_for_item(&labels_by_item, item.id);
+        if item_labels::automation_selector_matches(condition, labels)? {
             return Ok(true);
         }
     }
@@ -242,10 +234,7 @@ pub async fn item_matches_condition(
     let project_id = projects::project_id(store, project_name).await?;
     let item = get_item_model(store, project_id, item_id).await?;
     let labels = work_item_labels::for_item(store.db().as_ref(), project_id, item.id).await?;
-    if item_labels::is_automation_blocked(&labels) {
-        return Ok(false);
-    }
-    item_labels::condition_matches(condition, &labels)
+    item_labels::automation_selector_matches(condition, &labels)
 }
 
 pub async fn get_item(store: &Store, project_name: &str, item_id: i64) -> Result<WorkItemView> {
@@ -519,24 +508,15 @@ pub async fn claim_item_matching_condition(
         .begin()
         .await
         .context("failed to start item claim")?;
-    let candidates = WorkItem::find()
-        .filter(work_item::Column::ProjectId.eq(project_id))
-        .filter(work_item::Column::ClaimedBy.is_null())
-        .order_by_asc(work_item::Column::UpdatedAt)
-        .order_by_asc(work_item::Column::Id)
-        .all(&txn)
-        .await
-        .context("failed to list claimable work items")?;
+    let candidates = unclaimed_items_in_claim_order(&txn, project_id).await?;
+    let labels_by_item = labels_for_candidate_items(&txn, project_id, &candidates).await?;
 
     for candidate in candidates {
-        let labels = work_item_labels::for_item(&txn, project_id, candidate.id).await?;
-        if item_labels::is_automation_blocked(&labels) {
+        let labels = labels_for_item(&labels_by_item, candidate.id);
+        if !item_labels::automation_selector_matches(condition, labels)? {
             continue;
         }
-        if !item_labels::condition_matches(condition, &labels)? {
-            continue;
-        }
-        let source_state = item_labels::source_state_for_new_claim(&labels);
+        let source_state = item_labels::source_state_for_new_claim(labels);
 
         let claimed = claim_candidate_in_tx(
             &txn,
@@ -1184,6 +1164,46 @@ async fn return_claim_to_source_state(
     events::publish_work_item_changed(project_name, item_id);
 
     model_to_view(store, updated).await
+}
+
+async fn unclaimed_items_in_claim_order<C>(conn: &C, project_id: i64) -> Result<Vec<WorkItemModel>>
+where
+    C: ConnectionTrait,
+{
+    Ok(WorkItem::find()
+        .filter(work_item::Column::ProjectId.eq(project_id))
+        .filter(work_item::Column::ClaimedBy.is_null())
+        .order_by_asc(work_item::Column::UpdatedAt)
+        .order_by_asc(work_item::Column::Id)
+        .all(conn)
+        .await
+        .context("failed to list unclaimed work items")?)
+}
+
+async fn labels_for_candidate_items<C>(
+    conn: &C,
+    project_id: i64,
+    items: &[WorkItemModel],
+) -> Result<BTreeMap<i64, Vec<WorkItemLabelView>>>
+where
+    C: ConnectionTrait,
+{
+    if items.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    work_item_labels::for_items(conn, project_id, &item_ids).await
+}
+
+fn labels_for_item(
+    labels_by_item: &BTreeMap<i64, Vec<WorkItemLabelView>>,
+    item_id: i64,
+) -> &[WorkItemLabelView] {
+    labels_by_item
+        .get(&item_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 pub(crate) async fn get_item_model(

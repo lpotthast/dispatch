@@ -108,6 +108,16 @@ pub(crate) fn condition_matches(
     }
 }
 
+pub(crate) fn automation_selector_matches(
+    condition: &Condition,
+    labels: &[WorkItemLabelView],
+) -> Result<bool> {
+    if is_automation_blocked(labels) {
+        return Ok(false);
+    }
+    condition_matches(condition, labels)
+}
+
 pub(crate) fn format_label(key: &str, value: Option<&str>) -> String {
     match value {
         Some(value) => format!("{key}={value}"),
@@ -283,6 +293,21 @@ mod tests {
         let labels = vec![label(FEEDBACK_REQUESTED_LABEL_KEY, None)];
 
         assert!(is_automation_blocked(&labels));
+    }
+
+    #[test]
+    fn automation_selector_excludes_blocked_items_even_when_condition_matches() {
+        let labels = vec![
+            label(STATE_LABEL_KEY, Some("open")),
+            label(AUTOMATION_BLOCKED_LABEL_KEY, None),
+        ];
+        let selector = Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: STATE_LABEL_KEY.to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::String("open".to_owned()),
+        })]);
+
+        assert!(!automation_selector_matches(&selector, &labels).unwrap());
     }
 
     #[test]
