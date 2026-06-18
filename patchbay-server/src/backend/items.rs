@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, str::FromStr};
 use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
-    QueryOrder, Statement, TransactionTrait,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseTransaction,
+    EntityTrait, QueryFilter, QueryOrder, Statement, TransactionTrait,
 };
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -414,16 +414,16 @@ pub async fn claim_item(
         .transpose()
         .context("failed to read claimed item id")?;
 
-    let Some(item_id) = claimed_id else {
-        txn.commit().await.context("failed to commit empty claim")?;
-        return Ok(None);
-    };
-
-    let item = record_claim_in_tx(&txn, project_id, item_id, agent_id, &state_filter).await?;
-    txn.commit().await.context("failed to commit item claim")?;
-    events::publish_work_item_changed(project_name, item_id);
-
-    Ok(Some(model_to_view(store, item).await?))
+    let item =
+        record_claimed_id_in_tx(&txn, project_id, claimed_id, agent_id, &state_filter).await?;
+    commit_claim_transaction(
+        store,
+        project_name,
+        txn,
+        item,
+        "failed to commit item claim",
+    )
+    .await
 }
 
 pub async fn claim_item_matching_condition(
@@ -460,30 +460,38 @@ pub async fn claim_item_matching_condition(
         }
         let source_state = item_labels::source_state_for_new_claim(&labels);
 
-        let now = utc_now();
-        let claimed_id = claim_existing_item_in_tx(
+        let claimed = claim_candidate_in_tx(
             &txn,
             project_id,
             candidate.id,
             agent_id,
-            now,
+            &source_state,
             FinishedClaimPolicy::AllowFinished,
         )
         .await?;
 
-        let Some(item_id) = claimed_id else {
+        let Some(item) = claimed else {
             continue;
         };
 
-        let item = record_claim_in_tx(&txn, project_id, item_id, agent_id, &source_state).await?;
-        txn.commit().await.context("failed to commit item claim")?;
-        events::publish_work_item_changed(project_name, item_id);
-
-        return Ok(Some(model_to_view(store, item).await?));
+        return commit_claim_transaction(
+            store,
+            project_name,
+            txn,
+            Some(item),
+            "failed to commit item claim",
+        )
+        .await;
     }
 
-    txn.commit().await.context("failed to commit empty claim")?;
-    Ok(None)
+    commit_claim_transaction(
+        store,
+        project_name,
+        txn,
+        None,
+        "failed to commit empty claim",
+    )
+    .await
 }
 
 pub async fn claim_specific_item(
@@ -502,39 +510,35 @@ pub async fn claim_specific_item(
         .context("failed to start specific item claim")?;
     let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
     if existing.claimed_by.is_some() || existing.finished_at.is_some() {
-        txn.commit()
-            .await
-            .context("failed to commit empty specific claim")?;
-        return Ok(None);
+        return commit_claim_transaction(
+            store,
+            project_name,
+            txn,
+            None,
+            "failed to commit empty specific claim",
+        )
+        .await;
     }
     let labels = labels_for_item(&txn, project_id, item_id).await?;
     let source_state = item_labels::source_state_for_new_claim(&labels);
-    let now = utc_now();
-
-    let claimed_id = claim_existing_item_in_tx(
+    let claimed = claim_candidate_in_tx(
         &txn,
         project_id,
         item_id,
         agent_id,
-        now,
+        &source_state,
         FinishedClaimPolicy::RejectFinished,
     )
     .await?;
 
-    let Some(item_id) = claimed_id else {
-        txn.commit()
-            .await
-            .context("failed to commit empty specific claim")?;
-        return Ok(None);
-    };
-
-    let item = record_claim_in_tx(&txn, project_id, item_id, agent_id, &source_state).await?;
-    txn.commit()
-        .await
-        .context("failed to commit specific item claim")?;
-    events::publish_work_item_changed(project_name, item_id);
-
-    Ok(Some(model_to_view(store, item).await?))
+    commit_claim_transaction(
+        store,
+        project_name,
+        txn,
+        claimed,
+        "failed to commit specific item claim",
+    )
+    .await
 }
 
 pub async fn release_item(
@@ -1095,17 +1099,18 @@ where
         .ok_or_else(|| report!("label {label_id} does not exist on item {item_id}"))
 }
 
-async fn claim_existing_item_in_tx<C>(
+async fn claim_candidate_in_tx<C>(
     conn: &C,
     project_id: i64,
     item_id: i64,
     agent_id: &str,
-    now: String,
+    source_state: &str,
     finished_policy: FinishedClaimPolicy,
-) -> Result<Option<i64>>
+) -> Result<Option<WorkItemModel>>
 where
     C: sea_orm::ConnectionTrait,
 {
+    let now = utc_now();
     let sql = match finished_policy {
         FinishedClaimPolicy::RejectFinished => {
             r#"
@@ -1140,7 +1145,7 @@ where
         }
     };
 
-    Ok(conn
+    let claimed_id = conn
         .query_one(Statement::from_sql_and_values(
             sea_orm::DbBackend::Sqlite,
             sql,
@@ -1155,7 +1160,45 @@ where
         .context("failed to claim work item")?
         .map(|row| row.try_get::<i64>("", "id"))
         .transpose()
-        .context("failed to read claimed item id")?)
+        .context("failed to read claimed item id")?;
+
+    record_claimed_id_in_tx(conn, project_id, claimed_id, agent_id, source_state).await
+}
+
+async fn record_claimed_id_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    claimed_id: Option<i64>,
+    agent_id: &str,
+    source_state: &str,
+) -> Result<Option<WorkItemModel>>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let Some(item_id) = claimed_id else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        record_claim_in_tx(conn, project_id, item_id, agent_id, source_state).await?,
+    ))
+}
+
+async fn commit_claim_transaction(
+    store: &Store,
+    project_name: &str,
+    txn: DatabaseTransaction,
+    item: Option<WorkItemModel>,
+    commit_context: &'static str,
+) -> Result<Option<WorkItemView>> {
+    txn.commit().await.context(commit_context)?;
+
+    let Some(item) = item else {
+        return Ok(None);
+    };
+
+    events::publish_work_item_changed(project_name, item.id);
+    Ok(Some(model_to_view(store, item).await?))
 }
 
 async fn record_claim_in_tx<C>(
@@ -2596,6 +2639,41 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == "item_finished")
         );
+    }
+
+    #[tokio::test]
+    async fn specific_claim_does_not_reopen_finished_items() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Finished item".to_owned(),
+                description: "Should stay closed after completion".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        claim_item(&store, "demo", "agent-a", "open")
+            .await
+            .unwrap()
+            .unwrap();
+        finish_item(&store, "demo", item.id, "agent-a", "Finished")
+            .await
+            .unwrap();
+
+        let claimed = claim_specific_item(&store, "demo", item.id, "agent-b")
+            .await
+            .unwrap();
+        let reloaded = get_item(&store, "demo", item.id).await.unwrap();
+
+        assert!(claimed.is_none());
+        assert_eq!(reloaded.state.as_deref(), Some(FINISHED_STATE_LABEL));
+        assert_eq!(reloaded.claimed_by, None);
+        assert!(reloaded.finished_at.is_some());
     }
 
     #[tokio::test]
