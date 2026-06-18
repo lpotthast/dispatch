@@ -14,7 +14,6 @@ use crate::{
             comment::CommentModel,
             work_item::{self, WorkItem, WorkItemActiveModel, WorkItemModel},
             work_item_event,
-            work_item_label::{self, WorkItemLabel, WorkItemLabelActiveModel, WorkItemLabelModel},
         },
         events, item_labels, projects,
         storage::{Store, utc_now},
@@ -802,39 +801,7 @@ pub async fn list_project_labels(
     project_name: &str,
 ) -> Result<Vec<ProjectLabelView>> {
     let project_id = projects::project_id(store, project_name).await?;
-    let labels = WorkItemLabel::find()
-        .filter(work_item_label::Column::ProjectId.eq(project_id))
-        .order_by_asc(work_item_label::Column::Key)
-        .order_by_asc(work_item_label::Column::Value)
-        .all(store.db().as_ref())
-        .await
-        .context("failed to list project labels")?;
-
-    let mut grouped = std::collections::BTreeMap::<(String, Option<String>), (i64, String)>::new();
-    for label in labels {
-        let key = (label.key, label.value);
-        grouped
-            .entry(key)
-            .and_modify(|(count, last_used_at)| {
-                *count += 1;
-                if label.updated_at > *last_used_at {
-                    *last_used_at = label.updated_at.clone();
-                }
-            })
-            .or_insert((1, label.updated_at));
-    }
-
-    Ok(grouped
-        .into_iter()
-        .map(
-            |((key, value), (usage_count, last_used_at))| ProjectLabelView {
-                key,
-                value,
-                usage_count,
-                last_used_at,
-            },
-        )
-        .collect())
+    work_item_labels::project_label_summaries(store.db().as_ref(), project_id).await
 }
 
 pub async fn add_label(
@@ -856,14 +823,7 @@ pub async fn add_label(
         .context("failed to start label add")?;
     let item = work_items::get(&txn, project_id, item_id).await?;
     check_expected_version(expect_version, item.version)?;
-    if WorkItemLabel::find()
-        .filter(work_item_label::Column::WorkItemId.eq(item_id))
-        .filter(work_item_label::Column::Key.eq(&key))
-        .one(&txn)
-        .await
-        .context("failed to check existing label")?
-        .is_some()
-    {
+    if work_item_labels::item_has_key(&txn, project_id, item_id, &key, None).await? {
         bail!("item already has label '{key}'");
     }
 
@@ -901,7 +861,7 @@ pub async fn update_label(
         .context("failed to start label update")?;
     let item = work_items::get(&txn, project_id, item_id).await?;
     check_expected_version(expect_version, item.version)?;
-    let existing = get_label_model_in_tx(&txn, project_id, item_id, label_id).await?;
+    let existing = work_item_labels::get_for_item(&txn, project_id, item_id, label_id).await?;
     let key = match key {
         Some(key) => item_labels::normalize_key(key)?,
         None => existing.key.clone(),
@@ -911,26 +871,11 @@ pub async fn update_label(
         None => existing.value.clone(),
     };
     item_labels::validate_pair(&key, value.as_deref())?;
-    if WorkItemLabel::find()
-        .filter(work_item_label::Column::WorkItemId.eq(item_id))
-        .filter(work_item_label::Column::Key.eq(&key))
-        .filter(work_item_label::Column::Id.ne(label_id))
-        .one(&txn)
-        .await
-        .context("failed to check conflicting label")?
-        .is_some()
-    {
+    if work_item_labels::item_has_key(&txn, project_id, item_id, &key, Some(label_id)).await? {
         bail!("item already has label '{key}'");
     }
 
-    let mut active: WorkItemLabelActiveModel = existing.into();
-    active.key = Set(key.clone());
-    active.value = Set(value.clone());
-    active.updated_at = Set(utc_now());
-    active
-        .update(&txn)
-        .await
-        .context("failed to update label")?;
+    work_item_labels::update_in_tx(&txn, existing, key.clone(), value.clone()).await?;
     let updated = work_items::touch(&txn, item).await?;
     let body = format!(
         "Updated label {}",
@@ -960,7 +905,7 @@ pub async fn delete_label(
         .context("failed to start label delete")?;
     let item = work_items::get(&txn, project_id, item_id).await?;
     check_expected_version(expect_version, item.version)?;
-    let label = get_label_model_in_tx(&txn, project_id, item_id, label_id).await?;
+    let label = work_item_labels::get_for_item(&txn, project_id, item_id, label_id).await?;
     if label.key == STATE_LABEL_KEY {
         bail!("state label cannot be deleted; move the item to another state instead");
     }
@@ -968,10 +913,7 @@ pub async fn delete_label(
         "Deleted label {}",
         item_labels::format_label(&label.key, label.value.as_deref())
     );
-    WorkItemLabel::delete_by_id(label_id)
-        .exec(&txn)
-        .await
-        .context("failed to delete label")?;
+    work_item_labels::delete_by_id_in_tx(&txn, label_id).await?;
     let updated = work_items::touch(&txn, item).await?;
     work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "label_deleted", &body)
         .await?;
@@ -1243,24 +1185,6 @@ fn labels_for_item(
         .get(&item_id)
         .map(Vec::as_slice)
         .unwrap_or(&[])
-}
-
-async fn get_label_model_in_tx<C>(
-    conn: &C,
-    project_id: i64,
-    item_id: i64,
-    label_id: i64,
-) -> Result<WorkItemLabelModel>
-where
-    C: sea_orm::ConnectionTrait,
-{
-    WorkItemLabel::find_by_id(label_id)
-        .filter(work_item_label::Column::ProjectId.eq(project_id))
-        .filter(work_item_label::Column::WorkItemId.eq(item_id))
-        .one(conn)
-        .await
-        .context_with(|| format!("failed to load label {label_id}"))?
-        .ok_or_else(|| report!("label {label_id} does not exist on item {item_id}"))
 }
 
 async fn claim_candidate_in_tx<C>(
