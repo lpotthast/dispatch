@@ -12,7 +12,7 @@ Inputs include:
 - agent id;
 - desired source state, usually `open`.
 
-The server chooses an unclaimed item from the requested state, skips items with `patchbay:automation-blocked`, records the source state in `patchbay:claimed-from-state`, marks the item `in_progress`, records claim ownership and timestamps, increments version, and emits workflow events. Default automation requests the `open` state; user-defined automation selectors can target other labels but the blocked-label exclusion is implicit. `item claim` never defaults to `PATCHBAY_CLAIMED_ITEM_ID`.
+The server chooses an unclaimed item from the requested state, skips items with `patchbay:automation-blocked`, records the source state in `patchbay:claimed-from-state`, marks the item `in_progress`, records claim ownership and timestamps, increments version, and emits workflow events. New claims capture the item's current `state` label as the release source and overwrite any stale `patchbay:claimed-from-state` label left on the item. Default automation requests the `open` state; user-defined automation selectors can target other labels but the blocked-label exclusion is implicit. `item claim` never defaults to `PATCHBAY_CLAIMED_ITEM_ID`.
 
 If no eligible item exists, the API reports that condition without creating implicit work.
 

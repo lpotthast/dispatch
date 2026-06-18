@@ -60,6 +60,12 @@ pub enum ReleaseAutomationDisposition {
     Blocked,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FinishedClaimPolicy {
+    AllowFinished,
+    RejectFinished,
+}
+
 pub async fn list_items(
     store: &Store,
     project_name: &str,
@@ -406,40 +412,7 @@ pub async fn claim_item(
         return Ok(None);
     };
 
-    upsert_label_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        CLAIMED_FROM_STATE_LABEL_KEY,
-        Some(state_filter.as_str()),
-    )
-    .await?;
-    upsert_label_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        STATE_LABEL_KEY,
-        Some(CLAIMED_STATE_LABEL),
-    )
-    .await?;
-    let comment_body = format!("Claimed by {agent_id}");
-    insert_comment_in_tx(
-        &txn,
-        item_id,
-        AuthorType::System,
-        None,
-        comment_body.as_str(),
-    )
-    .await?;
-    record_event_in_tx(
-        &txn,
-        project_id,
-        Some(item_id),
-        "item_claimed",
-        comment_body.as_str(),
-    )
-    .await?;
-    let item = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    let item = record_claim_in_tx(&txn, project_id, item_id, agent_id, &state_filter).await?;
     txn.commit().await.context("failed to commit item claim")?;
     events::publish_work_item_changed(project_name, item_id);
 
@@ -478,76 +451,24 @@ pub async fn claim_item_matching_condition(
         if !label_condition_matches(condition, &labels)? {
             continue;
         }
-        let source_state = claimed_from_state(&labels);
+        let source_state = source_state_for_new_claim(&labels);
 
         let now = utc_now();
-        let claimed_id = txn
-            .query_one(Statement::from_sql_and_values(
-                sea_orm::DbBackend::Sqlite,
-                r#"
-                UPDATE work_items
-                SET claimed_by = ?3,
-                    claimed_at = ?4,
-                    claim_expires_at = NULL,
-                    finished_at = NULL,
-                    version = version + 1,
-                    updated_at = ?4
-                WHERE id = ?2
-                  AND project_id = ?1
-                  AND claimed_by IS NULL
-                RETURNING id
-                "#,
-                vec![
-                    project_id.into(),
-                    candidate.id.into(),
-                    agent_id.to_owned().into(),
-                    now.clone().into(),
-                ],
-            ))
-            .await
-            .context("failed to claim matching work item")?
-            .map(|row| row.try_get::<i64>("", "id"))
-            .transpose()
-            .context("failed to read claimed item id")?;
+        let claimed_id = claim_existing_item_in_tx(
+            &txn,
+            project_id,
+            candidate.id,
+            agent_id,
+            now,
+            FinishedClaimPolicy::AllowFinished,
+        )
+        .await?;
 
         let Some(item_id) = claimed_id else {
             continue;
         };
 
-        upsert_label_in_tx(
-            &txn,
-            project_id,
-            item_id,
-            CLAIMED_FROM_STATE_LABEL_KEY,
-            Some(source_state.as_str()),
-        )
-        .await?;
-        upsert_label_in_tx(
-            &txn,
-            project_id,
-            item_id,
-            STATE_LABEL_KEY,
-            Some(CLAIMED_STATE_LABEL),
-        )
-        .await?;
-        let comment_body = format!("Claimed by {agent_id}");
-        insert_comment_in_tx(
-            &txn,
-            item_id,
-            AuthorType::System,
-            None,
-            comment_body.as_str(),
-        )
-        .await?;
-        record_event_in_tx(
-            &txn,
-            project_id,
-            Some(item_id),
-            "item_claimed",
-            comment_body.as_str(),
-        )
-        .await?;
-        let item = get_item_model_in_tx(&txn, project_id, item_id).await?;
+        let item = record_claim_in_tx(&txn, project_id, item_id, agent_id, &source_state).await?;
         txn.commit().await.context("failed to commit item claim")?;
         events::publish_work_item_changed(project_name, item_id);
 
@@ -580,38 +501,18 @@ pub async fn claim_specific_item(
         return Ok(None);
     }
     let labels = labels_for_item(&txn, project_id, item_id).await?;
-    let source_state = claimed_from_state(&labels);
+    let source_state = source_state_for_new_claim(&labels);
     let now = utc_now();
 
-    let claimed_id = txn
-        .query_one(Statement::from_sql_and_values(
-            sea_orm::DbBackend::Sqlite,
-            r#"
-            UPDATE work_items
-            SET claimed_by = ?3,
-                claimed_at = ?4,
-                claim_expires_at = NULL,
-                finished_at = NULL,
-                version = version + 1,
-                updated_at = ?4
-            WHERE id = ?2
-              AND project_id = ?1
-              AND claimed_by IS NULL
-              AND finished_at IS NULL
-            RETURNING id
-            "#,
-            vec![
-                project_id.into(),
-                item_id.into(),
-                agent_id.to_owned().into(),
-                now.clone().into(),
-            ],
-        ))
-        .await
-        .context("failed to claim specific work item")?
-        .map(|row| row.try_get::<i64>("", "id"))
-        .transpose()
-        .context("failed to read claimed item id")?;
+    let claimed_id = claim_existing_item_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        agent_id,
+        now,
+        FinishedClaimPolicy::RejectFinished,
+    )
+    .await?;
 
     let Some(item_id) = claimed_id else {
         txn.commit()
@@ -620,40 +521,7 @@ pub async fn claim_specific_item(
         return Ok(None);
     };
 
-    upsert_label_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        CLAIMED_FROM_STATE_LABEL_KEY,
-        Some(source_state.as_str()),
-    )
-    .await?;
-    upsert_label_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        STATE_LABEL_KEY,
-        Some(CLAIMED_STATE_LABEL),
-    )
-    .await?;
-    let comment_body = format!("Claimed by {agent_id}");
-    insert_comment_in_tx(
-        &txn,
-        item_id,
-        AuthorType::System,
-        None,
-        comment_body.as_str(),
-    )
-    .await?;
-    record_event_in_tx(
-        &txn,
-        project_id,
-        Some(item_id),
-        "item_claimed",
-        comment_body.as_str(),
-    )
-    .await?;
-    let item = get_item_model_in_tx(&txn, project_id, item_id).await?;
+    let item = record_claim_in_tx(&txn, project_id, item_id, agent_id, &source_state).await?;
     txn.commit()
         .await
         .context("failed to commit specific item claim")?;
@@ -681,7 +549,7 @@ pub async fn release_item(
     let existing = get_item_model_in_tx(&txn, project_id, item_id).await?;
     ensure_active_claim(&existing, agent_id)?;
     let labels = labels_for_item(&txn, project_id, item_id).await?;
-    let release_state = claimed_from_state(&labels);
+    let release_state = release_state_from_claim_labels(&labels);
 
     let now = utc_now();
     let version = existing.version;
@@ -1214,6 +1082,115 @@ where
         .ok_or_else(|| report!("label {label_id} does not exist on item {item_id}"))
 }
 
+async fn claim_existing_item_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    agent_id: &str,
+    now: String,
+    finished_policy: FinishedClaimPolicy,
+) -> Result<Option<i64>>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let sql = match finished_policy {
+        FinishedClaimPolicy::RejectFinished => {
+            r#"
+        UPDATE work_items
+        SET claimed_by = ?3,
+            claimed_at = ?4,
+            claim_expires_at = NULL,
+            finished_at = NULL,
+            version = version + 1,
+            updated_at = ?4
+        WHERE id = ?2
+          AND project_id = ?1
+          AND claimed_by IS NULL
+          AND finished_at IS NULL
+        RETURNING id
+        "#
+        }
+        FinishedClaimPolicy::AllowFinished => {
+            r#"
+        UPDATE work_items
+        SET claimed_by = ?3,
+            claimed_at = ?4,
+            claim_expires_at = NULL,
+            finished_at = NULL,
+            version = version + 1,
+            updated_at = ?4
+        WHERE id = ?2
+          AND project_id = ?1
+          AND claimed_by IS NULL
+        RETURNING id
+        "#
+        }
+    };
+
+    Ok(conn
+        .query_one(Statement::from_sql_and_values(
+            sea_orm::DbBackend::Sqlite,
+            sql,
+            vec![
+                project_id.into(),
+                item_id.into(),
+                agent_id.to_owned().into(),
+                now.into(),
+            ],
+        ))
+        .await
+        .context("failed to claim work item")?
+        .map(|row| row.try_get::<i64>("", "id"))
+        .transpose()
+        .context("failed to read claimed item id")?)
+}
+
+async fn record_claim_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    agent_id: &str,
+    source_state: &str,
+) -> Result<WorkItemModel>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    upsert_label_in_tx(
+        conn,
+        project_id,
+        item_id,
+        CLAIMED_FROM_STATE_LABEL_KEY,
+        Some(source_state),
+    )
+    .await?;
+    upsert_label_in_tx(
+        conn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(CLAIMED_STATE_LABEL),
+    )
+    .await?;
+    let comment_body = format!("Claimed by {agent_id}");
+    insert_comment_in_tx(
+        conn,
+        item_id,
+        AuthorType::System,
+        None,
+        comment_body.as_str(),
+    )
+    .await?;
+    record_event_in_tx(
+        conn,
+        project_id,
+        Some(item_id),
+        "item_claimed",
+        comment_body.as_str(),
+    )
+    .await?;
+    get_item_model_in_tx(conn, project_id, item_id).await
+}
+
 async fn item_ids_with_state<C>(conn: &C, project_id: i64, state: &str) -> Result<Vec<i64>>
 where
     C: sea_orm::ConnectionTrait,
@@ -1309,18 +1286,24 @@ fn automation_blocked(labels: &[WorkItemLabelView]) -> bool {
         .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
 }
 
-fn claimed_from_state(labels: &[WorkItemLabelView]) -> String {
+fn source_state_for_new_claim(labels: &[WorkItemLabelView]) -> String {
+    current_state_label(labels).unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
+}
+
+fn release_state_from_claim_labels(labels: &[WorkItemLabelView]) -> String {
     labels
         .iter()
         .find(|label| label.key == CLAIMED_FROM_STATE_LABEL_KEY)
         .and_then(|label| label.value.clone())
-        .or_else(|| {
-            labels
-                .iter()
-                .find(|label| label.key == STATE_LABEL_KEY)
-                .and_then(|label| label.value.clone())
-        })
+        .or_else(|| current_state_label(labels))
         .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
+}
+
+fn current_state_label(labels: &[WorkItemLabelView]) -> Option<String> {
+    labels
+        .iter()
+        .find(|label| label.key == STATE_LABEL_KEY)
+        .and_then(|label| label.value.clone())
 }
 
 async fn labels_for_item<C>(
@@ -1440,10 +1423,7 @@ async fn models_to_views(store: &Store, items: Vec<WorkItemModel>) -> Result<Vec
 
 async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemView> {
     let labels = labels_for_item(store.db().as_ref(), item.project_id, item.id).await?;
-    let state = labels
-        .iter()
-        .find(|label| label.key == STATE_LABEL_KEY)
-        .and_then(|label| label.value.clone());
+    let state = current_state_label(&labels);
     let comment_count = comment::Comment::find()
         .filter(comment::Column::WorkItemId.eq(item.id))
         .count(store.db().as_ref())
@@ -2369,6 +2349,108 @@ mod tests {
 
         assert_eq!(released.state.as_deref(), Some("triage"));
         assert_eq!(released.claimed_by, None);
+    }
+
+    #[tokio::test]
+    async fn new_claims_overwrite_stale_claim_source_with_current_state() {
+        let (_temp, store) = test_store().await;
+        let selector_item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Selector retry".to_owned(),
+                description: "Claim source should come from the current state label".to_owned(),
+                state: "ready".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            selector_item.id,
+            CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
+            Some("open".to_owned()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let selector = Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: STATE_LABEL_KEY.to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::String("ready".to_owned()),
+        })]);
+        let claimed = claim_item_matching_condition(&store, "demo", "agent-a", &selector)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
+        assert!(claimed.labels.iter().any(|label| {
+            label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("ready")
+        }));
+
+        let released = release_item(
+            &store,
+            "demo",
+            selector_item.id,
+            "agent-a",
+            None,
+            ReleaseAutomationDisposition::Claimable,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(released.state.as_deref(), Some("ready"));
+
+        let specific_item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Specific retry".to_owned(),
+                description: "Specific claims use the same source-state rule".to_owned(),
+                state: "triage".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            specific_item.id,
+            CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
+            Some("open".to_owned()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let claimed = claim_specific_item(&store, "demo", specific_item.id, "agent-b")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(claimed.labels.iter().any(|label| {
+            label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("triage")
+        }));
+
+        let released = release_item(
+            &store,
+            "demo",
+            specific_item.id,
+            "agent-b",
+            None,
+            ReleaseAutomationDisposition::Claimable,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(released.state.as_deref(), Some("triage"));
     }
 
     #[tokio::test]
