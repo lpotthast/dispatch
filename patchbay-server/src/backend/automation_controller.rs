@@ -1,10 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use rootcause::{Result, prelude::*};
-use tokio::{
-    sync::{Mutex, watch},
-    task::JoinHandle,
-};
+use rootcause::Result;
+use tokio::sync::{Mutex, watch};
 
 use crate::backend::{events, process_sessions::ProcessSessionRegistry, projects, storage::Store};
 
@@ -16,7 +13,6 @@ pub struct AutomationController {
 #[derive(Debug)]
 struct ProjectAutomation {
     shutdown: watch::Sender<bool>,
-    handle: JoinHandle<()>,
 }
 
 impl AutomationController {
@@ -24,27 +20,16 @@ impl AutomationController {
         Self::default()
     }
 
-    pub async fn start_project(
-        &self,
-        store: Store,
-        project_name: String,
-        sessions: ProcessSessionRegistry,
-    ) -> Result<()> {
-        projects::get_project(&store, &project_name).await?;
+    pub async fn start_project(&self, store: &Store, project_name: String) -> Result<()> {
+        projects::get_project(store, &project_name).await?;
 
         let mut projects = self.projects.lock().await;
         if projects.contains_key(&project_name) {
             return Ok(());
         }
 
-        let (shutdown, shutdown_rx) = watch::channel(false);
-        let handle = tokio::spawn(run_project_automation(
-            store,
-            project_name.clone(),
-            sessions,
-            shutdown_rx,
-        ));
-        projects.insert(project_name.clone(), ProjectAutomation { shutdown, handle });
+        let (shutdown, _) = watch::channel(false);
+        projects.insert(project_name.clone(), ProjectAutomation { shutdown });
         events::publish_automation_changed(&project_name);
         Ok(())
     }
@@ -58,10 +43,6 @@ impl AutomationController {
         sessions.cancel_project(project_name).await;
         if let Some(automation) = automation {
             let _ = automation.shutdown.send(true);
-            automation
-                .handle
-                .await
-                .context("project automation task failed")?;
         }
         events::publish_automation_changed(project_name);
         Ok(())
@@ -74,15 +55,6 @@ impl AutomationController {
             let _ = automation.shutdown.send(true);
         }
         sessions.cancel_all().await;
-        for (project_name, automation) in projects {
-            if let Err(err) = automation.handle.await {
-                tracing::error!(
-                    project = %project_name,
-                    error = %format_args!("{err:#}"),
-                    "project automation task failed"
-                );
-            }
-        }
         for project_name in project_names {
             events::publish_automation_changed(&project_name);
         }
@@ -116,30 +88,12 @@ impl AutomationController {
     }
 }
 
-async fn run_project_automation(
-    _store: Store,
-    _project_name: String,
-    _sessions: ProcessSessionRegistry,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    while !*shutdown.borrow() {
-        if shutdown.changed().await.is_err() {
-            break;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use tempfile::TempDir;
 
     use super::*;
-    use crate::backend::{
-        automation,
-        projects::{CreateProject, create_project},
-    };
+    use crate::backend::projects::{CreateProject, create_project};
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
@@ -164,27 +118,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn controller_idles_without_creating_runs_when_no_work_exists() {
+    async fn controller_tracks_active_projects_and_cancellation_senders() {
         let (_temp, store) = test_store().await;
         let controller = AutomationController::new();
         let sessions = ProcessSessionRegistry::new();
 
         controller
-            .start_project(store.clone(), "demo".to_owned(), sessions.clone())
+            .start_project(&store, "demo".to_owned())
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(25)).await;
 
         assert!(controller.is_project_running("demo").await);
-        assert!(
-            automation::list_runs(&store, "demo", None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(controller.active_project_names().await, vec!["demo"]);
+
+        let cancellations = controller.project_cancellations().await;
+        let cancellation = cancellations
+            .get("demo")
+            .expect("active project should expose cancellation");
+        assert!(!*cancellation.borrow());
 
         controller.stop_project("demo", &sessions).await.unwrap();
 
         assert!(!controller.is_project_running("demo").await);
+        assert_eq!(
+            controller.active_project_names().await,
+            Vec::<String>::new()
+        );
+        assert!(*cancellation.borrow());
     }
 }

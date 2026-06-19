@@ -880,7 +880,7 @@ async fn start_automation(
         }
         state
             .automation_controller
-            .start_project(state.store.clone(), project.clone(), state.sessions.clone())
+            .start_project(&state.store, project.clone())
             .await
     };
 
