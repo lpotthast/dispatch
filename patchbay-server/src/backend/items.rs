@@ -11,7 +11,7 @@ use crate::{
             work_item::{self, WorkItem, WorkItemActiveModel},
             work_item_event,
         },
-        events, item_labels, projects,
+        events, item_labels, label_conditions, projects,
         storage::{Store, utc_now},
         work_item_events, work_item_labels, work_item_relationships,
         work_item_updates::{self, WorkItemUpdatePlan},
@@ -111,7 +111,7 @@ pub async fn item_matches_condition(
     item_id: i64,
     condition: &Condition,
 ) -> Result<bool> {
-    let selector = item_labels::ValidatedLabelCondition::new(condition)?;
+    let selector = label_conditions::ValidatedLabelCondition::new(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
     let item = work_items::get(store.db().as_ref(), project_id, item_id).await?;
     let labels = work_item_labels::for_item(store.db().as_ref(), project_id, item.id).await?;

@@ -14,9 +14,9 @@ use crate::{
             comment::CommentModel,
             work_item::{self, WorkItem, WorkItemActiveModel, WorkItemModel},
         },
-        events, item_labels, projects,
+        events, item_labels, label_conditions, projects,
         storage::{Store, utc_now},
-        work_item_comments, work_item_events, work_item_labels, work_items,
+        work_item_comments, work_item_events, work_item_labels, work_items, workflow_labels,
     },
     shared::view_models::{
         AuthorType, CommentView, RecoveredClaimView, WorkItemLabelView, WorkItemView,
@@ -48,21 +48,21 @@ impl ClaimReturnMode<'_> {
         }
     }
 
-    fn label_disposition(&self) -> item_labels::ClaimReturnLabelDisposition {
+    fn label_disposition(&self) -> workflow_labels::ClaimReturnLabelDisposition {
         match self {
             Self::Release {
                 automation_disposition,
                 ..
             } => match automation_disposition {
                 ReleaseAutomationDisposition::Claimable => {
-                    item_labels::ClaimReturnLabelDisposition::ClaimableRelease
+                    workflow_labels::ClaimReturnLabelDisposition::ClaimableRelease
                 }
                 ReleaseAutomationDisposition::Blocked => {
-                    item_labels::ClaimReturnLabelDisposition::BlockedRelease
+                    workflow_labels::ClaimReturnLabelDisposition::BlockedRelease
                 }
             },
             Self::FeedbackRequest { .. } => {
-                item_labels::ClaimReturnLabelDisposition::FeedbackRequest
+                workflow_labels::ClaimReturnLabelDisposition::FeedbackRequest
             }
         }
     }
@@ -137,7 +137,7 @@ pub async fn has_claimable_item_matching_condition(
     project_name: &str,
     condition: &Condition,
 ) -> Result<bool> {
-    let selector = item_labels::ValidatedLabelCondition::new(condition)?;
+    let selector = label_conditions::ValidatedLabelCondition::new(condition)?;
     let project_id = projects::project_id(store, project_name).await?;
     let items = claimable_items_in_claim_order(store.db().as_ref(), project_id).await?;
     let labels_by_item =
@@ -169,7 +169,7 @@ pub async fn claim_item(
         .await
         .context("failed to start item claim")?;
     let item = claim_first_matching_candidate_in_tx(&txn, project_id, agent_id, |labels| {
-        !item_labels::is_automation_blocked(labels)
+        !workflow_labels::is_automation_blocked(labels)
             && item_labels::current_state(labels).as_deref() == Some(state_filter.as_str())
     })
     .await?;
@@ -191,7 +191,7 @@ pub async fn claim_item_matching_condition(
     condition: &Condition,
 ) -> Result<Option<WorkItemView>> {
     validate_agent_id(agent_id)?;
-    let selector = item_labels::ValidatedLabelCondition::new(condition)?;
+    let selector = label_conditions::ValidatedLabelCondition::new(condition)?;
 
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -240,7 +240,7 @@ pub async fn claim_specific_item(
         .await;
     }
     let labels = work_item_labels::for_item(&txn, project_id, item_id).await?;
-    let source_state = item_labels::source_state_for_new_claim(&labels);
+    let source_state = workflow_labels::source_state_for_new_claim(&labels);
     let claimed = claim_candidate_in_tx(&txn, project_id, item_id, agent_id, &source_state).await?;
 
     commit_claim_transaction(
@@ -367,7 +367,7 @@ pub async fn finish_item(
         &txn,
         project_id,
         item_id,
-        item_labels::finish_workflow_label_plan(),
+        workflow_labels::finish_workflow_label_plan(),
     )
     .await?;
     work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report)
@@ -446,7 +446,7 @@ async fn return_claim_to_source_state(
     let txn = store.db().begin().await.context(mode.start_context())?;
     let claim = load_active_claim_in_tx(&txn, project_id, item_id, agent_id).await?;
     let labels = work_item_labels::for_item(&txn, project_id, item_id).await?;
-    let release_state = item_labels::release_state_from_claim_labels(&labels);
+    let release_state = workflow_labels::release_state_from_claim_labels(&labels);
 
     let active = claim.clear_active_model(utc_now());
     let updated = active.update(&txn).await.context(mode.update_context())?;
@@ -455,7 +455,7 @@ async fn return_claim_to_source_state(
         &txn,
         project_id,
         item_id,
-        item_labels::claim_return_workflow_label_plan(&release_state, mode.label_disposition()),
+        workflow_labels::claim_return_workflow_label_plan(&release_state, mode.label_disposition()),
     )
     .await?;
 
@@ -518,7 +518,7 @@ async fn apply_workflow_label_plan_in_tx<C>(
     conn: &C,
     project_id: i64,
     item_id: i64,
-    plan: item_labels::WorkflowLabelPlan<'_>,
+    plan: workflow_labels::WorkflowLabelPlan<'_>,
 ) -> Result<()>
 where
     C: ConnectionTrait,
@@ -592,7 +592,7 @@ where
             continue;
         }
 
-        let source_state = item_labels::source_state_for_new_claim(labels);
+        let source_state = workflow_labels::source_state_for_new_claim(labels);
         let claimed =
             claim_candidate_in_tx(conn, project_id, candidate.id, agent_id, &source_state).await?;
 
@@ -686,7 +686,7 @@ where
         conn,
         project_id,
         item_id,
-        item_labels::new_claim_workflow_label_plan(source_state),
+        workflow_labels::new_claim_workflow_label_plan(source_state),
     )
     .await?;
     let comment_body = format!("Claimed by {agent_id}");
