@@ -1,6 +1,11 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::{borrow::Cow, env, fs, path::Path, time::Duration};
+use std::{
+    borrow::Cow,
+    env, fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use assertr::prelude::*;
 use browser_test::thirtyfour::{By, ChromiumLikeCapabilities, Key, WebDriver};
@@ -9,6 +14,7 @@ use browser_test::{
     BrowserTestVisibility, BrowserTests, BrowserTimeouts, ChromeBinary, PauseConfig, async_trait,
 };
 use leptos_browser_test::{LeptosTestApp, LeptosTestAppConfig, Report, ResultExt, bail};
+use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use tempfile::TempDir;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -64,6 +70,7 @@ async fn browser_tests() -> Result<(), Report> {
 struct PatchbayTestApp {
     _app: LeptosTestApp,
     _tmpdir: TempDir,
+    database: PathBuf,
     base_url: String,
 }
 
@@ -100,6 +107,7 @@ impl PatchbayTestApp {
         Ok(Self {
             _app: app,
             _tmpdir: tmpdir,
+            database,
             base_url,
         })
     }
@@ -355,6 +363,25 @@ impl BrowserTest<PatchbayTestApp> for PatchbayBoardTest {
         assert_source_contains(driver, "0 running (0 mutating, 0 read-only)").await?;
         assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
             .await?;
+        seed_run_commit_outcome_fixtures(app).await?;
+        assert_run_log_commit_fixture(
+            driver,
+            app,
+            501,
+            "status-completed",
+            "Done. Created browser-test commit fixture.",
+            "committed 0123456789ab (required)",
+        )
+        .await?;
+        assert_run_log_commit_fixture(
+            driver,
+            app,
+            502,
+            "status-failed",
+            "Missing required commit: completed run left uncommitted changes.",
+            "missing required commit (required)",
+        )
+        .await?;
 
         driver
             .goto(app.url("/automation?project=demo"))
@@ -560,6 +587,255 @@ async fn create_alternate_project(driver: &WebDriver) -> Result<(), Report> {
         .context("failed to read alternate project setup response")?;
     assert_that!(created).is_true();
     Ok(())
+}
+
+async fn seed_run_commit_outcome_fixtures(app: &PatchbayTestApp) -> Result<(), Report> {
+    let db = Database::connect(format!("sqlite://{}?mode=rwc", app.database.display()))
+        .await
+        .context("failed to connect to Patchbay browser-test database")?;
+    db.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "PRAGMA foreign_keys = ON".to_owned(),
+    ))
+    .await
+    .context("failed to enable browser-test SQLite foreign keys")?;
+
+    // These run fields are server-owned and intentionally excluded from public CrudKit create and
+    // update models, so the browser test seeds deterministic rows directly in its private database.
+    let committed = db
+        .execute(Statement::from_string(
+            DbBackend::Sqlite,
+            r#"
+            INSERT INTO "agent_runs" (
+                "id",
+                "project_id",
+                "work_item_id",
+                "memory_event_id",
+                "trigger_id",
+                "trigger_name",
+                "tool_name",
+                "mutability",
+                "status",
+                "command",
+                "working_dir",
+                "worktree_path",
+                "branch_name",
+                "process_id",
+                "exit_code",
+                "log_path",
+                "prompt_path",
+                "agent_model",
+                "agent_reasoning_effort",
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+                "commit_required",
+                "commit_outcome",
+                "commit_shas",
+                "pr_requested",
+                "pr_url",
+                "cleanup_status",
+                "worktree_cleaned_at",
+                "result_summary",
+                "started_at",
+                "finished_at",
+                "created_at",
+                "updated_at"
+            )
+            SELECT
+                501,
+                "id",
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                'codex',
+                'mutating',
+                'completed',
+                'codex --browser-test',
+                '/tmp/patchbay-browser-test',
+                NULL,
+                NULL,
+                NULL,
+                0,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                1,
+                'committed',
+                '["0123456789abcdef0123456789abcdef01234567"]',
+                0,
+                NULL,
+                'not_applicable',
+                NULL,
+                'Done. Created browser-test commit fixture.',
+                '2026-06-19T10:00:00Z',
+                '2026-06-19T10:01:00Z',
+                '2026-06-19T10:00:00Z',
+                '2026-06-19T10:01:00Z'
+            FROM "projects"
+            WHERE "name" = 'demo';
+            "#
+            .to_owned(),
+        ))
+        .await
+        .context("failed to seed committed automation run fixture")?;
+    assert_that!(committed.rows_affected()).is_equal_to(1);
+
+    let missing_required = db
+        .execute(Statement::from_string(
+            DbBackend::Sqlite,
+            r#"
+            INSERT INTO "agent_runs" (
+                "id",
+                "project_id",
+                "work_item_id",
+                "memory_event_id",
+                "trigger_id",
+                "trigger_name",
+                "tool_name",
+                "mutability",
+                "status",
+                "command",
+                "working_dir",
+                "worktree_path",
+                "branch_name",
+                "process_id",
+                "exit_code",
+                "log_path",
+                "prompt_path",
+                "agent_model",
+                "agent_reasoning_effort",
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+                "commit_required",
+                "commit_outcome",
+                "commit_shas",
+                "pr_requested",
+                "pr_url",
+                "cleanup_status",
+                "worktree_cleaned_at",
+                "result_summary",
+                "started_at",
+                "finished_at",
+                "created_at",
+                "updated_at"
+            )
+            SELECT
+                502,
+                "id",
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                'codex',
+                'mutating',
+                'failed',
+                'codex --browser-test',
+                '/tmp/patchbay-browser-test',
+                NULL,
+                NULL,
+                NULL,
+                0,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                1,
+                'missing_required',
+                '[]',
+                0,
+                NULL,
+                'not_applicable',
+                NULL,
+                'Missing required commit: completed run left uncommitted changes.',
+                '2026-06-19T10:02:00Z',
+                '2026-06-19T10:03:00Z',
+                '2026-06-19T10:02:00Z',
+                '2026-06-19T10:03:00Z'
+            FROM "projects"
+            WHERE "name" = 'demo';
+            "#
+            .to_owned(),
+        ))
+        .await
+        .context("failed to seed missing-required automation run fixture")?;
+    assert_that!(missing_required.rows_affected()).is_equal_to(1);
+
+    Ok(())
+}
+
+async fn assert_run_log_commit_fixture(
+    driver: &WebDriver,
+    app: &PatchbayTestApp,
+    run_id: i64,
+    expected_result_class: &str,
+    expected_summary: &str,
+    expected_commit: &str,
+) -> Result<(), Report> {
+    driver
+        .goto(app.url(&format!("/projects/demo/automation/runs/{run_id}/log")))
+        .await
+        .context_with(|| format!("failed to open run #{run_id} log page"))?;
+    find(
+        driver,
+        By::XPath(format!(
+            "//main[contains(@class, 'run-log')]//h1[normalize-space()='Run #{run_id}']"
+        )),
+    )
+    .await?;
+
+    let summary = run_log_detail_text(driver, "result").await?;
+    assert_that!(summary).is_equal_to(expected_summary.to_owned());
+    let result_class = driver
+        .execute(
+            r#"
+            return document
+                .querySelector('main.run-log .run-result-inline')
+                ?.className
+                ?? '';
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect run result class")?
+        .convert::<String>()
+        .context("failed to read run result class")?;
+    assert_that!(result_class).contains(expected_result_class);
+
+    let commit = run_log_detail_text(driver, "commit").await?;
+    assert_that!(commit).is_equal_to(expected_commit.to_owned());
+    Ok(())
+}
+
+async fn run_log_detail_text(driver: &WebDriver, term: &str) -> Result<String, Report> {
+    let script = format!(
+        r#"
+        const term = {term:?};
+        const dt = Array.from(document.querySelectorAll('main.run-log dt'))
+            .find((element) => element.textContent.trim() === term);
+        const dd = dt?.nextElementSibling;
+        return dd?.tagName === 'DD' ? dd.textContent.trim() : '';
+        "#
+    );
+    let value = driver
+        .execute(&script, Vec::new())
+        .await
+        .context_with(|| format!("failed to inspect run-log detail {term:?}"))?
+        .convert::<String>()
+        .context_with(|| format!("failed to read run-log detail {term:?}"))?;
+    if value.is_empty() {
+        bail!("missing run-log detail {term:?}");
+    }
+    Ok(value)
 }
 
 async fn assert_swim_lane_create_form_exposes_structured_filter(
