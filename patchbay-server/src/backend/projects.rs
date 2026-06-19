@@ -76,6 +76,25 @@ pub struct UpdateProjectSettings {
 }
 
 #[derive(Clone, Debug)]
+struct ProjectSettingsPlan {
+    workspace_mode: WorkspaceMode,
+    max_code_edit_agents: i64,
+    max_read_only_agents: i64,
+    create_pr: bool,
+    auto_commit: bool,
+    commit_standard: String,
+    revert_strategy: RevertStrategy,
+    stale_claim_minutes: i64,
+    worktree_cleanup_policy: WorktreeCleanupPolicy,
+    default_agent_tool: AgentToolName,
+    default_agent_model: Option<String>,
+    default_agent_reasoning_effort: Option<AgentReasoningEffort>,
+    agent_sandbox_mode: AgentSandboxMode,
+    agent_extra_writable_roots: Vec<String>,
+    agent_git_command_policy: AgentGitCommandPolicy,
+}
+
+#[derive(Clone, Debug)]
 pub enum ProjectChangeSource {
     Agent {
         agent_id: String,
@@ -121,6 +140,152 @@ impl ProjectChangeSource {
             } => agent_run_id.or_else(|| agent_ids::parse_patchbay_run_agent_id(agent_id)),
             Self::User | Self::System => None,
         }
+    }
+}
+
+impl UpdateProjectSettings {
+    fn has_any_field(&self) -> bool {
+        self.workspace_mode.is_some()
+            || self.max_code_edit_agents.is_some()
+            || self.max_read_only_agents.is_some()
+            || self.create_pr.is_some()
+            || self.auto_commit.is_some()
+            || self.commit_standard.is_some()
+            || self.revert_strategy.is_some()
+            || self.stale_claim_minutes.is_some()
+            || self.worktree_cleanup_policy.is_some()
+            || self.default_agent_tool.is_some()
+            || self.default_agent_model.is_some()
+            || self.default_agent_reasoning_effort.is_some()
+            || self.agent_sandbox_mode.is_some()
+            || self.agent_extra_writable_roots.is_some()
+            || self.agent_git_command_policy.is_some()
+    }
+}
+
+impl ProjectSettingsPlan {
+    fn new(
+        update: UpdateProjectSettings,
+        existing: &ProjectModel,
+        database_path: &Path,
+    ) -> Result<Self> {
+        if !update.has_any_field() {
+            bail!("project settings update requires at least one field");
+        }
+
+        let workspace_mode = update
+            .workspace_mode
+            .unwrap_or(WorkspaceMode::from_str(&existing.workspace_mode)?);
+        let max_code_edit_agents = update
+            .max_code_edit_agents
+            .unwrap_or(existing.max_code_edit_agents);
+        let max_read_only_agents = update
+            .max_read_only_agents
+            .unwrap_or(existing.max_read_only_agents);
+        let create_pr = update.create_pr.unwrap_or(existing.create_pr);
+        let auto_commit = update.auto_commit.unwrap_or(existing.auto_commit);
+        let commit_standard = update
+            .commit_standard
+            .map(|value| value.trim().to_owned())
+            .unwrap_or_else(|| existing.commit_standard.clone());
+        let revert_strategy = update
+            .revert_strategy
+            .unwrap_or(RevertStrategy::from_str(&existing.revert_strategy)?);
+        let stale_claim_minutes = update
+            .stale_claim_minutes
+            .unwrap_or(existing.stale_claim_minutes);
+        let worktree_cleanup_policy =
+            update
+                .worktree_cleanup_policy
+                .unwrap_or(WorktreeCleanupPolicy::from_str(
+                    &existing.worktree_cleanup_policy,
+                )?);
+        let default_agent_tool = update
+            .default_agent_tool
+            .unwrap_or(AgentToolName::from_str(&existing.default_agent_tool)?);
+        let default_agent_model = update
+            .default_agent_model
+            .map(normalize_optional)
+            .unwrap_or_else(|| normalize_optional(existing.default_agent_model.clone()));
+        let default_agent_reasoning_effort = match update.default_agent_reasoning_effort {
+            Some(value) => value,
+            None => existing
+                .default_agent_reasoning_effort
+                .as_deref()
+                .map(str::parse::<AgentReasoningEffort>)
+                .transpose()?,
+        };
+        let agent_sandbox_mode = update
+            .agent_sandbox_mode
+            .unwrap_or(AgentSandboxMode::from_str(&existing.agent_sandbox_mode)?);
+        let agent_extra_writable_roots = match update.agent_extra_writable_roots {
+            Some(value) => normalize_agent_extra_writable_roots(value)?,
+            None => parse_agent_extra_writable_roots_storage(&existing.agent_extra_writable_roots)?,
+        };
+        let agent_git_command_policy =
+            update
+                .agent_git_command_policy
+                .unwrap_or(parse_agent_git_command_policy_storage(
+                    &existing.agent_git_command_policy,
+                )?);
+
+        validate_agent_extra_writable_roots_do_not_include_database(
+            &agent_extra_writable_roots,
+            database_path,
+        )?;
+        validate_settings(
+            workspace_mode,
+            max_code_edit_agents,
+            max_read_only_agents,
+            create_pr,
+            stale_claim_minutes,
+            default_agent_model.as_deref(),
+        )?;
+
+        Ok(Self {
+            workspace_mode,
+            max_code_edit_agents,
+            max_read_only_agents,
+            create_pr,
+            auto_commit,
+            commit_standard,
+            revert_strategy,
+            stale_claim_minutes,
+            worktree_cleanup_policy,
+            default_agent_tool,
+            default_agent_model,
+            default_agent_reasoning_effort,
+            agent_sandbox_mode,
+            agent_extra_writable_roots,
+            agent_git_command_policy,
+        })
+    }
+
+    fn apply_to(self, project: ProjectModel) -> ProjectActiveModel {
+        let mut active: ProjectActiveModel = project.into();
+        active.workspace_mode = Set(self.workspace_mode.as_storage().to_owned());
+        active.max_code_edit_agents = Set(self.max_code_edit_agents);
+        active.max_read_only_agents = Set(self.max_read_only_agents);
+        active.create_pr = Set(self.create_pr);
+        active.auto_commit = Set(self.auto_commit);
+        active.commit_standard = Set(self.commit_standard);
+        active.revert_strategy = Set(self.revert_strategy.as_storage().to_owned());
+        active.stale_claim_minutes = Set(self.stale_claim_minutes);
+        active.worktree_cleanup_policy = Set(self.worktree_cleanup_policy.as_storage().to_owned());
+        active.default_agent_tool = Set(self.default_agent_tool.as_storage().to_owned());
+        active.default_agent_model = Set(self.default_agent_model);
+        active.default_agent_reasoning_effort = Set(self
+            .default_agent_reasoning_effort
+            .map(|effort| effort.as_storage().to_owned()));
+        active.agent_sandbox_mode = Set(self.agent_sandbox_mode.as_storage().to_owned());
+        active.agent_extra_writable_roots = Set(serialize_agent_extra_writable_roots(
+            &self.agent_extra_writable_roots,
+        ));
+        active.agent_git_command_policy = Set(serialize_agent_git_command_policy(
+            &self.agent_git_command_policy,
+        ));
+        active.updated_at = Set(utc_now());
+        active
     }
 }
 
@@ -694,116 +859,8 @@ pub async fn update_settings(
     project_name: &str,
     update: UpdateProjectSettings,
 ) -> Result<ProjectSettingsView> {
-    if update.workspace_mode.is_none()
-        && update.max_code_edit_agents.is_none()
-        && update.max_read_only_agents.is_none()
-        && update.create_pr.is_none()
-        && update.auto_commit.is_none()
-        && update.commit_standard.is_none()
-        && update.revert_strategy.is_none()
-        && update.stale_claim_minutes.is_none()
-        && update.worktree_cleanup_policy.is_none()
-        && update.default_agent_tool.is_none()
-        && update.default_agent_model.is_none()
-        && update.default_agent_reasoning_effort.is_none()
-        && update.agent_sandbox_mode.is_none()
-        && update.agent_extra_writable_roots.is_none()
-        && update.agent_git_command_policy.is_none()
-    {
-        bail!("project settings update requires at least one field");
-    }
-
     let existing = find_project_by_name(store, project_name).await?;
-    let workspace_mode = update
-        .workspace_mode
-        .unwrap_or(WorkspaceMode::from_str(&existing.workspace_mode)?);
-    let max_code_edit_agents = update
-        .max_code_edit_agents
-        .unwrap_or(existing.max_code_edit_agents);
-    let max_read_only_agents = update
-        .max_read_only_agents
-        .unwrap_or(existing.max_read_only_agents);
-    let create_pr = update.create_pr.unwrap_or(existing.create_pr);
-    let auto_commit = update.auto_commit.unwrap_or(existing.auto_commit);
-    let commit_standard = update
-        .commit_standard
-        .map(|value| value.trim().to_owned())
-        .unwrap_or_else(|| existing.commit_standard.clone());
-    let revert_strategy = update
-        .revert_strategy
-        .unwrap_or(RevertStrategy::from_str(&existing.revert_strategy)?);
-    let stale_claim_minutes = update
-        .stale_claim_minutes
-        .unwrap_or(existing.stale_claim_minutes);
-    let worktree_cleanup_policy =
-        update
-            .worktree_cleanup_policy
-            .unwrap_or(WorktreeCleanupPolicy::from_str(
-                &existing.worktree_cleanup_policy,
-            )?);
-    let default_agent_tool = update
-        .default_agent_tool
-        .unwrap_or(AgentToolName::from_str(&existing.default_agent_tool)?);
-    let default_agent_model = update
-        .default_agent_model
-        .map(normalize_optional)
-        .unwrap_or_else(|| normalize_optional(existing.default_agent_model.clone()));
-    let default_agent_reasoning_effort = match update.default_agent_reasoning_effort {
-        Some(value) => value,
-        None => existing
-            .default_agent_reasoning_effort
-            .as_deref()
-            .map(str::parse::<AgentReasoningEffort>)
-            .transpose()?,
-    };
-    let agent_sandbox_mode = update
-        .agent_sandbox_mode
-        .unwrap_or(AgentSandboxMode::from_str(&existing.agent_sandbox_mode)?);
-    let agent_extra_writable_roots = match update.agent_extra_writable_roots {
-        Some(value) => normalize_agent_extra_writable_roots(value)?,
-        None => parse_agent_extra_writable_roots_storage(&existing.agent_extra_writable_roots)?,
-    };
-    let agent_git_command_policy =
-        update
-            .agent_git_command_policy
-            .unwrap_or(parse_agent_git_command_policy_storage(
-                &existing.agent_git_command_policy,
-            )?);
-    validate_agent_extra_writable_roots_do_not_include_database(
-        &agent_extra_writable_roots,
-        store.path(),
-    )?;
-    validate_settings(
-        workspace_mode,
-        max_code_edit_agents,
-        max_read_only_agents,
-        create_pr,
-        stale_claim_minutes,
-        default_agent_model.as_deref(),
-    )?;
-
-    let mut active: ProjectActiveModel = existing.into();
-    active.workspace_mode = Set(workspace_mode.as_storage().to_owned());
-    active.max_code_edit_agents = Set(max_code_edit_agents);
-    active.max_read_only_agents = Set(max_read_only_agents);
-    active.create_pr = Set(create_pr);
-    active.auto_commit = Set(auto_commit);
-    active.commit_standard = Set(commit_standard);
-    active.revert_strategy = Set(revert_strategy.as_storage().to_owned());
-    active.stale_claim_minutes = Set(stale_claim_minutes);
-    active.worktree_cleanup_policy = Set(worktree_cleanup_policy.as_storage().to_owned());
-    active.default_agent_tool = Set(default_agent_tool.as_storage().to_owned());
-    active.default_agent_model = Set(default_agent_model);
-    active.default_agent_reasoning_effort =
-        Set(default_agent_reasoning_effort.map(|effort| effort.as_storage().to_owned()));
-    active.agent_sandbox_mode = Set(agent_sandbox_mode.as_storage().to_owned());
-    active.agent_extra_writable_roots = Set(serialize_agent_extra_writable_roots(
-        &agent_extra_writable_roots,
-    ));
-    active.agent_git_command_policy = Set(serialize_agent_git_command_policy(
-        &agent_git_command_policy,
-    ));
-    active.updated_at = Set(utc_now());
+    let active = ProjectSettingsPlan::new(update, &existing, store.path())?.apply_to(existing);
 
     let updated = active
         .update(store.db().as_ref())
@@ -1208,6 +1265,7 @@ mod tests {
     use std::fs;
 
     use git2::Signature;
+    use sea_orm::ActiveValue::Set;
     use sea_orm::EntityTrait;
     use tempfile::TempDir;
 
@@ -1249,6 +1307,38 @@ mod tests {
         repository.set_head("refs/heads/main").unwrap();
     }
 
+    fn project_model(path: PathBuf) -> ProjectModel {
+        ProjectModel {
+            id: 1,
+            name: "demo".to_owned(),
+            display_name: "Demo".to_owned(),
+            path: Some(path.to_string_lossy().into_owned()),
+            path_exists: true,
+            path_checked_at: Some("2026-06-19T00:00:00Z".to_owned()),
+            system_prompt: String::new(),
+            memory: String::new(),
+            workspace_mode: WorkspaceMode::CurrentBranch.as_storage().to_owned(),
+            max_code_edit_agents: 1,
+            max_read_only_agents: 2,
+            create_pr: false,
+            auto_commit: true,
+            commit_standard: String::new(),
+            revert_strategy: RevertStrategy::Manual.as_storage().to_owned(),
+            stale_claim_minutes: 0,
+            worktree_cleanup_policy: WorktreeCleanupPolicy::Manual.as_storage().to_owned(),
+            default_agent_tool: AgentToolName::Codex.as_storage().to_owned(),
+            default_agent_model: Some(CodexAgentModel::newest().as_storage().to_owned()),
+            default_agent_reasoning_effort: Some(
+                AgentReasoningEffort::highest().as_storage().to_owned(),
+            ),
+            agent_sandbox_mode: AgentSandboxMode::WorkspaceWrite.as_storage().to_owned(),
+            agent_extra_writable_roots: String::new(),
+            agent_git_command_policy: default_agent_git_command_policy_json(),
+            created_at: "2026-06-19T00:00:00Z".to_owned(),
+            updated_at: "2026-06-19T00:00:00Z".to_owned(),
+        }
+    }
+
     async fn create_demo_project(store: &Store, path: PathBuf) {
         create_project(
             store,
@@ -1264,6 +1354,83 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn settings_plan_merges_validates_and_applies_updates() {
+        let temp = TempDir::new().unwrap();
+        let project = project_model(project_path(&temp, "demo"));
+        let database_path = temp.path().join("patchbay.sqlite3");
+
+        let plan = ProjectSettingsPlan::new(
+            UpdateProjectSettings {
+                workspace_mode: Some(WorkspaceMode::GitBranch),
+                max_read_only_agents: Some(0),
+                create_pr: Some(true),
+                commit_standard: Some(" Use short subjects. ".to_owned()),
+                default_agent_model: Some(Some("  ".to_owned())),
+                agent_extra_writable_roots: Some(vec![
+                    " ~/Library/Caches/chrome-for-testing-manager ".to_owned(),
+                    "~/Library/Caches/chrome-for-testing-manager".to_owned(),
+                    "/tmp/patchbay-browser".to_owned(),
+                ]),
+                agent_git_command_policy: Some(AgentGitCommandPolicy {
+                    add: true,
+                    commit: false,
+                    push: true,
+                    reset: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            &project,
+            &database_path,
+        )
+        .unwrap();
+
+        assert_eq!(plan.workspace_mode, WorkspaceMode::GitBranch);
+        assert_eq!(plan.max_code_edit_agents, 1);
+        assert_eq!(plan.max_read_only_agents, 0);
+        assert!(plan.create_pr);
+        assert_eq!(plan.commit_standard, "Use short subjects.");
+        assert_eq!(plan.default_agent_model, None);
+        assert_eq!(
+            plan.agent_extra_writable_roots,
+            vec![
+                expand_home_path("~/Library/Caches/chrome-for-testing-manager"),
+                "/tmp/patchbay-browser".to_owned(),
+            ]
+        );
+
+        let active = plan.apply_to(project);
+
+        assert_eq!(
+            active.workspace_mode,
+            Set(WorkspaceMode::GitBranch.as_storage().to_owned())
+        );
+        assert_eq!(active.max_read_only_agents, Set(0));
+        assert_eq!(active.create_pr, Set(true));
+        assert_eq!(
+            active.commit_standard,
+            Set("Use short subjects.".to_owned())
+        );
+        assert_eq!(active.default_agent_model, Set(None));
+    }
+
+    #[test]
+    fn settings_plan_rejects_empty_update() {
+        let temp = TempDir::new().unwrap();
+        let project = project_model(project_path(&temp, "demo"));
+        let database_path = temp.path().join("patchbay.sqlite3");
+
+        let err =
+            ProjectSettingsPlan::new(UpdateProjectSettings::default(), &project, &database_path)
+                .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("project settings update requires at least one field")
+        );
     }
 
     #[tokio::test]
