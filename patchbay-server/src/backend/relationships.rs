@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use rootcause::{Result, prelude::*};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, TransactionTrait};
 
 use crate::{
     backend::{
         entities::{
-            work_item::{self, WorkItem},
+            work_item::{self, WorkItem, WorkItemModel},
             work_item_relationship::WorkItemRelationshipModel,
         },
         events, projects,
@@ -55,55 +55,39 @@ pub async fn create_relationship(
         .begin()
         .await
         .context("failed to start relationship create")?;
-    let source = work_items::get(&txn, project_id, source_work_item_id).await?;
-    ensure_not_self(source_work_item_id, target_work_item_id)?;
-    let target = work_items::get(&txn, project_id, target_work_item_id).await?;
-    ensure_no_duplicate(
-        &txn,
-        project_id,
-        source_work_item_id,
-        target_work_item_id,
-        &kind,
-        None,
-    )
-    .await?;
+    let endpoints = RelationshipEndpoints::new(source_work_item_id, target_work_item_id)?;
+    let endpoint_items = endpoints.load_items(&txn, project_id).await?;
+    ensure_no_duplicate(&txn, project_id, endpoints, &kind, None).await?;
 
     let relationship = work_item_relationships::insert_in_tx(
         &txn,
         project_id,
-        source_work_item_id,
-        target_work_item_id,
+        endpoints.source_work_item_id,
+        endpoints.target_work_item_id,
         &kind,
     )
     .await?;
-    let source = work_items::touch(&txn, source).await?;
-    let target = work_items::touch(&txn, target).await?;
-    record_relationship_event(
-        &txn,
-        project_id,
-        source_work_item_id,
-        "relationship_created",
-        format!(
-            "Created relationship #{} {} #{}",
-            source_work_item_id, kind, target_work_item_id
-        ),
-    )
-    .await?;
-    record_relationship_event(
-        &txn,
-        project_id,
-        target_work_item_id,
-        "relationship_created",
-        format!(
-            "Created incoming relationship from #{}: {}",
-            source_work_item_id, kind
-        ),
-    )
-    .await?;
+    let touched = endpoint_items
+        .touch_and_record_event(
+            &txn,
+            project_id,
+            RelationshipEvent {
+                event_type: "relationship_created",
+                source_body: format!(
+                    "Created relationship #{} {} #{}",
+                    endpoints.source_work_item_id, kind, endpoints.target_work_item_id
+                ),
+                target_body: format!(
+                    "Created incoming relationship from #{}: {}",
+                    endpoints.source_work_item_id, kind
+                ),
+            },
+        )
+        .await?;
     txn.commit()
         .await
         .context("failed to commit relationship create")?;
-    publish_touched_items(project_name, source.id, target.id);
+    touched.publish_changes(project_name);
 
     Ok(WorkItemRelationshipListEntry {
         relationship: relationship_to_view(store, relationship).await?,
@@ -165,43 +149,24 @@ async fn update_relationship_inner(
         work_items::get(&txn, project_id, item_id).await?;
     }
     let relationship = work_item_relationships::get(&txn, project_id, relationship_id).await?;
-    ensure_requested_item_touches_relationship(requested_item_id, &relationship)?;
-    let source = work_items::get(&txn, project_id, relationship.source_work_item_id).await?;
-    let target = work_items::get(&txn, project_id, relationship.target_work_item_id).await?;
-    ensure_no_duplicate(
-        &txn,
-        project_id,
-        relationship.source_work_item_id,
-        relationship.target_work_item_id,
-        &kind,
-        Some(relationship_id),
-    )
-    .await?;
+    let endpoints = RelationshipEndpoints::from_relationship(&relationship)?;
+    endpoints.ensure_touches_requested_item(requested_item_id, relationship_id)?;
+    let endpoint_items = endpoints.load_items(&txn, project_id).await?;
+    ensure_no_duplicate(&txn, project_id, endpoints, &kind, Some(relationship_id)).await?;
 
     let updated = work_item_relationships::update_kind_in_tx(&txn, relationship, &kind).await?;
-    let source = work_items::touch(&txn, source).await?;
-    let target = work_items::touch(&txn, target).await?;
     let body = format!("Updated relationship #{relationship_id} kind to {kind}");
-    record_relationship_event(
-        &txn,
-        project_id,
-        updated.source_work_item_id,
-        "relationship_updated",
-        body.clone(),
-    )
-    .await?;
-    record_relationship_event(
-        &txn,
-        project_id,
-        updated.target_work_item_id,
-        "relationship_updated",
-        body,
-    )
-    .await?;
+    let touched = endpoint_items
+        .touch_and_record_event(
+            &txn,
+            project_id,
+            RelationshipEvent::same("relationship_updated", body),
+        )
+        .await?;
     txn.commit()
         .await
         .context("failed to commit relationship update")?;
-    publish_touched_items(project_name, source.id, target.id);
+    touched.publish_changes(project_name);
 
     relationship_to_view(store, updated).await
 }
@@ -222,46 +187,157 @@ async fn delete_relationship_inner(
         work_items::get(&txn, project_id, item_id).await?;
     }
     let relationship = work_item_relationships::get(&txn, project_id, relationship_id).await?;
-    ensure_requested_item_touches_relationship(requested_item_id, &relationship)?;
-    let source = work_items::get(&txn, project_id, relationship.source_work_item_id).await?;
-    let target = work_items::get(&txn, project_id, relationship.target_work_item_id).await?;
+    let endpoints = RelationshipEndpoints::from_relationship(&relationship)?;
+    endpoints.ensure_touches_requested_item(requested_item_id, relationship_id)?;
+    let endpoint_items = endpoints.load_items(&txn, project_id).await?;
 
     work_item_relationships::delete_by_id_in_tx(&txn, relationship_id).await?;
-    let source = work_items::touch(&txn, source).await?;
-    let target = work_items::touch(&txn, target).await?;
     let body = format!(
         "Deleted relationship #{}: #{} {} #{}",
         relationship_id,
-        relationship.source_work_item_id,
+        endpoints.source_work_item_id,
         relationship.kind,
-        relationship.target_work_item_id
+        endpoints.target_work_item_id
     );
-    record_relationship_event(
-        &txn,
-        project_id,
-        relationship.source_work_item_id,
-        "relationship_deleted",
-        body.clone(),
-    )
-    .await?;
-    record_relationship_event(
-        &txn,
-        project_id,
-        relationship.target_work_item_id,
-        "relationship_deleted",
-        body,
-    )
-    .await?;
+    let touched = endpoint_items
+        .touch_and_record_event(
+            &txn,
+            project_id,
+            RelationshipEvent::same("relationship_deleted", body),
+        )
+        .await?;
     txn.commit()
         .await
         .context("failed to commit relationship delete")?;
-    publish_touched_items(project_name, source.id, target.id);
+    touched.publish_changes(project_name);
     let relationship_view = relationship_to_view(store, relationship).await?;
 
     Ok(DeleteWorkItemRelationshipResponse {
         deleted: true,
         relationship: relationship_view,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RelationshipEndpoints {
+    source_work_item_id: i64,
+    target_work_item_id: i64,
+}
+
+impl RelationshipEndpoints {
+    fn new(source_work_item_id: i64, target_work_item_id: i64) -> Result<Self> {
+        if source_work_item_id == target_work_item_id {
+            bail!("relationship source and target work items must differ");
+        }
+        Ok(Self {
+            source_work_item_id,
+            target_work_item_id,
+        })
+    }
+
+    fn from_relationship(relationship: &WorkItemRelationshipModel) -> Result<Self> {
+        Self::new(
+            relationship.source_work_item_id,
+            relationship.target_work_item_id,
+        )
+    }
+
+    async fn load_items<C>(self, conn: &C, project_id: i64) -> Result<RelationshipEndpointItems>
+    where
+        C: ConnectionTrait,
+    {
+        Ok(RelationshipEndpointItems {
+            source: work_items::get(conn, project_id, self.source_work_item_id).await?,
+            target: work_items::get(conn, project_id, self.target_work_item_id).await?,
+        })
+    }
+
+    fn ensure_touches_requested_item(
+        self,
+        requested_item_id: Option<i64>,
+        relationship_id: i64,
+    ) -> Result<()> {
+        let Some(item_id) = requested_item_id else {
+            return Ok(());
+        };
+        if self.source_work_item_id == item_id || self.target_work_item_id == item_id {
+            return Ok(());
+        }
+        bail!(
+            "relationship {} does not touch item {}",
+            relationship_id,
+            item_id
+        )
+    }
+
+    fn direction_for_item(self, item_id: i64) -> WorkItemRelationshipDirection {
+        if self.source_work_item_id == item_id {
+            WorkItemRelationshipDirection::Outgoing
+        } else {
+            WorkItemRelationshipDirection::Incoming
+        }
+    }
+
+    fn publish_changes(self, project_name: &str) {
+        events::publish_work_item_changed(project_name, self.source_work_item_id);
+        events::publish_work_item_changed(project_name, self.target_work_item_id);
+    }
+}
+
+struct RelationshipEndpointItems {
+    source: WorkItemModel,
+    target: WorkItemModel,
+}
+
+impl RelationshipEndpointItems {
+    async fn touch_and_record_event<C>(
+        self,
+        conn: &C,
+        project_id: i64,
+        event: RelationshipEvent,
+    ) -> Result<RelationshipEndpoints>
+    where
+        C: ConnectionTrait,
+    {
+        let source = work_items::touch(conn, self.source).await?;
+        let target = work_items::touch(conn, self.target).await?;
+        record_relationship_event(
+            conn,
+            project_id,
+            source.id,
+            event.event_type,
+            event.source_body,
+        )
+        .await?;
+        record_relationship_event(
+            conn,
+            project_id,
+            target.id,
+            event.event_type,
+            event.target_body,
+        )
+        .await?;
+        Ok(RelationshipEndpoints {
+            source_work_item_id: source.id,
+            target_work_item_id: target.id,
+        })
+    }
+}
+
+struct RelationshipEvent {
+    event_type: &'static str,
+    source_body: String,
+    target_body: String,
+}
+
+impl RelationshipEvent {
+    fn same(event_type: &'static str, body: String) -> Self {
+        Self {
+            event_type,
+            source_body: body.clone(),
+            target_body: body,
+        }
+    }
 }
 
 fn normalize_kind(kind: String) -> Result<String> {
@@ -272,67 +348,44 @@ fn normalize_kind(kind: String) -> Result<String> {
     Ok(kind)
 }
 
-fn ensure_not_self(source_work_item_id: i64, target_work_item_id: i64) -> Result<()> {
-    if source_work_item_id == target_work_item_id {
-        bail!("relationship source and target work items must differ");
-    }
-    Ok(())
-}
-
 async fn ensure_no_duplicate<C>(
     conn: &C,
     project_id: i64,
-    source_work_item_id: i64,
-    target_work_item_id: i64,
+    endpoints: RelationshipEndpoints,
     kind: &str,
     except_relationship_id: Option<i64>,
 ) -> Result<()>
 where
-    C: sea_orm::ConnectionTrait,
+    C: ConnectionTrait,
 {
     if work_item_relationships::exact_relationship_exists(
         conn,
         project_id,
-        source_work_item_id,
-        target_work_item_id,
+        endpoints.source_work_item_id,
+        endpoints.target_work_item_id,
         kind,
         except_relationship_id,
     )
     .await?
     {
         bail!(
-            "duplicate relationship already exists for source item {source_work_item_id}, target item {target_work_item_id}, and kind '{kind}'"
+            "duplicate relationship already exists for source item {}, target item {}, and kind '{kind}'",
+            endpoints.source_work_item_id,
+            endpoints.target_work_item_id,
         );
     }
     Ok(())
-}
-
-fn ensure_requested_item_touches_relationship(
-    requested_item_id: Option<i64>,
-    relationship: &WorkItemRelationshipModel,
-) -> Result<()> {
-    let Some(item_id) = requested_item_id else {
-        return Ok(());
-    };
-    if relationship.source_work_item_id == item_id || relationship.target_work_item_id == item_id {
-        return Ok(());
-    }
-    bail!(
-        "relationship {} does not touch item {}",
-        relationship.id,
-        item_id
-    )
 }
 
 fn direction_for_item(
     relationship: &WorkItemRelationshipModel,
     item_id: i64,
 ) -> WorkItemRelationshipDirection {
-    if relationship.source_work_item_id == item_id {
-        WorkItemRelationshipDirection::Outgoing
-    } else {
-        WorkItemRelationshipDirection::Incoming
+    RelationshipEndpoints {
+        source_work_item_id: relationship.source_work_item_id,
+        target_work_item_id: relationship.target_work_item_id,
     }
+    .direction_for_item(item_id)
 }
 
 async fn relationship_to_view(
@@ -435,18 +488,11 @@ async fn record_relationship_event<C>(
     body: String,
 ) -> Result<()>
 where
-    C: sea_orm::ConnectionTrait,
+    C: ConnectionTrait,
 {
     work_item_events::record_event_in_tx(conn, project_id, Some(item_id), event_type, &body)
         .await?;
     Ok(())
-}
-
-fn publish_touched_items(project_name: &str, source_work_item_id: i64, target_work_item_id: i64) {
-    events::publish_work_item_changed(project_name, source_work_item_id);
-    if target_work_item_id != source_work_item_id {
-        events::publish_work_item_changed(project_name, target_work_item_id);
-    }
 }
 
 #[cfg(test)]
@@ -700,6 +746,52 @@ mod tests {
                 .unwrap_err();
 
         assert!(duplicate.to_string().contains("duplicate relationship"));
+    }
+
+    #[tokio::test]
+    async fn item_scoped_relationship_mutations_require_requested_item_to_touch_relationship() {
+        let (_temp, store, source_id, target_id) = test_store().await;
+        let unrelated = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Unrelated".to_owned(),
+                description: "Does not touch the relationship".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let created =
+            create_relationship(&store, "demo", source_id, target_id, "blocks".to_owned())
+                .await
+                .unwrap();
+
+        let update = update_relationship_for_item(
+            &store,
+            "demo",
+            unrelated.id,
+            created.relationship.id,
+            "unblocks".to_owned(),
+        )
+        .await
+        .unwrap_err();
+        assert!(update.to_string().contains("does not touch item"));
+
+        let delete =
+            delete_relationship_for_item(&store, "demo", unrelated.id, created.relationship.id)
+                .await
+                .unwrap_err();
+        assert!(delete.to_string().contains("does not touch item"));
+
+        let relationships = list_item_relationships(&store, "demo", source_id)
+            .await
+            .unwrap();
+        assert_eq!(relationships.len(), 1);
+        assert_eq!(relationships[0].relationship.kind, "blocks");
     }
 
     #[tokio::test]
