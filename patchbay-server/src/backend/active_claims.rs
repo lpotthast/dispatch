@@ -1,5 +1,5 @@
 use rootcause::{Result, prelude::*};
-use sea_orm::{ActiveValue::Set, ConnectionTrait};
+use sea_orm::ConnectionTrait;
 
 use crate::backend::{
     entities::work_item::{WorkItemActiveModel, WorkItemModel},
@@ -13,21 +13,11 @@ pub(crate) struct ActiveClaim {
 
 impl ActiveClaim {
     pub(crate) fn touch_active_model(&self, updated_at: String) -> WorkItemActiveModel {
-        let mut active: WorkItemActiveModel = self.item.clone().into();
-        active.version = Set(self.item.version + 1);
-        active.updated_at = Set(updated_at);
-        active
+        work_items::touch_active_model(self.item.clone(), updated_at)
     }
 
     pub(crate) fn clear_active_model(self, updated_at: String) -> WorkItemActiveModel {
-        let version = self.item.version;
-        let mut active: WorkItemActiveModel = self.item.into();
-        active.claimed_by = Set(None);
-        active.claimed_at = Set(None);
-        active.claim_expires_at = Set(None);
-        active.version = Set(version + 1);
-        active.updated_at = Set(updated_at);
-        active
+        work_items::clear_claim_active_model(self.item, updated_at)
     }
 }
 

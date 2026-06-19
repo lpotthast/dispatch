@@ -1,13 +1,8 @@
 use rootcause::{Result, prelude::*};
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, TransactionTrait};
+use sea_orm::TransactionTrait;
 
 use crate::{
-    backend::{
-        entities::work_item::WorkItemActiveModel,
-        events, projects,
-        storage::{Store, utc_now},
-        work_item_comments, work_item_events, work_items,
-    },
+    backend::{events, projects, storage::Store, work_item_comments, work_item_events, work_items},
     shared::view_models::{AuthorType, CommentView},
 };
 
@@ -40,19 +35,11 @@ pub async fn add_comment(
         .await
         .context("failed to start comment add")?;
     let item = work_items::get(&txn, project_id, item_id).await?;
-    let now = utc_now();
 
     let comment =
         work_item_comments::insert_in_tx(&txn, item_id, author_type, author_name, body.as_str())
             .await?;
-
-    let mut item_active: WorkItemActiveModel = item.clone().into();
-    item_active.version = Set(item.version + 1);
-    item_active.updated_at = Set(now);
-    item_active
-        .update(&txn)
-        .await
-        .context("failed to update item after comment")?;
+    work_items::touch(&txn, item).await?;
 
     work_item_events::record_event_in_tx(
         &txn,
@@ -89,7 +76,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{
-        items::{CreateWorkItem, create_item, list_events},
+        items::{CreateWorkItem, create_item, get_item, list_events},
         projects::{CreateProject, create_project},
     };
 
@@ -159,10 +146,13 @@ mod tests {
         .unwrap();
 
         let comments = list_comments(&store, "demo", item_id).await.unwrap();
+        let item = get_item(&store, "demo", item_id).await.unwrap();
 
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].body, "First");
         assert_eq!(comments[1].author_type, AuthorType::Agent);
+        assert_eq!(item.comment_count, 2);
+        assert_eq!(item.version, 3);
 
         let events = list_events(&store, "demo", Some(item_id), None)
             .await

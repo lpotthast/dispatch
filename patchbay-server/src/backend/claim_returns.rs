@@ -1,15 +1,13 @@
 use rootcause::{Result, prelude::*};
-use sea_orm::{ActiveModelTrait, ConnectionTrait, TransactionTrait};
+use sea_orm::{ActiveModelTrait, TransactionTrait};
 
 use crate::{
     backend::{
-        active_claims,
-        entities::comment::CommentModel,
-        events, projects,
+        active_claims, events, projects,
         storage::{Store, utc_now},
         work_item_comments, work_item_events, work_item_labels, work_items, workflow_labels,
     },
-    shared::view_models::{AuthorType, WorkItemView},
+    shared::view_models::WorkItemView,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,7 +166,7 @@ async fn return_claim_to_source_state(
         .agent_comment_body()
         .filter(|body| !body.trim().is_empty())
     {
-        record_agent_comment_in_tx(&txn, item_id, agent_id, comment).await?;
+        work_item_comments::insert_agent_in_tx(&txn, item_id, agent_id, comment).await?;
     }
 
     let event_body = mode.event_body(agent_id, &release_state);
@@ -184,23 +182,4 @@ async fn return_claim_to_source_state(
     events::publish_work_item_changed(project_name, item_id);
 
     work_items::model_to_view(store, updated).await
-}
-
-async fn record_agent_comment_in_tx<C>(
-    conn: &C,
-    item_id: i64,
-    agent_id: &str,
-    body: &str,
-) -> Result<CommentModel>
-where
-    C: ConnectionTrait,
-{
-    work_item_comments::insert_in_tx(
-        conn,
-        item_id,
-        AuthorType::Agent,
-        Some(agent_id.to_owned()),
-        body,
-    )
-    .await
 }

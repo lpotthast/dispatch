@@ -9,15 +9,12 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use crate::{
     backend::{
         active_claims, agent_ids, claim_returns, claim_selection,
-        entities::{
-            comment::CommentModel,
-            work_item::{self, WorkItem, WorkItemModel},
-        },
+        entities::work_item::{self, WorkItem, WorkItemModel},
         events, projects,
         storage::{Store, utc_now},
         work_item_comments, work_item_events, work_item_labels, work_items, workflow_labels,
     },
-    shared::view_models::{AuthorType, CommentView, RecoveredClaimView, WorkItemView},
+    shared::view_models::{CommentView, RecoveredClaimView, WorkItemView},
 };
 
 pub async fn has_claimable_item_matching_condition(
@@ -143,7 +140,7 @@ pub async fn progress_item(
         .context("failed to start item progress")?;
     let claim = active_claims::load_in_tx(&txn, project_id, item_id, agent_id).await?;
 
-    let comment = record_agent_comment_in_tx(&txn, item_id, agent_id, body).await?;
+    let comment = work_item_comments::insert_agent_in_tx(&txn, item_id, agent_id, body).await?;
 
     let item_active = claim.touch_active_model(utc_now());
     item_active
@@ -181,7 +178,7 @@ pub async fn finish_item(
     let claim = active_claims::load_in_tx(&txn, project_id, item_id, agent_id).await?;
 
     let now = utc_now();
-    record_agent_comment_in_tx(&txn, item_id, agent_id, report).await?;
+    work_item_comments::insert_agent_in_tx(&txn, item_id, agent_id, report).await?;
 
     let mut active = claim.clear_active_model(now.clone());
     active.finished_at = Set(Some(now.clone()));
@@ -259,25 +256,6 @@ pub async fn recover_stale_claims(
     }
 
     Ok(recovered)
-}
-
-async fn record_agent_comment_in_tx<C>(
-    conn: &C,
-    item_id: i64,
-    agent_id: &str,
-    body: &str,
-) -> Result<CommentModel>
-where
-    C: ConnectionTrait,
-{
-    work_item_comments::insert_in_tx(
-        conn,
-        item_id,
-        AuthorType::Agent,
-        Some(agent_id.to_owned()),
-        body,
-    )
-    .await
 }
 
 async fn claim_first_matching_candidate_in_tx<C>(
@@ -395,14 +373,7 @@ where
     )
     .await?;
     let comment_body = format!("Claimed by {agent_id}");
-    work_item_comments::insert_in_tx(
-        conn,
-        item_id,
-        AuthorType::System,
-        None,
-        comment_body.as_str(),
-    )
-    .await?;
+    work_item_comments::insert_system_in_tx(conn, item_id, comment_body.as_str()).await?;
     work_item_events::record_event_in_tx(
         conn,
         project_id,
@@ -438,8 +409,8 @@ mod tests {
         projects::{self, CreateProject, create_project},
     };
     use crate::shared::view_models::{
-        AUTOMATION_BLOCKED_LABEL_KEY, CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL,
-        FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL, STATE_LABEL_KEY,
+        AUTOMATION_BLOCKED_LABEL_KEY, AuthorType, CLAIMED_FROM_STATE_LABEL_KEY,
+        CLAIMED_STATE_LABEL, FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL, STATE_LABEL_KEY,
     };
 
     async fn test_store() -> (TempDir, Store) {
@@ -519,6 +490,48 @@ mod tests {
             events
                 .iter()
                 .any(|event| event.event_type == "item_claimed")
+        );
+    }
+
+    #[tokio::test]
+    async fn progress_records_agent_comment_and_touches_item() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Progress target".to_owned(),
+                description: "Progress should update visible item metadata".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let claimed = claim_item(&store, "demo", "agent-a", "open")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let comment = progress_item(&store, "demo", item.id, "agent-a", "Working")
+            .await
+            .unwrap();
+        let updated = get_item(&store, "demo", item.id).await.unwrap();
+        let events = list_events(&store, "demo", Some(item.id), None)
+            .await
+            .unwrap();
+
+        assert_eq!(comment.author_type, AuthorType::Agent);
+        assert_eq!(comment.author_name.as_deref(), Some("agent-a"));
+        assert_eq!(comment.body, "Working");
+        assert_eq!(updated.version, claimed.version + 1);
+        assert_eq!(updated.comment_count, 2);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "progress_added" && event.body == "Working")
         );
     }
 

@@ -184,6 +184,7 @@ pub(crate) fn board_items_event_matches(event: &UiEvent, project: &str) -> bool 
         && matches!(
             event,
             UiEvent::WorkItemChanged { .. }
+                | UiEvent::CommentChanged { .. }
                 | UiEvent::AgentRunChanged { .. }
                 | UiEvent::SwimLaneChanged { .. }
                 | UiEvent::WorkItemStateChanged { .. }
@@ -600,9 +601,13 @@ mod tests {
     }
 
     #[test]
-    fn board_items_matches_only_board_refresh_events_for_project() {
+    fn board_items_matches_board_refresh_events_for_project() {
         assert!(board_items_event_matches(
             &work_item_changed(DEMO_PROJECT, 7),
+            DEMO_PROJECT
+        ));
+        assert!(board_items_event_matches(
+            &comment_changed(DEMO_PROJECT, 7),
             DEMO_PROJECT
         ));
         assert!(board_items_event_matches(
@@ -619,6 +624,10 @@ mod tests {
         ));
         assert!(!board_items_event_matches(
             &work_item_changed(OTHER_PROJECT, 7),
+            DEMO_PROJECT
+        ));
+        assert!(!board_items_event_matches(
+            &comment_changed(OTHER_PROJECT, 7),
             DEMO_PROJECT
         ));
         assert!(!board_items_event_matches(

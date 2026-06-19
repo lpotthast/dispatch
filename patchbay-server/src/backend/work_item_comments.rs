@@ -38,6 +38,36 @@ where
         .context("failed to add item comment")?)
 }
 
+pub(crate) async fn insert_agent_in_tx<C>(
+    conn: &C,
+    item_id: i64,
+    agent_id: &str,
+    body: &str,
+) -> Result<CommentModel>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    insert_in_tx(
+        conn,
+        item_id,
+        AuthorType::Agent,
+        Some(agent_id.to_owned()),
+        body,
+    )
+    .await
+}
+
+pub(crate) async fn insert_system_in_tx<C>(
+    conn: &C,
+    item_id: i64,
+    body: &str,
+) -> Result<CommentModel>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    insert_in_tx(conn, item_id, AuthorType::System, None, body).await
+}
+
 pub(crate) async fn list_for_item<C>(conn: &C, item_id: i64) -> Result<Vec<CommentModel>>
 where
     C: sea_orm::ConnectionTrait,
