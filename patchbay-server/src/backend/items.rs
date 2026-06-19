@@ -8,7 +8,7 @@ use sea_orm::{
 use crate::{
     backend::{
         entities::{
-            work_item::{self, WorkItem, WorkItemActiveModel},
+            work_item::{self, WorkItem, WorkItemActiveModel, WorkItemModel},
             work_item_event,
         },
         events, item_labels, projects,
@@ -39,6 +39,103 @@ pub struct UpdateWorkItem {
     pub agent_model_override: Option<Option<String>>,
     pub agent_reasoning_effort_override: Option<Option<AgentReasoningEffort>>,
     pub expect_version: Option<i64>,
+}
+
+#[derive(Debug)]
+struct PreparedWorkItemUpdate {
+    title: Option<String>,
+    description: Option<String>,
+    state: Option<String>,
+    agent_model_override: Option<Option<String>>,
+    agent_reasoning_effort_override: Option<Option<AgentReasoningEffort>>,
+    expect_version: Option<i64>,
+}
+
+#[derive(Debug)]
+struct AppliedWorkItemUpdate {
+    active: WorkItemActiveModel,
+    state: Option<String>,
+    record_item_updated_event: bool,
+}
+
+impl PreparedWorkItemUpdate {
+    fn new(update: UpdateWorkItem) -> Result<Self> {
+        let state = update
+            .state
+            .map(item_labels::normalize_state_value)
+            .transpose()
+            .context("invalid item state")?;
+        let prepared = Self {
+            title: update.title,
+            description: update.description,
+            state,
+            agent_model_override: update.agent_model_override,
+            agent_reasoning_effort_override: update.agent_reasoning_effort_override,
+            expect_version: update.expect_version,
+        };
+        if !prepared.has_any_update() {
+            bail!("item update requires at least one field");
+        }
+        Ok(prepared)
+    }
+
+    fn expect_version(&self) -> Option<i64> {
+        self.expect_version
+    }
+
+    fn has_any_update(&self) -> bool {
+        self.has_item_field_update() || self.state.is_some()
+    }
+
+    fn has_item_field_update(&self) -> bool {
+        self.title.is_some()
+            || self.description.is_some()
+            || self.agent_model_override.is_some()
+            || self.agent_reasoning_effort_override.is_some()
+    }
+
+    fn has_text_update(&self) -> bool {
+        self.title.is_some() || self.description.is_some()
+    }
+
+    fn apply_to(self, existing: WorkItemModel) -> Result<AppliedWorkItemUpdate> {
+        let has_text_update = self.has_text_update();
+        let record_item_updated_event = self.has_item_field_update();
+        let Self {
+            title,
+            description,
+            state,
+            agent_model_override,
+            agent_reasoning_effort_override,
+            expect_version: _,
+        } = self;
+
+        let title = title.unwrap_or_else(|| existing.title.clone());
+        let description = description.unwrap_or_else(|| existing.description.clone());
+        if has_text_update {
+            validate_item_text(&title, &description)?;
+        }
+
+        let version = existing.version;
+        let mut active: WorkItemActiveModel = existing.into();
+        active.title = Set(title);
+        active.description = Set(description);
+        if let Some(agent_model_override) = agent_model_override {
+            active.agent_model_override = Set(projects::normalize_optional(agent_model_override));
+        }
+        if let Some(agent_reasoning_effort_override) = agent_reasoning_effort_override {
+            active.agent_reasoning_effort_override =
+                Set(agent_reasoning_effort_override.map(|effort| effort.as_storage().to_owned()));
+        }
+        active.version = Set(version + 1);
+        active.updated_at = Set(utc_now());
+
+        Ok(AppliedWorkItemUpdate {
+            active,
+            state,
+            record_item_updated_event,
+        })
+    }
 }
 
 pub async fn list_items(
@@ -209,24 +306,7 @@ pub async fn update_item(
     item_id: i64,
     update: UpdateWorkItem,
 ) -> Result<WorkItemView> {
-    let state = update
-        .state
-        .map(item_labels::normalize_state_value)
-        .transpose()
-        .context("invalid item state")?;
-    let has_item_update = update.title.is_some()
-        || update.description.is_some()
-        || update.agent_model_override.is_some()
-        || update.agent_reasoning_effort_override.is_some();
-    let has_text_update = update.title.is_some() || update.description.is_some();
-    if update.title.is_none()
-        && update.description.is_none()
-        && state.is_none()
-        && update.agent_model_override.is_none()
-        && update.agent_reasoning_effort_override.is_none()
-    {
-        bail!("item update requires at least one field");
-    }
+    let update = PreparedWorkItemUpdate::new(update)?;
 
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -235,35 +315,15 @@ pub async fn update_item(
         .await
         .context("failed to start item update")?;
     let existing = work_items::get(&txn, project_id, item_id).await?;
-    work_items::check_expected_version(update.expect_version, existing.version)?;
+    work_items::check_expected_version(update.expect_version(), existing.version)?;
+    let applied = update.apply_to(existing)?;
 
-    let title = update.title.unwrap_or_else(|| existing.title.clone());
-    let description = update
-        .description
-        .unwrap_or_else(|| existing.description.clone());
-    if has_text_update {
-        validate_item_text(&title, &description)?;
-    }
-
-    let version = existing.version;
-    let mut active: WorkItemActiveModel = existing.into();
-    active.title = Set(title);
-    active.description = Set(description);
-    if let Some(agent_model_override) = update.agent_model_override {
-        active.agent_model_override = Set(projects::normalize_optional(agent_model_override));
-    }
-    if let Some(agent_reasoning_effort_override) = update.agent_reasoning_effort_override {
-        active.agent_reasoning_effort_override =
-            Set(agent_reasoning_effort_override.map(|effort| effort.as_storage().to_owned()));
-    }
-    active.version = Set(version + 1);
-    active.updated_at = Set(utc_now());
-
-    let updated = active
+    let updated = applied
+        .active
         .update(&txn)
         .await
         .context("failed to update work item")?;
-    if has_item_update {
+    if applied.record_item_updated_event {
         work_item_events::record_event_in_tx(
             &txn,
             project_id,
@@ -273,7 +333,7 @@ pub async fn update_item(
         )
         .await?;
     }
-    if let Some(state) = state {
+    if let Some(state) = applied.state {
         work_item_labels::upsert_in_tx(
             &txn,
             project_id,
@@ -1054,6 +1114,34 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("version conflict"));
+    }
+
+    #[tokio::test]
+    async fn empty_update_is_rejected_without_touching_item() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "No change".to_owned(),
+                description: "Empty updates should not bump versions".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = update_item(&store, "demo", item.id, UpdateWorkItem::default())
+            .await
+            .unwrap_err();
+        let unchanged = get_item(&store, "demo", item.id).await.unwrap();
+
+        assert!(err.to_string().contains("requires at least one field"));
+        assert_eq!(unchanged.version, item.version);
+        assert_eq!(unchanged.updated_at, item.updated_at);
     }
 
     #[tokio::test]
