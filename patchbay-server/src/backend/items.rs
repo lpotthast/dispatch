@@ -217,6 +217,22 @@ pub async fn move_item(
 
 pub async fn delete_item(store: &Store, project_name: &str, item_id: i64) -> Result<()> {
     let project_id = projects::project_id(store, project_name).await?;
+    delete_item_in_project(store, project_name, project_id, item_id)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn delete_existing_item(store: &Store, item: work_item::Model) -> Result<u64> {
+    let project_name = projects::project_name_by_id(store, item.project_id).await?;
+    delete_item_in_project(store, &project_name, item.project_id, item.id).await
+}
+
+async fn delete_item_in_project(
+    store: &Store,
+    project_name: &str,
+    project_id: i64,
+    item_id: i64,
+) -> Result<u64> {
     let txn = store
         .db()
         .begin()
@@ -244,7 +260,7 @@ pub async fn delete_item(store: &Store, project_name: &str, item_id: i64) -> Res
         )
         .await?;
     }
-    WorkItem::delete_by_id(item_id)
+    let delete_result = WorkItem::delete_by_id(item_id)
         .exec(&txn)
         .await
         .context("failed to delete work item")?;
@@ -253,7 +269,7 @@ pub async fn delete_item(store: &Store, project_name: &str, item_id: i64) -> Res
     for related_item_id in related_item_ids {
         events::publish_work_item_changed(project_name, related_item_id);
     }
-    Ok(())
+    Ok(delete_result.rows_affected)
 }
 
 pub async fn list_events(

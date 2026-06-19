@@ -7,9 +7,7 @@ use crudkit_rs::{
 };
 use crudkit_sea_orm::{CrudColumns, SeaOrmResource, repo::SeaOrmRepo};
 use indexmap::IndexMap;
-use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, DatabaseConnection, DbErr, EntityTrait, TransactionTrait,
-};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, DbErr, EntityTrait, TransactionTrait};
 use utoipa::ToSchema;
 
 use crate::{
@@ -19,7 +17,7 @@ use crate::{
             agent_run, agent_tool, automation_trigger, comment, personality, project, swim_lane,
             work_item, work_item_state,
         },
-        events, item_labels, personalities, projects,
+        events, item_labels, items, personalities, projects,
         storage::{Store, utc_now},
         swim_lanes,
         work_item_creation::{self, CreateWorkItem, CreateWorkItemPlan},
@@ -482,15 +480,16 @@ impl fmt::Display for WorkItemRepositoryError {
 impl RepositoryError for WorkItemRepositoryError {}
 
 pub struct WorkItemRepository {
-    db: Arc<DatabaseConnection>,
+    store: Store,
     fallback: SeaOrmRepo,
 }
 
 impl WorkItemRepository {
-    fn new(db: Arc<DatabaseConnection>) -> Self {
+    fn new(store: Store) -> Self {
+        let db = store.db();
         Self {
             fallback: SeaOrmRepo::new(db.clone()),
-            db,
+            store,
         }
     }
 }
@@ -562,7 +561,12 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
         let create =
             crud_create_work_item_plan(create_model).map_err(WorkItemRepositoryError::Internal)?;
         let now = utc_now();
-        let txn = self.db.begin().await.map_err(WorkItemRepositoryError::Db)?;
+        let txn = self
+            .store
+            .db()
+            .begin()
+            .await
+            .map_err(WorkItemRepositoryError::Db)?;
         let model =
             work_item_creation::insert_planned_in_tx(&txn, create.project_id, create.plan, now)
                 .await
@@ -673,7 +677,12 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
         let applied = update
             .apply_to(existing)
             .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
-        let txn = self.db.begin().await.map_err(WorkItemRepositoryError::Db)?;
+        let txn = self
+            .store
+            .db()
+            .begin()
+            .await
+            .map_err(WorkItemRepositoryError::Db)?;
         let updated = applied
             .active
             .update(&txn)
@@ -695,9 +704,12 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
     }
 
     async fn delete(&self, model: work_item::Model) -> Result<DeleteResult, Self::Error> {
-        <SeaOrmRepo as Repository<CrudWorkItemResource>>::delete(&self.fallback, model)
+        let rows_affected = items::delete_existing_item(&self.store, model)
             .await
-            .map_err(WorkItemRepositoryError::SeaOrm)
+            .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        Ok(DeleteResult {
+            entities_affected: rows_affected,
+        })
     }
 }
 
@@ -800,13 +812,12 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
     }
 
     async fn after_delete(
-        model: &work_item::Model,
+        _model: &work_item::Model,
         _delete_request: &DeleteRequest<CrudWorkItemResource>,
-        context: &WorkItemResourceContext,
+        _context: &WorkItemResourceContext,
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
-        publish_work_item_crud_event(&context.store, model.project_id, model.id).await;
         Ok(data)
     }
 }
@@ -2205,7 +2216,7 @@ pub fn build_contexts(store: Store) -> CrudContexts {
             res_context: Arc::new(WorkItemResourceContext {
                 store: store.clone(),
             }),
-            repository: Arc::new(WorkItemRepository::new(store.db())),
+            repository: Arc::new(WorkItemRepository::new(store.clone())),
             validators: vec![],
             resource_validators: vec![],
             validation_result_repository: validation_result_repository.clone(),
@@ -2290,8 +2301,9 @@ mod tests {
 
     use super::*;
     use crate::backend::{
-        items::list_events,
+        items::{get_item, list_events},
         projects::{CreateProject, create_project, project_id},
+        relationships::{create_relationship, list_item_relationships},
         storage::Store,
         work_item_labels,
     };
@@ -2354,7 +2366,7 @@ mod tests {
     #[tokio::test]
     async fn crud_work_item_create_uses_domain_create_plan() {
         let (_temp, store, project_id) = test_store().await;
-        let repository = WorkItemRepository::new(store.db());
+        let repository = WorkItemRepository::new(store.clone());
 
         let created = repository
             .insert(CrudCreateWorkItem {
@@ -2409,7 +2421,7 @@ mod tests {
     #[tokio::test]
     async fn crud_work_item_update_uses_domain_update_plan() {
         let (_temp, store, project_id) = test_store().await;
-        let repository = WorkItemRepository::new(store.db());
+        let repository = WorkItemRepository::new(store.clone());
         let created = repository
             .insert(CrudCreateWorkItem {
                 project_id,
@@ -2452,5 +2464,64 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == "item_updated")
         );
+    }
+
+    #[tokio::test]
+    async fn crud_work_item_delete_uses_domain_delete_path() {
+        let (_temp, store, project_id) = test_store().await;
+        let repository = WorkItemRepository::new(store.clone());
+        let source = repository
+            .insert(CrudCreateWorkItem {
+                project_id,
+                title: "Source item".to_owned(),
+                description: "Deleted through the CrudKit repository".to_owned(),
+                state: Some("open".to_owned()),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+        let target = repository
+            .insert(CrudCreateWorkItem {
+                project_id,
+                title: "Target item".to_owned(),
+                description: "Keeps relationship cleanup events".to_owned(),
+                state: Some("open".to_owned()),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+        create_relationship(&store, "demo", source.id, target.id, "blocks".to_owned())
+            .await
+            .unwrap();
+
+        let deleted = repository.delete(source.clone()).await.unwrap();
+
+        assert_eq!(deleted.entities_affected, 1);
+        assert!(get_item(&store, "demo", source.id).await.is_err());
+        assert!(
+            list_item_relationships(&store, "demo", target.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let project_events = list_events(&store, "demo", None, None).await.unwrap();
+        assert!(
+            project_events
+                .iter()
+                .any(|event| event.event_type == "item_deleted" && event.body == "Deleted item")
+        );
+        let target_events = list_events(&store, "demo", Some(target.id), None)
+            .await
+            .unwrap();
+        assert!(target_events.iter().any(|event| {
+            event.event_type == "relationship_deleted"
+                && event.body
+                    == format!("Deleted relationships touching removed item #{}", source.id)
+        }));
     }
 }
