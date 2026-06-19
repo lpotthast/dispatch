@@ -35,6 +35,7 @@ The main workflow surface should make these states easy to inspect:
 - Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, `patchbay:automation-blocked`, and `patchbay:feedback-requested`.
 
 Board and item-detail interactions call server actions or custom API endpoints so workflow rules remain centralized.
+Run output renders as a compact timeline rather than a panel per raw stream event. Started and completed tool events with the same item id collapse into one visible entry, internal ids and ordinary turn bookkeeping are hidden by default, long output previews show only a few lines before inline expansion, and diff-like output highlights added and removed lines.
 Hydrated item-detail label and comment forms should save in the background and keep the item page mounted, including current scroll position and nearby form state; non-hydrated form posts may keep the redirect fallback.
 Board swim-lanes cap their height at roughly 80% of the viewport, with overflowing work item cards scrolling inside each lane so large lanes do not lengthen the page indefinitely.
 Human-authored rich prose fields such as work item descriptions and automation prompts should use the Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists, memory history, and commit policy text stay plain text controls.

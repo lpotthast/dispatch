@@ -68,7 +68,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 #[cfg(not(feature = "ssr"))]
 use uuid::Uuid;
 
-const TOOL_OUTPUT_PREVIEW_CHARS: usize = 1200;
+const TOOL_OUTPUT_PREVIEW_LINES: usize = 5;
+const METADATA_PREVIEW_CHARS: usize = 320;
 const BOARD_ITEMS_REFRESH_INTERVAL_MS: u64 = 30_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3405,27 +3406,83 @@ fn run_session_detail(
 }
 
 fn run_output_view(output: Vec<AgentRunOutputPiece>) -> AnyView {
-    if output.is_empty() {
+    let entries = compact_run_output(output);
+    if entries.is_empty() {
         return view! { <p class="muted">"No output has been written yet."</p> }.into_any();
     }
-    let pieces = output
+    let pieces = entries
         .into_iter()
-        .map(run_output_piece_view)
+        .map(run_output_entry_view)
         .collect::<Vec<_>>();
     view! { <div class="run-output">{pieces}</div> }.into_any()
 }
 
-fn run_output_piece_view(piece: AgentRunOutputPiece) -> AnyView {
-    let kind = piece.kind;
+#[derive(Clone, Debug, PartialEq)]
+struct RunOutputEntry {
+    start: Option<AgentRunOutputPiece>,
+    piece: AgentRunOutputPiece,
+}
+
+fn compact_run_output(output: Vec<AgentRunOutputPiece>) -> Vec<RunOutputEntry> {
+    let mut entries = Vec::new();
+    let mut open_items = HashMap::new();
+
+    for piece in output {
+        if should_hide_output_piece(&piece) {
+            continue;
+        }
+
+        if let Some(item_id) = piece.item_id.clone() {
+            if output_piece_is_started(&piece) {
+                open_items.insert(item_id, entries.len());
+                entries.push(RunOutputEntry { start: None, piece });
+                continue;
+            }
+
+            if let Some(index) = open_items.remove(&item_id) {
+                let start = entries[index]
+                    .start
+                    .clone()
+                    .or_else(|| Some(entries[index].piece.clone()));
+                entries[index] = RunOutputEntry { start, piece };
+                continue;
+            }
+        }
+
+        entries.push(RunOutputEntry { start: None, piece });
+    }
+
+    entries
+}
+
+fn should_hide_output_piece(piece: &AgentRunOutputPiece) -> bool {
+    if piece.kind != AgentRunOutputKind::System {
+        return false;
+    }
+
+    matches!(
+        piece.title.as_str(),
+        "Codex app-server" | "thread started" | "turn started" | "turn completed" | "user message"
+    )
+}
+
+fn run_output_entry_view(entry: RunOutputEntry) -> AnyView {
+    if entry.piece.kind == AgentRunOutputKind::Reasoning {
+        return reasoning_output_entry_view(entry);
+    }
+
+    let kind = entry.piece.kind;
     let kind_class = kind.as_storage().replace('_', "-");
-    let sequence = piece.sequence;
-    let title = piece.title;
-    let body = piece.body;
-    let metadata = piece.metadata;
-    let badges = output_piece_badges(&metadata);
-    let item_id = piece.item_id.map(|item_id| {
+    let title = output_entry_title(&entry);
+    let body = entry.piece.body.clone();
+    let metadata = entry.piece.metadata.clone();
+    let badges = output_entry_badges(&entry);
+    let header = output_entry_should_show_header(&entry).then(|| {
         view! {
-            <span class="output-piece-id">{item_id}</span>
+            <header class="output-piece-header">
+                <strong>{title}</strong>
+                {badges}
+            </header>
         }
     });
     let body_view = output_piece_body(kind, body);
@@ -3444,18 +3501,200 @@ fn run_output_piece_view(piece: AgentRunOutputPiece) -> AnyView {
 
     view! {
         <article class=format!("output-piece output-{kind_class}")>
-            <header class="output-piece-header">
-                <span class="output-sequence">{"#"}{sequence}</span>
-                <strong>{title}</strong>
-                {item_id}
-                {badges}
-            </header>
+            {header}
             {body_view}
             {arguments}
             {tool_output}
         </article>
     }
     .into_any()
+}
+
+fn reasoning_output_entry_view(entry: RunOutputEntry) -> AnyView {
+    let title = output_entry_title(&entry);
+    let body = entry.piece.body.clone();
+    let body_view = output_piece_body(AgentRunOutputKind::Reasoning, body);
+
+    view! {
+        <article class="output-piece output-reasoning">
+            <details class="reasoning-output-details">
+                <summary>{title}</summary>
+                {body_view}
+            </details>
+        </article>
+    }
+    .into_any()
+}
+
+fn output_entry_should_show_header(entry: &RunOutputEntry) -> bool {
+    entry.piece.kind != AgentRunOutputKind::ModelMessage
+        || !matches!(entry.piece.title.as_str(), "model output" | "final answer")
+}
+
+fn output_entry_title(entry: &RunOutputEntry) -> String {
+    match entry.piece.kind {
+        AgentRunOutputKind::Reasoning => output_entry_duration(entry)
+            .map(|duration| format!("thought for {duration}"))
+            .unwrap_or_else(|| "thought".to_owned()),
+        AgentRunOutputKind::ToolCall => tool_call_entry_title(entry),
+        AgentRunOutputKind::FileChange => timed_title(
+            entry,
+            "file change running",
+            "file change completed",
+            "file change failed",
+        ),
+        AgentRunOutputKind::ModelMessage
+        | AgentRunOutputKind::Error
+        | AgentRunOutputKind::System
+        | AgentRunOutputKind::Legacy => entry.piece.title.clone(),
+    }
+}
+
+fn tool_call_entry_title(entry: &RunOutputEntry) -> String {
+    match metadata_scalar(&entry.piece.metadata, "tool_type").as_deref() {
+        Some("command") => timed_title(
+            entry,
+            "running command",
+            "command completed",
+            "command failed",
+        ),
+        Some("mcp") => timed_title(
+            entry,
+            "running MCP tool",
+            "MCP tool completed",
+            "MCP tool failed",
+        ),
+        Some("dynamic") => {
+            let tool = metadata_scalar(&entry.piece.metadata, "tool")
+                .filter(|tool| !tool.trim().is_empty())
+                .unwrap_or_else(|| "dynamic tool".to_owned());
+            timed_title(
+                entry,
+                &format!("running {tool}"),
+                &format!("{tool} completed"),
+                &format!("{tool} failed"),
+            )
+        }
+        Some("collaboration") => timed_title(
+            entry,
+            "running collaboration tool",
+            "collaboration tool completed",
+            "collaboration tool failed",
+        ),
+        _ => timed_title(entry, "running tool", "tool completed", "tool failed"),
+    }
+}
+
+fn timed_title(entry: &RunOutputEntry, running: &str, completed: &str, failed: &str) -> String {
+    let base = if output_piece_is_started(&entry.piece) {
+        running
+    } else if output_piece_failed(&entry.piece) {
+        failed
+    } else {
+        completed
+    };
+
+    match output_entry_duration(entry) {
+        Some(duration) if !output_piece_is_started(&entry.piece) => {
+            format!("{base} in {duration}")
+        }
+        _ => base.to_owned(),
+    }
+}
+
+fn output_entry_badges(entry: &RunOutputEntry) -> Vec<AnyView> {
+    let mut badges = Vec::new();
+    if let Some(status) = output_status_label(&entry.piece) {
+        badges.push(view! { <span class="output-piece-badge">{status}</span> }.into_any());
+    }
+    if let Some(exit_code) = metadata_scalar(&entry.piece.metadata, "exit_code") {
+        badges.push(
+            view! { <span class="output-piece-badge">{"exit "}{exit_code}</span> }.into_any(),
+        );
+    }
+    badges
+}
+
+fn output_status_label(piece: &AgentRunOutputPiece) -> Option<&'static str> {
+    let status = normalized_output_status(piece)?;
+    match status.as_str() {
+        "started" | "inprogress" => Some("running"),
+        "failed" => Some("failed"),
+        "declined" => Some("declined"),
+        _ => None,
+    }
+}
+
+fn output_piece_is_started(piece: &AgentRunOutputPiece) -> bool {
+    matches!(
+        normalized_output_status(piece).as_deref(),
+        Some("started" | "inprogress")
+    )
+}
+
+fn output_piece_failed(piece: &AgentRunOutputPiece) -> bool {
+    matches!(normalized_output_status(piece).as_deref(), Some("failed"))
+}
+
+fn normalized_output_status(piece: &AgentRunOutputPiece) -> Option<String> {
+    metadata_scalar(&piece.metadata, "status").map(|status| {
+        status
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    })
+}
+
+fn output_entry_duration(entry: &RunOutputEntry) -> Option<String> {
+    output_entry_duration_seconds(entry).map(format_output_duration)
+}
+
+fn output_entry_duration_seconds(entry: &RunOutputEntry) -> Option<i64> {
+    metadata_duration_seconds(&entry.piece.metadata).or_else(|| {
+        let start = entry.start.as_ref()?;
+        timestamp_duration_seconds(&start.timestamp, &entry.piece.timestamp)
+    })
+}
+
+fn metadata_duration_seconds(metadata: &serde_json::Value) -> Option<i64> {
+    let milliseconds = metadata
+        .get("duration_ms")
+        .or_else(|| metadata.get("durationMs"))?
+        .as_i64()
+        .or_else(|| {
+            metadata
+                .get("duration_ms")
+                .or_else(|| metadata.get("durationMs"))?
+                .as_u64()
+                .and_then(|value| i64::try_from(value).ok())
+        })?;
+    Some(milliseconds.saturating_add(999).max(0) / 1000)
+}
+
+fn timestamp_duration_seconds(start: &str, end: &str) -> Option<i64> {
+    let start = OffsetDateTime::parse(start, &Rfc3339).ok()?;
+    let end = OffsetDateTime::parse(end, &Rfc3339).ok()?;
+    Some((end - start).whole_seconds().max(0))
+}
+
+fn format_output_duration(total_seconds: i64) -> String {
+    let total_seconds = total_seconds.max(0);
+    if total_seconds == 0 {
+        return "<1s".to_owned();
+    }
+
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 fn output_piece_body(kind: AgentRunOutputKind, body: String) -> AnyView {
@@ -3474,14 +3713,6 @@ fn output_piece_body(kind: AgentRunOutputKind, body: String) -> AnyView {
         }
     };
     view! { <div class=class>{body}</div> }.into_any()
-}
-
-fn output_piece_badges(metadata: &serde_json::Value) -> Vec<AnyView> {
-    ["tool_type", "status"]
-        .into_iter()
-        .filter_map(|key| metadata_scalar(metadata, key))
-        .map(|value| view! { <span class="output-piece-badge">{value}</span> }.into_any())
-        .collect()
 }
 
 fn metadata_scalar(metadata: &serde_json::Value, key: &str) -> Option<String> {
@@ -3512,23 +3743,31 @@ fn metadata_value_text(metadata: &serde_json::Value, key: &str) -> Option<String
 }
 
 fn tool_output_view(output: String) -> AnyView {
-    let (preview, truncated) = abbreviate_chars(&output, TOOL_OUTPUT_PREVIEW_CHARS);
+    let (preview, truncated) = abbreviate_lines(&output, TOOL_OUTPUT_PREVIEW_LINES);
+    let output_label = if looks_like_diff(&output) {
+        "diff"
+    } else {
+        "output"
+    };
     if truncated {
+        let preview = formatted_output_pre("tool-output-preview", preview);
+        let output = formatted_output_pre("tool-output-full", output);
         view! {
             <details class="tool-output-block">
                 <summary>
-                    <span class="tool-output-label">"output"</span>
-                    <span class="tool-output-preview">{preview}</span>
+                    <span class="tool-output-label">{output_label}</span>
+                    {preview}
                 </summary>
-                <pre class="tool-output-full">{output}</pre>
+                {output}
             </details>
         }
         .into_any()
     } else {
+        let output = formatted_output_pre("tool-output-full", output);
         view! {
             <div class="tool-output-block expanded">
-                <span class="tool-output-label">"output"</span>
-                <pre class="tool-output-full">{output}</pre>
+                <span class="tool-output-label">{output_label}</span>
+                {output}
             </div>
         }
         .into_any()
@@ -3536,7 +3775,7 @@ fn tool_output_view(output: String) -> AnyView {
 }
 
 fn expandable_metadata_view(label: &'static str, value: String) -> AnyView {
-    let (preview, truncated) = abbreviate_chars(&value, 320);
+    let (preview, truncated) = abbreviate_chars(&value, METADATA_PREVIEW_CHARS);
     if truncated {
         view! {
             <details class="tool-metadata-block">
@@ -3557,6 +3796,70 @@ fn expandable_metadata_view(label: &'static str, value: String) -> AnyView {
         }
         .into_any()
     }
+}
+
+fn formatted_output_pre(class: &'static str, output: String) -> AnyView {
+    if looks_like_diff(&output) {
+        let lines = diff_line_views(&output);
+        view! { <pre class=format!("{class} diff-output")>{lines}</pre> }.into_any()
+    } else {
+        view! { <pre class=class>{output}</pre> }.into_any()
+    }
+}
+
+fn diff_line_views(output: &str) -> Vec<AnyView> {
+    output
+        .lines()
+        .map(|line| {
+            let class = diff_line_class(line);
+            let line = if line.is_empty() { " " } else { line }.to_owned();
+            view! { <span class=class>{line}</span> }.into_any()
+        })
+        .collect()
+}
+
+fn diff_line_class(line: &str) -> &'static str {
+    if line.starts_with('+') && !line.starts_with("+++") {
+        "diff-line diff-added"
+    } else if line.starts_with('-') && !line.starts_with("---") {
+        "diff-line diff-removed"
+    } else if line.starts_with("@@") {
+        "diff-line diff-hunk"
+    } else {
+        "diff-line diff-context"
+    }
+}
+
+fn looks_like_diff(output: &str) -> bool {
+    let mut has_diff_marker = false;
+    let mut has_changed_line = false;
+
+    for line in output.lines() {
+        if line.starts_with("diff --git") || line.starts_with("@@") {
+            has_diff_marker = true;
+        }
+        if (line.starts_with('+') && !line.starts_with("+++"))
+            || (line.starts_with('-') && !line.starts_with("---"))
+        {
+            has_changed_line = true;
+        }
+    }
+
+    has_diff_marker && has_changed_line
+}
+
+fn abbreviate_lines(value: &str, max_lines: usize) -> (String, bool) {
+    let mut lines = value.lines();
+    let mut preview = lines
+        .by_ref()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let truncated = lines.next().is_some();
+    if truncated {
+        preview.push_str("\n...");
+    }
+    (preview, truncated)
 }
 
 fn abbreviate_chars(value: &str, max_chars: usize) -> (String, bool) {
@@ -4376,8 +4679,14 @@ fn preview(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use crate::frontend::rich_text::rich_text_editor_html;
+    use crate::shared::view_models::{AgentRunOutputKind, AgentRunOutputPiece};
 
-    use super::{claim_elapsed_seconds_at, format_claim_elapsed_seconds, preview};
+    use super::{
+        abbreviate_lines, claim_elapsed_seconds_at, compact_run_output, diff_line_class,
+        format_claim_elapsed_seconds, format_output_duration, looks_like_diff,
+        output_entry_duration_seconds, output_entry_title, preview,
+    };
+    use serde_json::json;
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
     #[test]
@@ -4415,5 +4724,134 @@ mod tests {
             preview("<p>First <strong>item</strong></p><p>Second</p>"),
             "First item\nSecond"
         );
+    }
+
+    #[test]
+    fn compact_run_output_replaces_started_tool_entry() {
+        let output = vec![
+            output_piece(
+                1,
+                "2026-06-19T10:00:00Z",
+                AgentRunOutputKind::ToolCall,
+                Some("call_1"),
+                "command started",
+                "just fmt",
+                json!({
+                    "tool_type": "command",
+                    "status": "started",
+                    "command": "just fmt"
+                }),
+            ),
+            output_piece(
+                2,
+                "2026-06-19T10:01:23Z",
+                AgentRunOutputKind::ToolCall,
+                Some("call_1"),
+                "command Completed",
+                "just fmt",
+                json!({
+                    "tool_type": "command",
+                    "status": "Completed",
+                    "command": "just fmt",
+                    "output": "done"
+                }),
+            ),
+        ];
+
+        let entries = compact_run_output(output);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].start.as_ref().map(|piece| piece.title.as_str()),
+            Some("command started")
+        );
+        assert_eq!(entries[0].piece.title, "command Completed");
+        assert_eq!(output_entry_duration_seconds(&entries[0]), Some(83));
+        assert_eq!(
+            output_entry_title(&entries[0]),
+            "command completed in 1m 23s"
+        );
+    }
+
+    #[test]
+    fn compact_run_output_hides_low_value_system_noise() {
+        let output = vec![
+            output_piece(
+                1,
+                "2026-06-19T10:00:00Z",
+                AgentRunOutputKind::System,
+                None,
+                "thread started",
+                "thread_hash",
+                json!({ "thread_id": "thread_hash" }),
+            ),
+            output_piece(
+                2,
+                "2026-06-19T10:00:01Z",
+                AgentRunOutputKind::ModelMessage,
+                Some("msg_1"),
+                "model output",
+                "Useful output",
+                json!({}),
+            ),
+        ];
+
+        let entries = compact_run_output(output);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].piece.body, "Useful output");
+    }
+
+    #[test]
+    fn output_duration_uses_readable_units() {
+        assert_eq!(format_output_duration(0), "<1s");
+        assert_eq!(format_output_duration(12), "12s");
+        assert_eq!(format_output_duration(83), "1m 23s");
+        assert_eq!(format_output_duration(3723), "1h 2m 3s");
+    }
+
+    #[test]
+    fn abbreviate_lines_keeps_short_output_and_marks_truncation() {
+        assert_eq!(
+            abbreviate_lines("one\ntwo", 5),
+            ("one\ntwo".to_owned(), false)
+        );
+        assert_eq!(
+            abbreviate_lines("1\n2\n3\n4\n5\n6", 5),
+            ("1\n2\n3\n4\n5\n...".to_owned(), true)
+        );
+    }
+
+    #[test]
+    fn diff_helpers_detect_and_classify_changed_lines() {
+        let diff = "diff --git a/file b/file\n@@ -1 +1 @@\n-old\n+new\n context";
+
+        assert!(looks_like_diff(diff));
+        assert_eq!(diff_line_class("+new"), "diff-line diff-added");
+        assert_eq!(diff_line_class("-old"), "diff-line diff-removed");
+        assert_eq!(diff_line_class("@@ -1 +1 @@"), "diff-line diff-hunk");
+        assert_eq!(diff_line_class(" context"), "diff-line diff-context");
+        assert_eq!(diff_line_class("+++ b/file"), "diff-line diff-context");
+    }
+
+    fn output_piece(
+        sequence: u64,
+        timestamp: &str,
+        kind: AgentRunOutputKind,
+        item_id: Option<&str>,
+        title: &str,
+        body: &str,
+        metadata: serde_json::Value,
+    ) -> AgentRunOutputPiece {
+        AgentRunOutputPiece {
+            sequence,
+            timestamp: timestamp.to_owned(),
+            kind,
+            source: "codex".to_owned(),
+            item_id: item_id.map(str::to_owned),
+            title: title.to_owned(),
+            body: body.to_owned(),
+            metadata,
+        }
     }
 }

@@ -285,6 +285,28 @@ fn started_thread_item_piece(item: &ThreadItem) -> Option<OutputPieceDraft> {
                 "agent_status": &call.agent_status,
             }),
         }),
+        ThreadItem::Reasoning(reasoning) => Some(OutputPieceDraft {
+            kind: AgentRunOutputKind::Reasoning,
+            item_id: Some(reasoning.id.clone()),
+            title: "thinking".to_owned(),
+            body: String::new(),
+            metadata: serde_json::json!({ "status": "started" }),
+        }),
+        ThreadItem::FileChange(change) => Some(OutputPieceDraft {
+            kind: AgentRunOutputKind::FileChange,
+            item_id: Some(change.id.clone()),
+            title: "file change started".to_owned(),
+            body: format!("{} file(s)", change.changes.len()),
+            metadata: serde_json::json!({
+                "status": "started",
+                "changes": change.changes.iter().map(|change| {
+                    serde_json::json!({
+                        "path": &change.path,
+                        "kind": format!("{:?}", change.kind),
+                    })
+                }).collect::<Vec<_>>(),
+            }),
+        }),
         _ => None,
     }
 }
@@ -315,9 +337,9 @@ fn completed_thread_item_piece(item: &ThreadItem) -> Option<OutputPieceDraft> {
         ThreadItem::Reasoning(reasoning) => Some(OutputPieceDraft {
             kind: AgentRunOutputKind::Reasoning,
             item_id: Some(reasoning.id.clone()),
-            title: "reasoning".to_owned(),
+            title: "thinking".to_owned(),
             body: reasoning.text.clone(),
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({ "status": "completed" }),
         }),
         ThreadItem::CommandExecution(command) => Some(OutputPieceDraft {
             kind: AgentRunOutputKind::ToolCall,

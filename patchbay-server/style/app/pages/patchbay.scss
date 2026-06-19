@@ -2212,23 +2212,27 @@ pre {
 
 .run-output {
   display: grid;
-  gap: 10px;
-  max-height: 560px;
-  overflow: auto;
-  padding: 10px;
-  border: 1px solid #25303b;
-  border-radius: 8px;
-  background: #0f141a;
+  gap: 8px;
+  padding-left: 16px;
 }
 
 .output-piece {
+  position: relative;
   display: grid;
-  gap: 8px;
-  padding: 11px;
-  border: 1px solid #2b3440;
-  border-left-width: 4px;
-  border-radius: 7px;
-  background: #151b22;
+  gap: 7px;
+  min-width: 0;
+  padding: 3px 0 3px 14px;
+
+  &::before {
+    position: absolute;
+    top: 13px;
+    left: 0;
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: #7a8795;
+    content: "";
+  }
 }
 
 .output-piece-header {
@@ -2246,8 +2250,6 @@ pre {
   }
 }
 
-.output-sequence,
-.output-piece-id,
 .output-piece-badge {
   display: inline-flex;
   min-height: 20px;
@@ -2272,8 +2274,9 @@ pre {
 }
 
 .output-model-message {
-  border-left-color: #9fc9ff;
-  background: #141d27;
+  &::before {
+    background: #9fc9ff;
+  }
 }
 
 .model-output {
@@ -2283,20 +2286,35 @@ pre {
 }
 
 .output-reasoning {
-  border-color: rgba($amber, 0.48);
-  border-left-color: $amber;
-  background: #2a2418;
+  &::before {
+    background: $amber;
+  }
+}
+
+.reasoning-output-details {
+  display: grid;
+  gap: 7px;
+
+  summary {
+    width: fit-content;
+    cursor: pointer;
+    color: #d6b86f;
+    font-size: 12px;
+    font-weight: 760;
+  }
 }
 
 .reasoning-output {
   color: #f4d594;
+  padding-top: 4px;
   font-style: italic;
 }
 
 .output-tool-call,
 .output-file-change {
-  border-left-color: #7f8b99;
-  background: #171a1e;
+  &::before {
+    background: #7f8b99;
+  }
 }
 
 .tool-call-body {
@@ -2306,19 +2324,21 @@ pre {
 }
 
 .output-error {
-  border-color: rgba($danger, 0.52);
-  border-left-color: $danger;
-  background: #2a161a;
+  &::before {
+    background: $danger;
+  }
 }
 
 .error-output {
   color: #ffd7dd;
+  font-weight: 680;
 }
 
 .output-system,
 .output-legacy {
-  border-left-color: #56616d;
-  background: #131820;
+  &::before {
+    background: #56616d;
+  }
 }
 
 .system-output {
@@ -2341,6 +2361,10 @@ pre {
     gap: 5px;
     cursor: pointer;
   }
+
+  &[open] .tool-output-preview {
+    display: none;
+  }
 }
 
 .tool-output-label,
@@ -2356,8 +2380,9 @@ pre {
 .tool-output-full,
 .tool-metadata-block pre,
 .tool-metadata-block code {
+  max-height: none;
   margin: 0;
-  overflow: auto;
+  overflow: visible;
   color: #2f3740;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
@@ -2366,12 +2391,47 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.diff-output {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  border: 1px solid #d7dde4;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.diff-line {
+  display: block;
+  min-height: 18px;
+  padding: 1px 8px;
+}
+
+.diff-added {
+  background: #dff5e6;
+  color: #14552b;
+}
+
+.diff-removed {
+  background: #ffe1e4;
+  color: #7a1721;
+}
+
+.diff-hunk {
+  background: #e7eef7;
+  color: #31577e;
+  font-weight: 760;
+}
+
 .tool-output-full,
 .tool-metadata-block pre {
-  max-height: 360px;
   padding: 0;
   border-radius: 0;
   background: transparent;
+}
+
+.tool-metadata-block pre {
+  max-height: 360px;
+  overflow: auto;
 }
 
 .tool-metadata-block.compact {
