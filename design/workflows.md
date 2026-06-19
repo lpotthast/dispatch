@@ -71,6 +71,7 @@ The server validates claim ownership, appends the feedback request as an agent c
 General item edits use the item update endpoint, not workflow endpoints. Updates can change title, description, state, and per-item agent overrides.
 
 A single item update request is applied as one versioned change, even when it edits both item fields and the state label. Version checks protect against overwriting newer item state. Workflow transitions still use dedicated operations because they contain additional business rules.
+Generic label add, update, and delete operations reject the reserved `state` label so state changes cannot bypass item move/update semantics or emit only generic label events.
 
 ## Automation Launch
 

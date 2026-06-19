@@ -43,7 +43,7 @@ Core fields include:
 - optional agent model and reasoning effort overrides;
 - comment count and timestamps.
 
-Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook for claim, finish, release, and default automation transitions.
+Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Non-state labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook for claim, finish, release, and default automation transitions; it is managed through item create, item state update, and workflow transitions rather than generic label add, update, or delete operations.
 
 Patchbay also uses hardcoded workflow labels. `patchbay:claimed-from-state=<state-label>` is transient claim bookkeeping so release and feedback requests can restore the state an item came from. `patchbay:automation-blocked` marks released, non-operable work that automation should skip until the label is removed. `patchbay:feedback-requested` marks work where an agent is waiting for a user answer; automation treats it as a blocking label until a user or agent removes it after the feedback has been handled.
 

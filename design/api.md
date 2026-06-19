@@ -41,6 +41,11 @@ and `state` must be supplied through the create request's `state` field rather
 than duplicated in `initial_labels`. The backwards-compatible `labels` alias is
 accepted for `initial_labels`.
 
+Generic label add, update, and delete operations are for non-state labels. The
+`state` label is the workflow state hook and must be changed through item create,
+`PATCH /items/{item_id}` with `state`, or dedicated workflow transitions so move
+events, version checks, and workflow rules stay centralized.
+
 Work item relationship endpoints:
 
 ```text

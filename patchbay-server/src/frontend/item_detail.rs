@@ -401,12 +401,17 @@ fn item_label_row(
     label: WorkItemLabelView,
     work_item_states: ReadSignal<Vec<WorkItemStateView>>,
 ) -> impl IntoView + 'static {
-    let update_action = format!(
-        "/projects/{}/items/{}/labels/{}/update",
-        encode_path(project),
-        item.id,
-        label.id
-    );
+    let is_state = label.key == STATE_LABEL_KEY;
+    let update_action = if is_state {
+        format!("/projects/{}/items/{}/move", encode_path(project), item.id)
+    } else {
+        format!(
+            "/projects/{}/items/{}/labels/{}/update",
+            encode_path(project),
+            item.id,
+            label.id
+        )
+    };
     let delete_action = format!(
         "/projects/{}/items/{}/labels/{}/delete",
         encode_path(project),
@@ -415,7 +420,6 @@ fn item_label_row(
     );
     let value = label.value.clone().unwrap_or_default();
     let rendered = format_label(&label.key, label.value.as_deref());
-    let is_state = label.key == STATE_LABEL_KEY;
     let can_delete = label.key != STATE_LABEL_KEY;
     let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
     let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;

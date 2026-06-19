@@ -1386,6 +1386,7 @@ struct MoveItemForm {
 async fn move_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Form(form): Form<MoveItemForm>,
 ) -> Response {
     let parsed_state = parse_state_label(form.state);
@@ -1399,8 +1400,14 @@ async fn move_item(
     )
     .await
     {
+        Ok(_) if is_background_form_request(&headers) => {
+            item_form_success(&headers, &project, item_id)
+        }
         Ok(_) => {
             Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
+        }
+        Err(err) if is_background_form_request(&headers) => {
+            form_error_response(&headers, err).await
         }
         Err(err) => error_response(err).await,
     }

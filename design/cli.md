@@ -86,6 +86,11 @@ patchbay item request-feedback [item-id] --body "..." [--json]
 patchbay item watch [item-id] [--since-version <n>] [--json]
 ```
 
+Label commands manage ordinary non-state labels. The reserved `state` label is
+changed through `patchbay item create --state ...`, `patchbay item update
+--state ...`, or workflow commands so state movement uses the item workflow
+path.
+
 Relationship commands:
 
 ```text
