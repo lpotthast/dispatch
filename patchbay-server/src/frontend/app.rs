@@ -41,7 +41,7 @@ use crudkit_leptos::crudkit_core::condition::{
     Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
 };
 use crudkit_leptos::{
-    crud_instance_config::{CrudCreateActionsPlacement, CrudNavigationConfig},
+    crud_instance_config::{CrudActionsPlacement, CrudNavigationConfig},
     crudkit_web::view::SerializableCrudView,
     prelude::*,
 };
@@ -2300,7 +2300,7 @@ fn item_relationship_row(
 fn relationship_endpoint_link(
     project: &str,
     item: &WorkItemRelationshipItemSummary,
-) -> impl IntoView + 'static {
+) -> impl IntoView + 'static + use<> {
     let href = item_href(project, item.id);
     let state = relationship_item_state_label(item).to_owned();
     let title = item.title.clone();
@@ -4198,7 +4198,7 @@ fn create_item_modal(
                                         project_id,
                                         SerializableCrudView::Create,
                                         CrudNavigationConfig::embedded_single_entity()
-                                            .with_create_actions_placement(CrudCreateActionsPlacement::External),
+                                            .with_create_actions_placement(CrudActionsPlacement::External),
                                         default_create_state,
                                         Some(crud_state_options),
                                         label_suggestions,
@@ -4222,7 +4222,7 @@ fn create_item_modal(
                 >
                     "Cancel"
                 </button>
-                <CrudCreateActionsOutlet context=context />
+                <CrudActionsOutlet context=context action_slot=CrudActionSlot::CreatePrimary />
             </ModalFooter>
         </Modal>
     }

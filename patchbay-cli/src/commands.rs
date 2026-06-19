@@ -190,6 +190,10 @@ pub(crate) struct ItemCreateArgs {
     #[arg(long)]
     pub(crate) description: String,
 
+    /// Initial label key or key/value pair; may be repeated.
+    #[arg(long = "label", value_name = "KEY[=VALUE]")]
+    pub(crate) labels: Vec<String>,
+
     /// Initial item state label; defaults to open.
     #[arg(long)]
     pub(crate) state: Option<String>,
@@ -630,6 +634,8 @@ mod tests {
         let create = help_output(&["patchbay", "item", "create", "--help"]);
         assert!(create.contains("Title for the new item"));
         assert!(create.contains("Full task description"));
+        assert!(create.contains("--label <KEY[=VALUE]>"));
+        assert!(create.contains("Initial label key or key/value pair"));
         assert!(create.contains("Initial item state label"));
         assert!(create.contains("Reasoning effort override for this item"));
         assert!(create.contains("Print JSON instead of text"));
@@ -668,5 +674,34 @@ mod tests {
 
         let automation = help_output(&["patchbay", "automation", "log", "--help"]);
         assert!(automation.contains("Automation run id"));
+    }
+
+    #[test]
+    fn item_create_accepts_repeated_label_options() {
+        let cli = Cli::parse_from([
+            "patchbay",
+            "item",
+            "create",
+            "--title",
+            "Title",
+            "--description",
+            "Description",
+            "--label",
+            "type=feature",
+            "--label",
+            "needs-verification",
+        ]);
+
+        match cli.into_command() {
+            Command::Item {
+                command: ItemCommand::Create(args),
+            } => {
+                assert_eq!(
+                    args.labels,
+                    vec!["type=feature".to_owned(), "needs-verification".to_owned()]
+                );
+            }
+            command => panic!("expected item create command, got {command:?}"),
+        }
     }
 }

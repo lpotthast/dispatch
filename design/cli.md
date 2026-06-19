@@ -71,7 +71,7 @@ Work item commands:
 ```text
 patchbay item list [--state <state>] [--json]
 patchbay item show [item-id] [--json]
-patchbay item create --title "..." --description "..." [--json]
+patchbay item create --title "..." --description "..." [--state <state>] [--label <key[=value]>] [--json]
 patchbay item update [item-id] [options] [--json]
 patchbay item claim [--state <state-label>] [--json]
 patchbay label list [item-id] [--json]

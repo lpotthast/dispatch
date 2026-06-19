@@ -11,8 +11,8 @@ use rootcause::Result;
 
 use crate::{
     commands::{
-        AutomationCommand, Command, CommentCommand, ItemCommand, LabelCommand, MemoryCommand,
-        RelationshipCommand,
+        AutomationCommand, Command, CommentCommand, ItemCommand, ItemCreateArgs, LabelCommand,
+        MemoryCommand, RelationshipCommand,
     },
     context::ResolvedContext,
     git_guard::run_git,
@@ -50,20 +50,10 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
             })
         }
         ItemCommand::Create(args) => {
-            let item = client
-                .create_item(
-                    project,
-                    &CreateWorkItemRequest {
-                        title: args.title,
-                        description: args.description,
-                        state: args.state,
-                        agent_model_override: args.agent_model,
-                        agent_reasoning_effort_override: args.agent_reasoning_effort,
-                        initial_labels: Vec::new(),
-                    },
-                )
-                .await?;
-            output::write(args.json, &item, |output| {
+            let json = args.json;
+            let request = create_work_item_request(args);
+            let item = client.create_item(project, &request).await?;
+            output::write(json, &item, |output| {
                 writeln!(output, "Created item #{}: {}", item.id, item.title)
             })
         }
@@ -447,4 +437,326 @@ async fn run_automation(command: AutomationCommand, context: ResolvedContext) ->
 
 fn optional_override<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
     if clear { Some(None) } else { value.map(Some) }
+}
+
+fn create_work_item_request(args: ItemCreateArgs) -> CreateWorkItemRequest {
+    CreateWorkItemRequest {
+        title: args.title,
+        description: args.description,
+        state: args.state,
+        agent_model_override: args.agent_model,
+        agent_reasoning_effort_override: args.agent_reasoning_effort,
+        initial_labels: args
+            .labels
+            .into_iter()
+            .map(create_work_item_label_request)
+            .collect(),
+    }
+}
+
+fn create_work_item_label_request(raw: String) -> CreateWorkItemLabelRequest {
+    let (key, value) = match raw.split_once('=') {
+        Some((key, value)) => (key.trim().to_owned(), trimmed_label_value(value)),
+        None => (raw.trim().to_owned(), None),
+    };
+    CreateWorkItemLabelRequest { key, value }
+}
+
+fn trimmed_label_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+    };
+
+    use patchbay_types::AgentReasoningEffort;
+    use serde_json::json;
+
+    use crate::context::{ContextOverrides, resolve_context};
+
+    use super::*;
+
+    struct CapturedRequest {
+        request_line: String,
+        body: String,
+    }
+
+    fn create_args(labels: &[&str]) -> ItemCreateArgs {
+        ItemCreateArgs {
+            title: "Title".to_owned(),
+            description: "Description".to_owned(),
+            labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+            state: None,
+            agent_model: None,
+            agent_reasoning_effort: None,
+            json: false,
+        }
+    }
+
+    fn env_from<'a>(
+        entries: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> std::result::Result<String, std::env::VarError> + 'a {
+        move |key| {
+            entries
+                .iter()
+                .find(|(entry_key, _)| *entry_key == key)
+                .map(|(_, value)| value.to_string())
+                .ok_or(std::env::VarError::NotPresent)
+        }
+    }
+
+    fn spawn_create_item_server() -> (
+        String,
+        mpsc::Receiver<CapturedRequest>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let (request_tx, request_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            request_tx.send(request).unwrap();
+
+            let response_body = json!({
+                "id": 123,
+                "project_id": 4,
+                "title": "Created",
+                "description": "Created through test",
+                "state": "open",
+                "labels": [
+                    {
+                        "id": 1,
+                        "project_id": 4,
+                        "work_item_id": 123,
+                        "key": "state",
+                        "value": "open",
+                        "created_at": "2026-06-19T00:00:00Z",
+                        "updated_at": "2026-06-19T00:00:00Z"
+                    },
+                    {
+                        "id": 2,
+                        "project_id": 4,
+                        "work_item_id": 123,
+                        "key": "type",
+                        "value": "feature",
+                        "created_at": "2026-06-19T00:00:00Z",
+                        "updated_at": "2026-06-19T00:00:00Z"
+                    },
+                    {
+                        "id": 3,
+                        "project_id": 4,
+                        "work_item_id": 123,
+                        "key": "needs-verification",
+                        "value": null,
+                        "created_at": "2026-06-19T00:00:00Z",
+                        "updated_at": "2026-06-19T00:00:00Z"
+                    }
+                ],
+                "version": 1,
+                "claimed_by": null,
+                "claimed_at": null,
+                "claim_expires_at": null,
+                "claim_source": null,
+                "finished_at": null,
+                "agent_model_override": null,
+                "agent_reasoning_effort_override": null,
+                "created_at": "2026-06-19T00:00:00Z",
+                "updated_at": "2026-06-19T00:00:00Z",
+                "comment_count": 0
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            )
+            .unwrap();
+        });
+        (base_url, request_rx, handle)
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "client closed before request headers completed");
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Some(header_end) = find_header_end(&buffer) {
+                break header_end;
+            }
+        };
+        let headers = String::from_utf8(buffer[..header_end].to_vec()).unwrap();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        let body_start = header_end + b"\r\n\r\n".len();
+        while buffer.len() < body_start + content_length {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "client closed before request body completed");
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        let request_line = headers.lines().next().unwrap().to_owned();
+        let body =
+            String::from_utf8(buffer[body_start..body_start + content_length].to_vec()).unwrap();
+        CapturedRequest { request_line, body }
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer
+            .windows(b"\r\n\r\n".len())
+            .position(|window| window == b"\r\n\r\n")
+    }
+
+    #[test]
+    fn create_item_request_without_labels_has_empty_initial_labels() {
+        let request = create_work_item_request(create_args(&[]));
+
+        assert_eq!(request.title, "Title");
+        assert_eq!(request.description, "Description");
+        assert!(request.initial_labels.is_empty());
+    }
+
+    #[test]
+    fn create_item_request_preserves_state_and_agent_overrides() {
+        let request = create_work_item_request(ItemCreateArgs {
+            title: "Title".to_owned(),
+            description: "Description".to_owned(),
+            labels: Vec::new(),
+            state: Some("idea".to_owned()),
+            agent_model: Some("gpt-5-codex".to_owned()),
+            agent_reasoning_effort: Some(AgentReasoningEffort::High),
+            json: true,
+        });
+
+        assert_eq!(request.state.as_deref(), Some("idea"));
+        assert_eq!(request.agent_model_override.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(
+            request.agent_reasoning_effort_override,
+            Some(AgentReasoningEffort::High)
+        );
+    }
+
+    #[test]
+    fn create_item_request_parses_initial_labels() {
+        let request = create_work_item_request(create_args(&[
+            "type=feature",
+            "needs-verification",
+            "token=a=b",
+        ]));
+
+        assert_eq!(request.initial_labels.len(), 3);
+        assert_eq!(request.initial_labels[0].key, "type");
+        assert_eq!(request.initial_labels[0].value.as_deref(), Some("feature"));
+        assert_eq!(request.initial_labels[1].key, "needs-verification");
+        assert!(request.initial_labels[1].value.is_none());
+        assert_eq!(request.initial_labels[2].key, "token");
+        assert_eq!(request.initial_labels[2].value.as_deref(), Some("a=b"));
+    }
+
+    #[test]
+    fn create_item_request_trims_keys_and_values() {
+        let request = create_work_item_request(create_args(&[
+            " type = feature ",
+            " needs-verification ",
+            " empty = ",
+        ]));
+
+        assert_eq!(request.initial_labels[0].key, "type");
+        assert_eq!(request.initial_labels[0].value.as_deref(), Some("feature"));
+        assert_eq!(request.initial_labels[1].key, "needs-verification");
+        assert!(request.initial_labels[1].value.is_none());
+        assert_eq!(request.initial_labels[2].key, "empty");
+        assert!(request.initial_labels[2].value.is_none());
+    }
+
+    #[test]
+    fn create_item_request_leaves_validation_to_server() {
+        let request = create_work_item_request(create_args(&[
+            "dup=one",
+            "dup=two",
+            "=missing-key",
+            "state=blocked",
+        ]));
+
+        assert_eq!(request.initial_labels[0].key, "dup");
+        assert_eq!(request.initial_labels[0].value.as_deref(), Some("one"));
+        assert_eq!(request.initial_labels[1].key, "dup");
+        assert_eq!(request.initial_labels[1].value.as_deref(), Some("two"));
+        assert_eq!(request.initial_labels[2].key, "");
+        assert_eq!(
+            request.initial_labels[2].value.as_deref(),
+            Some("missing-key")
+        );
+        assert_eq!(request.initial_labels[3].key, "state");
+        assert_eq!(request.initial_labels[3].value.as_deref(), Some("blocked"));
+    }
+
+    #[tokio::test]
+    async fn item_create_posts_initial_labels_without_agent_or_item_context() {
+        let (api_url, request_rx, server_handle) = spawn_create_item_server();
+        let context = resolve_context(
+            &ContextOverrides::default(),
+            env_from(&[
+                ("PATCHBAY_API_URL", api_url.as_str()),
+                ("PATCHBAY_PROJECT", "demo"),
+                ("PATCHBAY_CLAIMED_ITEM_ID", "999"),
+            ]),
+        )
+        .unwrap();
+
+        run(
+            Command::Item {
+                command: ItemCommand::Create(ItemCreateArgs {
+                    title: "Created through CLI".to_owned(),
+                    description: "Body".to_owned(),
+                    labels: vec!["type=feature".to_owned(), "needs-verification".to_owned()],
+                    state: Some("open".to_owned()),
+                    agent_model: None,
+                    agent_reasoning_effort: None,
+                    json: false,
+                }),
+            },
+            context,
+        )
+        .await
+        .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        server_handle.join().unwrap();
+        assert_eq!(
+            request.request_line,
+            "POST /api/projects/demo/items HTTP/1.1"
+        );
+
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(body["title"], "Created through CLI");
+        assert_eq!(body["description"], "Body");
+        assert_eq!(body["state"], "open");
+        assert_eq!(
+            body["initial_labels"],
+            json!([
+                { "key": "type", "value": "feature" },
+                { "key": "needs-verification", "value": null }
+            ])
+        );
+    }
 }
