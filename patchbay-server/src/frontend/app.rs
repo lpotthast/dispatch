@@ -9,7 +9,11 @@ use crate::{
             agent_tools_panel, automation_triggers_crudkit_instance, crudkit_i64_id,
             projects_panel, selected_trigger_id_from_context, work_items_crudkit_config_for_view,
         },
-        live_events::{LiveEventsProvider, event_scopes_named_project, refetch_on_live_event},
+        live_events::{
+            LiveEventsProvider, api_docs_event_matches, board_items_event_matches,
+            codex_event_matches, item_event_matches, refetch_on_live_event, run_log_event_matches,
+            runs_page_event_matches, runs_section_event_matches, trigger_runs_event_matches,
+        },
         rich_text::rich_text_plain_text,
         routes::routes,
         work_item_creation::{
@@ -26,10 +30,9 @@ use crate::{
         CommentView, DEFAULT_STATE_LABEL, FEEDBACK_REQUESTED_LABEL_KEY, ProjectGitStatusView,
         ProjectLabelView, ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
         ProjectSystemPromptEventView, ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY,
-        SwimLaneView, UiEvent, WorkItemClaimSourceView, WorkItemLabelView,
-        WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
-        WorkItemRelationshipListEntry, WorkItemStateView, WorkItemView, WorkspaceEditorView,
-        WorkspaceMode,
+        SwimLaneView, WorkItemClaimSourceView, WorkItemLabelView, WorkItemRelationshipDirection,
+        WorkItemRelationshipItemSummary, WorkItemRelationshipListEntry, WorkItemStateView,
+        WorkItemView, WorkspaceEditorView, WorkspaceMode,
     },
 };
 use crudkit_leptos::crud_instance::CrudInstanceContext;
@@ -602,7 +605,7 @@ pub fn PageItem() -> impl IntoView {
         }
     });
     refetch_on_live_event(page, move |event| {
-        item_event_matches(event, project_for_events.clone(), item_id)
+        item_event_matches(event, project_for_events.as_deref(), item_id)
     });
 
     view! {
@@ -659,7 +662,7 @@ pub fn PageRunLog() -> impl IntoView {
         async move { (cache_key, load_run_log_page(project, run_id).await) }
     });
     refetch_on_live_event(page, move |event| {
-        run_log_event_matches(event, project_for_events.clone(), run_id)
+        run_log_event_matches(event, project_for_events.as_deref(), run_id)
     });
 
     view! {
@@ -863,97 +866,6 @@ fn api_docs_page_from_cache(page: &CachedRoutePage) -> Option<ApiDocsPage> {
     match page {
         CachedRoutePage::ApiDocs(page) => Some(page.as_ref().clone()),
         _ => None,
-    }
-}
-
-fn codex_event_matches(event: &UiEvent) -> bool {
-    matches!(
-        event,
-        UiEvent::CodexStatusChanged { .. }
-            | UiEvent::AgentToolChanged { .. }
-            | UiEvent::ProjectListChanged { .. }
-            | UiEvent::ProjectChanged { .. }
-            | UiEvent::AutomationChanged { .. }
-    )
-}
-
-fn api_docs_event_matches(event: &UiEvent) -> bool {
-    matches!(
-        event,
-        UiEvent::ProjectListChanged { .. }
-            | UiEvent::ProjectChanged { .. }
-            | UiEvent::CodexStatusChanged { .. }
-    )
-}
-
-fn runs_page_event_matches(event: &UiEvent) -> bool {
-    matches!(
-        event,
-        UiEvent::ProjectListChanged { .. }
-            | UiEvent::ProjectChanged { .. }
-            | UiEvent::CodexStatusChanged { .. }
-    )
-}
-
-fn item_event_matches(event: &UiEvent, project: Option<String>, item_id: Option<i64>) -> bool {
-    if !event_scopes_named_project(event, project.as_deref()) {
-        return false;
-    }
-    match event {
-        UiEvent::ProjectListChanged { .. }
-        | UiEvent::ProjectChanged { .. }
-        | UiEvent::AutomationChanged { .. }
-        | UiEvent::CodexStatusChanged { .. }
-        | UiEvent::AgentToolChanged { .. } => true,
-        UiEvent::WorkItemChanged {
-            item_id: changed_item_id,
-            ..
-        }
-        | UiEvent::CommentChanged {
-            item_id: changed_item_id,
-            ..
-        } => Some(*changed_item_id) == item_id,
-        UiEvent::AgentRunChanged {
-            item_id: Some(changed_item_id),
-            ..
-        }
-        | UiEvent::AgentOutputChanged {
-            item_id: Some(changed_item_id),
-            ..
-        } => Some(*changed_item_id) == item_id,
-        UiEvent::AgentRunChanged { item_id: None, .. }
-        | UiEvent::AgentOutputChanged { item_id: None, .. }
-        | UiEvent::SystemPromptChanged { .. }
-        | UiEvent::MemoryChanged { .. }
-        | UiEvent::SwimLaneChanged { .. } => false,
-        UiEvent::WorkItemStateChanged { .. } => true,
-    }
-}
-
-fn run_log_event_matches(event: &UiEvent, project: Option<String>, run_id: Option<i64>) -> bool {
-    if !event_scopes_named_project(event, project.as_deref()) {
-        return false;
-    }
-    match event {
-        UiEvent::AgentRunChanged {
-            run_id: changed_run_id,
-            ..
-        }
-        | UiEvent::AgentOutputChanged {
-            run_id: changed_run_id,
-            ..
-        } => Some(*changed_run_id) == run_id,
-        UiEvent::ProjectListChanged { .. }
-        | UiEvent::ProjectChanged { .. }
-        | UiEvent::AutomationChanged { .. }
-        | UiEvent::CodexStatusChanged { .. }
-        | UiEvent::AgentToolChanged { .. } => true,
-        UiEvent::WorkItemChanged { .. }
-        | UiEvent::CommentChanged { .. }
-        | UiEvent::SystemPromptChanged { .. }
-        | UiEvent::MemoryChanged { .. }
-        | UiEvent::SwimLaneChanged { .. }
-        | UiEvent::WorkItemStateChanged { .. } => false,
     }
 }
 
@@ -3201,14 +3113,7 @@ fn LiveBoardItems(
     let _poll = use_interval_fn(move || section.refetch(), BOARD_ITEMS_REFRESH_INTERVAL_MS);
     let project_for_events = project.clone();
     refetch_on_live_event(section, move |event| {
-        event_scopes_named_project(event, Some(project_for_events.as_str()))
-            && matches!(
-                event,
-                UiEvent::WorkItemChanged { .. }
-                    | UiEvent::AgentRunChanged { .. }
-                    | UiEvent::SwimLaneChanged { .. }
-                    | UiEvent::WorkItemStateChanged { .. }
-            )
+        board_items_event_matches(event, project_for_events.as_str())
     });
 
     Effect::new(move |_| {
@@ -3252,14 +3157,7 @@ fn LiveRunsSection(
     notify_resource_errors(section, || true);
     let project_for_events = project.clone();
     refetch_on_live_event(section, move |event| {
-        event_scopes_named_project(event, Some(project_for_events.as_str()))
-            && matches!(
-                event,
-                UiEvent::AutomationChanged { .. }
-                    | UiEvent::AgentRunChanged { .. }
-                    | UiEvent::AgentOutputChanged { .. }
-                    | UiEvent::CodexStatusChanged { .. }
-            )
+        runs_section_event_matches(event, project_for_events.as_str())
     });
 
     Effect::new(move |_| {
@@ -3613,14 +3511,7 @@ fn trigger_runs_panel(
     });
     let project_for_events = project.clone();
     refetch_on_live_event(trigger_runs, move |event| {
-        event_scopes_named_project(event, Some(project_for_events.as_str()))
-            && matches!(
-                event,
-                UiEvent::AutomationChanged { .. }
-                    | UiEvent::AgentRunChanged { .. }
-                    | UiEvent::AgentOutputChanged { .. }
-                    | UiEvent::CodexStatusChanged { .. }
-            )
+        trigger_runs_event_matches(event, project_for_events.as_str())
             && selected_trigger_id.get().is_some()
     });
     let (run_sessions, set_run_sessions) = signal(Vec::<BoardRunSessionView>::new());
@@ -5024,8 +4915,7 @@ mod tests {
     use crate::frontend::rich_text::rich_text_editor_html;
 
     use super::{
-        UiEvent, claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_patchbay_run_id,
-        preview, runs_page_event_matches,
+        claim_elapsed_seconds_at, format_claim_elapsed_seconds, infer_patchbay_run_id, preview,
     };
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -5078,45 +4968,5 @@ mod tests {
             preview("<p>First <strong>item</strong></p><p>Second</p>"),
             "First item\nSecond"
         );
-    }
-
-    #[test]
-    fn runs_page_shell_ignores_live_run_events() {
-        assert!(!runs_page_event_matches(&UiEvent::AutomationChanged {
-            sequence: 1,
-            timestamp: "2026-06-18T00:00:00Z".to_owned(),
-            project: "demo".to_owned(),
-        }));
-        assert!(!runs_page_event_matches(&UiEvent::AgentRunChanged {
-            sequence: 2,
-            timestamp: "2026-06-18T00:00:01Z".to_owned(),
-            project: "demo".to_owned(),
-            run_id: 42,
-            item_id: Some(7),
-        }));
-        assert!(!runs_page_event_matches(&UiEvent::AgentOutputChanged {
-            sequence: 3,
-            timestamp: "2026-06-18T00:00:02Z".to_owned(),
-            project: "demo".to_owned(),
-            run_id: 42,
-            item_id: Some(7),
-        }));
-    }
-
-    #[test]
-    fn runs_page_shell_refreshes_for_shell_context_events() {
-        assert!(runs_page_event_matches(&UiEvent::ProjectListChanged {
-            sequence: 1,
-            timestamp: "2026-06-18T00:00:00Z".to_owned(),
-        }));
-        assert!(runs_page_event_matches(&UiEvent::ProjectChanged {
-            sequence: 2,
-            timestamp: "2026-06-18T00:00:01Z".to_owned(),
-            project: "demo".to_owned(),
-        }));
-        assert!(runs_page_event_matches(&UiEvent::CodexStatusChanged {
-            sequence: 3,
-            timestamp: "2026-06-18T00:00:02Z".to_owned(),
-        }));
     }
 }
