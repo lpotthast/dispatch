@@ -64,6 +64,32 @@ pub(crate) fn is_automation_blocked(labels: &[WorkItemLabelView]) -> bool {
     })
 }
 
+pub(crate) fn ensure_generic_label_can_be_changed(key: &str) -> Result<()> {
+    if key == STATE_LABEL_KEY {
+        bail!(
+            "state label cannot be changed through label mutations; move the item to another state instead"
+        );
+    }
+    if key == CLAIMED_FROM_STATE_LABEL_KEY {
+        bail!(
+            "label '{key}' is internal workflow bookkeeping and cannot be changed through label mutations"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_generic_label_can_be_deleted(key: &str) -> Result<()> {
+    if key == STATE_LABEL_KEY {
+        bail!("state label cannot be deleted; move the item to another state instead");
+    }
+    if key == CLAIMED_FROM_STATE_LABEL_KEY {
+        bail!(
+            "label '{key}' is internal workflow bookkeeping and cannot be deleted through label mutations"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn source_state_for_new_claim(labels: &[WorkItemLabelView]) -> String {
     current_state(labels).unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
 }
@@ -222,6 +248,36 @@ mod tests {
             STATE_LABEL_KEY,
             Some("open")
         )]));
+    }
+
+    #[test]
+    fn generic_label_mutability_preserves_workflow_owned_labels() {
+        let state_change = ensure_generic_label_can_be_changed(STATE_LABEL_KEY).unwrap_err();
+        assert!(state_change.to_string().contains("move the item"));
+
+        let state_delete = ensure_generic_label_can_be_deleted(STATE_LABEL_KEY).unwrap_err();
+        assert!(state_delete.to_string().contains("move the item"));
+
+        let claim_source_change =
+            ensure_generic_label_can_be_changed(CLAIMED_FROM_STATE_LABEL_KEY).unwrap_err();
+        assert!(
+            claim_source_change
+                .to_string()
+                .contains("internal workflow bookkeeping")
+        );
+
+        let claim_source_delete =
+            ensure_generic_label_can_be_deleted(CLAIMED_FROM_STATE_LABEL_KEY).unwrap_err();
+        assert!(
+            claim_source_delete
+                .to_string()
+                .contains("internal workflow bookkeeping")
+        );
+
+        ensure_generic_label_can_be_changed(AUTOMATION_BLOCKED_LABEL_KEY).unwrap();
+        ensure_generic_label_can_be_deleted(FEEDBACK_REQUESTED_LABEL_KEY).unwrap();
+        ensure_generic_label_can_be_changed("priority").unwrap();
+        ensure_generic_label_can_be_deleted("priority").unwrap();
     }
 
     #[test]

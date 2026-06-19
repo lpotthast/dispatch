@@ -1,9 +1,6 @@
 use rootcause::{Result, prelude::*};
 
-use crate::{
-    backend::{entities::work_item_label::WorkItemLabelModel, item_labels},
-    shared::view_models::STATE_LABEL_KEY,
-};
+use crate::backend::{entities::work_item_label::WorkItemLabelModel, item_labels, workflow_labels};
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct AddLabelMutation {
@@ -39,7 +36,7 @@ pub(crate) struct LabelMutationEvent {
 impl AddLabelMutation {
     pub(crate) fn new(key: String, value: Option<String>) -> Result<Self> {
         let key = item_labels::normalize_key(key)?;
-        reject_state_label_mutation(&key)?;
+        workflow_labels::ensure_generic_label_can_be_changed(&key)?;
         let value = item_labels::normalize_value(value);
         item_labels::validate_pair(&key, value.as_deref())?;
 
@@ -67,13 +64,13 @@ impl UpdateLabelMutation {
     }
 
     pub(crate) fn apply_to(self, existing: &WorkItemLabelModel) -> Result<AppliedLabelMutation> {
-        reject_state_label_mutation(&existing.key)?;
+        workflow_labels::ensure_generic_label_can_be_changed(&existing.key)?;
 
         let key = match self.key {
             Some(key) => item_labels::normalize_key(key)?,
             None => existing.key.clone(),
         };
-        reject_state_label_mutation(&key)?;
+        workflow_labels::ensure_generic_label_can_be_changed(&key)?;
 
         let value = match self.value {
             Some(value) => item_labels::normalize_value(value),
@@ -99,7 +96,7 @@ impl AppliedLabelMutation {
 
 impl DeleteLabelMutation {
     pub(crate) fn new(label: &WorkItemLabelModel) -> Result<Self> {
-        ensure_label_can_be_deleted(&label.key)?;
+        workflow_labels::ensure_generic_label_can_be_deleted(&label.key)?;
         Ok(Self {
             label_id: label.id,
             key: label.key.clone(),
@@ -122,24 +119,10 @@ impl DeleteLabelMutation {
     }
 }
 
-fn ensure_label_can_be_deleted(key: &str) -> Result<()> {
-    if key == STATE_LABEL_KEY {
-        bail!("state label cannot be deleted; move the item to another state instead");
-    }
-    Ok(())
-}
-
-fn reject_state_label_mutation(key: &str) -> Result<()> {
-    if key == STATE_LABEL_KEY {
-        bail!(
-            "state label cannot be changed through label mutations; move the item to another state instead"
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::shared::view_models::{CLAIMED_FROM_STATE_LABEL_KEY, STATE_LABEL_KEY};
+
     use super::*;
 
     fn label(key: &str, value: Option<&str>) -> WorkItemLabelModel {
@@ -235,5 +218,43 @@ mod tests {
         .apply_to(&label("priority", Some("high")))
         .unwrap_err();
         assert!(update_to_state_err.to_string().contains("move the item"));
+    }
+
+    #[test]
+    fn private_workflow_label_mutations_are_rejected() {
+        let add_err = AddLabelMutation::new(
+            CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
+            Some("open".to_owned()),
+        )
+        .unwrap_err();
+        assert!(add_err.to_string().contains("workflow bookkeeping"));
+
+        let update_existing_err = UpdateLabelMutation::new(None, Some(Some("done".to_owned())))
+            .unwrap()
+            .apply_to(&label(CLAIMED_FROM_STATE_LABEL_KEY, Some("open")))
+            .unwrap_err();
+        assert!(
+            update_existing_err
+                .to_string()
+                .contains("workflow bookkeeping")
+        );
+
+        let update_to_private_err = UpdateLabelMutation::new(
+            Some(CLAIMED_FROM_STATE_LABEL_KEY.to_owned()),
+            Some(Some("open".to_owned())),
+        )
+        .unwrap()
+        .apply_to(&label("priority", Some("high")))
+        .unwrap_err();
+        assert!(
+            update_to_private_err
+                .to_string()
+                .contains("workflow bookkeeping")
+        );
+
+        let delete_err =
+            DeleteLabelMutation::new(&label(CLAIMED_FROM_STATE_LABEL_KEY, Some("open")))
+                .unwrap_err();
+        assert!(delete_err.to_string().contains("workflow bookkeeping"));
     }
 }

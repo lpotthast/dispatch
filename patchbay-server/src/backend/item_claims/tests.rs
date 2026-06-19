@@ -10,11 +10,11 @@ use crate::backend::{
     agent_ids,
     comments::list_comments,
     entities::{agent_run, work_item::WorkItemActiveModel},
-    item_label_service::add_label,
+    item_label_service::{add_label, delete_label, update_label},
     items::{CreateWorkItem, create_item, get_item, list_events, list_items, move_item},
     projects::{self, CreateProject, create_project},
     storage::{Store, utc_now},
-    work_items,
+    work_item_labels, work_items,
 };
 use crate::shared::view_models::{
     AUTOMATION_BLOCKED_LABEL_KEY, AuthorType, CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL,
@@ -63,6 +63,19 @@ fn open_state_selector() -> Condition {
         operator: Operator::Equal,
         value: ConditionClauseValue::String("open".to_owned()),
     })])
+}
+
+async fn seed_claim_source_label(store: &Store, project_name: &str, item_id: i64, state: &str) {
+    let project_id = projects::project_id(store, project_name).await.unwrap();
+    work_item_labels::upsert_in_tx(
+        store.db().as_ref(),
+        project_id,
+        item_id,
+        CLAIMED_FROM_STATE_LABEL_KEY,
+        Some(state),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -293,6 +306,130 @@ async fn blocked_items_are_skipped_by_selector_claims() {
         .unwrap();
 
     assert!(claimed.is_none());
+}
+
+#[tokio::test]
+async fn claimed_from_state_label_is_private_workflow_bookkeeping() {
+    let (_temp, store) = test_store().await;
+    let item = create_item(
+        &store,
+        "demo",
+        CreateWorkItem {
+            title: "Private claim source".to_owned(),
+            description: "Release must trust only workflow-owned claim source labels".to_owned(),
+            state: "review".to_owned(),
+            agent_model_override: None,
+            agent_reasoning_effort_override: None,
+            initial_labels: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let claimed = claim_item(&store, "demo", "agent-a", "review")
+        .await
+        .unwrap()
+        .unwrap();
+    let claimed_from_label_id = claimed
+        .labels
+        .iter()
+        .find(|label| label.key == CLAIMED_FROM_STATE_LABEL_KEY)
+        .unwrap()
+        .id;
+    let priority = add_label(
+        &store,
+        "demo",
+        item.id,
+        "priority".to_owned(),
+        Some("high".to_owned()),
+        Some(claimed.version),
+    )
+    .await
+    .unwrap();
+    let priority_label_id = priority
+        .labels
+        .iter()
+        .find(|label| label.key == "priority")
+        .unwrap()
+        .id;
+
+    let add_claim_source = add_label(
+        &store,
+        "demo",
+        item.id,
+        CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
+        Some("open".to_owned()),
+        Some(priority.version),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        add_claim_source
+            .to_string()
+            .contains("internal workflow bookkeeping")
+    );
+
+    let update_claim_source = update_label(
+        &store,
+        "demo",
+        item.id,
+        claimed_from_label_id,
+        None,
+        Some(Some("open".to_owned())),
+        Some(priority.version),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        update_claim_source
+            .to_string()
+            .contains("internal workflow bookkeeping")
+    );
+
+    let rename_to_claim_source = update_label(
+        &store,
+        "demo",
+        item.id,
+        priority_label_id,
+        Some(CLAIMED_FROM_STATE_LABEL_KEY.to_owned()),
+        Some(Some("open".to_owned())),
+        Some(priority.version),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        rename_to_claim_source
+            .to_string()
+            .contains("internal workflow bookkeeping")
+    );
+
+    let delete_claim_source = delete_label(
+        &store,
+        "demo",
+        item.id,
+        claimed_from_label_id,
+        Some(priority.version),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        delete_claim_source
+            .to_string()
+            .contains("internal workflow bookkeeping")
+    );
+
+    let released = release_item(
+        &store,
+        "demo",
+        item.id,
+        "agent-a",
+        Some("done for now".to_owned()),
+        ReleaseAutomationDisposition::Blocked,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(released.state.as_deref(), Some("review"));
 }
 
 #[tokio::test]
@@ -1206,16 +1343,7 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
     )
     .await
     .unwrap();
-    add_label(
-        &store,
-        "demo",
-        state_item.id,
-        CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
-        Some("ready".to_owned()),
-        None,
-    )
-    .await
-    .unwrap();
+    seed_claim_source_label(&store, "demo", state_item.id, "ready").await;
 
     let claimed = claim_item(&store, "demo", "agent-state", "open")
         .await
@@ -1253,16 +1381,7 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
     )
     .await
     .unwrap();
-    add_label(
-        &store,
-        "demo",
-        selector_item.id,
-        CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
-        Some("open".to_owned()),
-        None,
-    )
-    .await
-    .unwrap();
+    seed_claim_source_label(&store, "demo", selector_item.id, "open").await;
 
     let selector = Condition::All(vec![ConditionElement::Clause(ConditionClause {
         column_name: STATE_LABEL_KEY.to_owned(),
@@ -1306,16 +1425,7 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
     )
     .await
     .unwrap();
-    add_label(
-        &store,
-        "demo",
-        specific_item.id,
-        CLAIMED_FROM_STATE_LABEL_KEY.to_owned(),
-        Some("open".to_owned()),
-        None,
-    )
-    .await
-    .unwrap();
+    seed_claim_source_label(&store, "demo", specific_item.id, "open").await;
 
     let claimed = claim_specific_item(&store, "demo", specific_item.id, "agent-b")
         .await
