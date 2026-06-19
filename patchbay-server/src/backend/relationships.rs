@@ -10,6 +10,10 @@ use crate::{
             work_item_relationship::WorkItemRelationshipModel,
         },
         events, projects,
+        relationship_mutations::{
+            CreateRelationshipMutation, DeleteRelationshipMutation, RelationshipEndpoints,
+            RelationshipEvent, UpdateRelationshipMutation,
+        },
         storage::Store,
         work_item_events, work_item_relationships, work_item_views, work_items,
     },
@@ -48,50 +52,36 @@ pub async fn create_relationship(
     target_work_item_id: i64,
     kind: String,
 ) -> Result<WorkItemRelationshipListEntry> {
-    let kind = normalize_kind(kind)?;
+    let mutation = CreateRelationshipMutation::new(source_work_item_id, target_work_item_id, kind)?;
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
         .db()
         .begin()
         .await
         .context("failed to start relationship create")?;
-    let endpoints = RelationshipEndpoints::new(source_work_item_id, target_work_item_id)?;
-    let endpoint_items = endpoints.load_items(&txn, project_id).await?;
-    ensure_no_duplicate(&txn, project_id, endpoints, &kind, None).await?;
+    let endpoints = mutation.endpoints();
+    let endpoint_items = load_endpoint_items(&txn, project_id, endpoints).await?;
+    ensure_no_duplicate(&txn, project_id, endpoints, mutation.kind(), None).await?;
 
     let relationship = work_item_relationships::insert_in_tx(
         &txn,
         project_id,
         endpoints.source_work_item_id,
         endpoints.target_work_item_id,
-        &kind,
+        mutation.kind(),
     )
     .await?;
     let touched = endpoint_items
-        .touch_and_record_event(
-            &txn,
-            project_id,
-            RelationshipEvent {
-                event_type: "relationship_created",
-                source_body: format!(
-                    "Created relationship #{} {} #{}",
-                    endpoints.source_work_item_id, kind, endpoints.target_work_item_id
-                ),
-                target_body: format!(
-                    "Created incoming relationship from #{}: {}",
-                    endpoints.source_work_item_id, kind
-                ),
-            },
-        )
+        .touch_and_record_event(&txn, project_id, mutation.created_event())
         .await?;
     txn.commit()
         .await
         .context("failed to commit relationship create")?;
-    touched.publish_changes(project_name);
+    publish_endpoint_changes(project_name, touched);
 
     Ok(WorkItemRelationshipListEntry {
         relationship: relationship_to_view(store, relationship).await?,
-        direction: WorkItemRelationshipDirection::Outgoing,
+        direction: endpoints.direction_for_item(source_work_item_id),
     })
 }
 
@@ -138,7 +128,6 @@ async fn update_relationship_inner(
     relationship_id: i64,
     kind: String,
 ) -> Result<WorkItemRelationshipView> {
-    let kind = normalize_kind(kind)?;
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
         .db()
@@ -149,24 +138,27 @@ async fn update_relationship_inner(
         work_items::get(&txn, project_id, item_id).await?;
     }
     let relationship = work_item_relationships::get(&txn, project_id, relationship_id).await?;
-    let endpoints = RelationshipEndpoints::from_relationship(&relationship)?;
-    endpoints.ensure_touches_requested_item(requested_item_id, relationship_id)?;
-    let endpoint_items = endpoints.load_items(&txn, project_id).await?;
-    ensure_no_duplicate(&txn, project_id, endpoints, &kind, Some(relationship_id)).await?;
+    let mutation = UpdateRelationshipMutation::new(&relationship, requested_item_id, kind)?;
+    let endpoints = mutation.endpoints();
+    let endpoint_items = load_endpoint_items(&txn, project_id, endpoints).await?;
+    ensure_no_duplicate(
+        &txn,
+        project_id,
+        endpoints,
+        mutation.kind(),
+        mutation.duplicate_exclusion(),
+    )
+    .await?;
 
-    let updated = work_item_relationships::update_kind_in_tx(&txn, relationship, &kind).await?;
-    let body = format!("Updated relationship #{relationship_id} kind to {kind}");
+    let updated =
+        work_item_relationships::update_kind_in_tx(&txn, relationship, mutation.kind()).await?;
     let touched = endpoint_items
-        .touch_and_record_event(
-            &txn,
-            project_id,
-            RelationshipEvent::same("relationship_updated", body),
-        )
+        .touch_and_record_event(&txn, project_id, mutation.updated_event())
         .await?;
     txn.commit()
         .await
         .context("failed to commit relationship update")?;
-    touched.publish_changes(project_name);
+    publish_endpoint_changes(project_name, touched);
 
     relationship_to_view(store, updated).await
 }
@@ -187,29 +179,17 @@ async fn delete_relationship_inner(
         work_items::get(&txn, project_id, item_id).await?;
     }
     let relationship = work_item_relationships::get(&txn, project_id, relationship_id).await?;
-    let endpoints = RelationshipEndpoints::from_relationship(&relationship)?;
-    endpoints.ensure_touches_requested_item(requested_item_id, relationship_id)?;
-    let endpoint_items = endpoints.load_items(&txn, project_id).await?;
+    let mutation = DeleteRelationshipMutation::new(&relationship, requested_item_id)?;
+    let endpoint_items = load_endpoint_items(&txn, project_id, mutation.endpoints()).await?;
 
     work_item_relationships::delete_by_id_in_tx(&txn, relationship_id).await?;
-    let body = format!(
-        "Deleted relationship #{}: #{} {} #{}",
-        relationship_id,
-        endpoints.source_work_item_id,
-        relationship.kind,
-        endpoints.target_work_item_id
-    );
     let touched = endpoint_items
-        .touch_and_record_event(
-            &txn,
-            project_id,
-            RelationshipEvent::same("relationship_deleted", body),
-        )
+        .touch_and_record_event(&txn, project_id, mutation.deleted_event())
         .await?;
     txn.commit()
         .await
         .context("failed to commit relationship delete")?;
-    touched.publish_changes(project_name);
+    publish_endpoint_changes(project_name, touched);
     let relationship_view = relationship_to_view(store, relationship).await?;
 
     Ok(DeleteWorkItemRelationshipResponse {
@@ -218,70 +198,23 @@ async fn delete_relationship_inner(
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RelationshipEndpoints {
-    source_work_item_id: i64,
-    target_work_item_id: i64,
+async fn load_endpoint_items<C>(
+    conn: &C,
+    project_id: i64,
+    endpoints: RelationshipEndpoints,
+) -> Result<RelationshipEndpointItems>
+where
+    C: ConnectionTrait,
+{
+    Ok(RelationshipEndpointItems {
+        source: work_items::get(conn, project_id, endpoints.source_work_item_id).await?,
+        target: work_items::get(conn, project_id, endpoints.target_work_item_id).await?,
+    })
 }
 
-impl RelationshipEndpoints {
-    fn new(source_work_item_id: i64, target_work_item_id: i64) -> Result<Self> {
-        if source_work_item_id == target_work_item_id {
-            bail!("relationship source and target work items must differ");
-        }
-        Ok(Self {
-            source_work_item_id,
-            target_work_item_id,
-        })
-    }
-
-    fn from_relationship(relationship: &WorkItemRelationshipModel) -> Result<Self> {
-        Self::new(
-            relationship.source_work_item_id,
-            relationship.target_work_item_id,
-        )
-    }
-
-    async fn load_items<C>(self, conn: &C, project_id: i64) -> Result<RelationshipEndpointItems>
-    where
-        C: ConnectionTrait,
-    {
-        Ok(RelationshipEndpointItems {
-            source: work_items::get(conn, project_id, self.source_work_item_id).await?,
-            target: work_items::get(conn, project_id, self.target_work_item_id).await?,
-        })
-    }
-
-    fn ensure_touches_requested_item(
-        self,
-        requested_item_id: Option<i64>,
-        relationship_id: i64,
-    ) -> Result<()> {
-        let Some(item_id) = requested_item_id else {
-            return Ok(());
-        };
-        if self.source_work_item_id == item_id || self.target_work_item_id == item_id {
-            return Ok(());
-        }
-        bail!(
-            "relationship {} does not touch item {}",
-            relationship_id,
-            item_id
-        )
-    }
-
-    fn direction_for_item(self, item_id: i64) -> WorkItemRelationshipDirection {
-        if self.source_work_item_id == item_id {
-            WorkItemRelationshipDirection::Outgoing
-        } else {
-            WorkItemRelationshipDirection::Incoming
-        }
-    }
-
-    fn publish_changes(self, project_name: &str) {
-        events::publish_work_item_changed(project_name, self.source_work_item_id);
-        events::publish_work_item_changed(project_name, self.target_work_item_id);
-    }
+fn publish_endpoint_changes(project_name: &str, endpoints: RelationshipEndpoints) {
+    events::publish_work_item_changed(project_name, endpoints.source_work_item_id);
+    events::publish_work_item_changed(project_name, endpoints.target_work_item_id);
 }
 
 struct RelationshipEndpointItems {
@@ -322,30 +255,6 @@ impl RelationshipEndpointItems {
             target_work_item_id: target.id,
         })
     }
-}
-
-struct RelationshipEvent {
-    event_type: &'static str,
-    source_body: String,
-    target_body: String,
-}
-
-impl RelationshipEvent {
-    fn same(event_type: &'static str, body: String) -> Self {
-        Self {
-            event_type,
-            source_body: body.clone(),
-            target_body: body,
-        }
-    }
-}
-
-fn normalize_kind(kind: String) -> Result<String> {
-    let kind = kind.trim().to_owned();
-    if kind.is_empty() {
-        bail!("relationship kind cannot be empty");
-    }
-    Ok(kind)
 }
 
 async fn ensure_no_duplicate<C>(
