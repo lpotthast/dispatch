@@ -19,9 +19,7 @@ use crate::{
         work_item_comments, work_item_events, work_item_labels, work_items,
     },
     shared::view_models::{
-        AUTOMATION_BLOCKED_LABEL_KEY, AuthorType, CLAIMED_FROM_STATE_LABEL_KEY,
-        CLAIMED_STATE_LABEL, CommentView, FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL,
-        RecoveredClaimView, STATE_LABEL_KEY, WorkItemLabelView, WorkItemView,
+        AuthorType, CommentView, RecoveredClaimView, WorkItemLabelView, WorkItemView,
     },
 };
 
@@ -30,19 +28,6 @@ pub enum ReleaseAutomationDisposition {
     Claimable,
     Blocked,
 }
-
-const FINISH_CLEARS_WORKFLOW_LABELS: &[&str] = &[
-    CLAIMED_FROM_STATE_LABEL_KEY,
-    AUTOMATION_BLOCKED_LABEL_KEY,
-    FEEDBACK_REQUESTED_LABEL_KEY,
-];
-const CLAIMABLE_RELEASE_CLEARS_WORKFLOW_LABELS: &[&str] = FINISH_CLEARS_WORKFLOW_LABELS;
-const BLOCKED_RELEASE_CLEARS_WORKFLOW_LABELS: &[&str] =
-    &[CLAIMED_FROM_STATE_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY];
-const BLOCKED_RELEASE_SETS_WORKFLOW_LABELS: &[&str] = &[AUTOMATION_BLOCKED_LABEL_KEY];
-const FEEDBACK_REQUEST_CLEARS_WORKFLOW_LABELS: &[&str] = &[CLAIMED_FROM_STATE_LABEL_KEY];
-const FEEDBACK_REQUEST_SETS_WORKFLOW_LABELS: &[&str] =
-    &[AUTOMATION_BLOCKED_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClaimReturnMode<'a> {
@@ -63,25 +48,22 @@ impl ClaimReturnMode<'_> {
         }
     }
 
-    fn workflow_label_plan(&self) -> WorkflowLabelPlan {
+    fn label_disposition(&self) -> item_labels::ClaimReturnLabelDisposition {
         match self {
             Self::Release {
                 automation_disposition,
                 ..
             } => match automation_disposition {
-                ReleaseAutomationDisposition::Claimable => WorkflowLabelPlan {
-                    clear_keys: CLAIMABLE_RELEASE_CLEARS_WORKFLOW_LABELS,
-                    set_keys: &[],
-                },
-                ReleaseAutomationDisposition::Blocked => WorkflowLabelPlan {
-                    clear_keys: BLOCKED_RELEASE_CLEARS_WORKFLOW_LABELS,
-                    set_keys: BLOCKED_RELEASE_SETS_WORKFLOW_LABELS,
-                },
+                ReleaseAutomationDisposition::Claimable => {
+                    item_labels::ClaimReturnLabelDisposition::ClaimableRelease
+                }
+                ReleaseAutomationDisposition::Blocked => {
+                    item_labels::ClaimReturnLabelDisposition::BlockedRelease
+                }
             },
-            Self::FeedbackRequest { .. } => WorkflowLabelPlan {
-                clear_keys: FEEDBACK_REQUEST_CLEARS_WORKFLOW_LABELS,
-                set_keys: FEEDBACK_REQUEST_SETS_WORKFLOW_LABELS,
-            },
+            Self::FeedbackRequest { .. } => {
+                item_labels::ClaimReturnLabelDisposition::FeedbackRequest
+            }
         }
     }
 
@@ -123,12 +105,6 @@ impl ClaimReturnMode<'_> {
             Self::FeedbackRequest { .. } => "failed to commit feedback request",
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct WorkflowLabelPlan {
-    clear_keys: &'static [&'static str],
-    set_keys: &'static [&'static str],
 }
 
 #[derive(Debug)]
@@ -387,15 +363,13 @@ pub async fn finish_item(
         .update(&txn)
         .await
         .context("failed to finish work item")?;
-    work_item_labels::upsert_in_tx(
+    apply_workflow_label_plan_in_tx(
         &txn,
         project_id,
         item_id,
-        STATE_LABEL_KEY,
-        Some(FINISHED_STATE_LABEL),
+        item_labels::finish_workflow_label_plan(),
     )
     .await?;
-    delete_workflow_labels_in_tx(&txn, project_id, item_id, FINISH_CLEARS_WORKFLOW_LABELS).await?;
     work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report)
         .await?;
     txn.commit().await.context("failed to commit item finish")?;
@@ -477,7 +451,13 @@ async fn return_claim_to_source_state(
     let active = claim.clear_active_model(utc_now());
     let updated = active.update(&txn).await.context(mode.update_context())?;
 
-    apply_return_workflow_labels_in_tx(&txn, project_id, item_id, &release_state, mode).await?;
+    apply_workflow_label_plan_in_tx(
+        &txn,
+        project_id,
+        item_id,
+        item_labels::claim_return_workflow_label_plan(&release_state, mode.label_disposition()),
+    )
+    .await?;
 
     if let Some(comment) = mode
         .agent_comment_body()
@@ -534,44 +514,20 @@ where
     .await
 }
 
-async fn delete_workflow_labels_in_tx<C>(
+async fn apply_workflow_label_plan_in_tx<C>(
     conn: &C,
     project_id: i64,
     item_id: i64,
-    label_keys: &[&str],
+    plan: item_labels::WorkflowLabelPlan<'_>,
 ) -> Result<()>
 where
     C: ConnectionTrait,
 {
-    for label_key in label_keys {
+    for label_key in plan.delete_keys {
         work_item_labels::delete_by_key_in_tx(conn, project_id, item_id, label_key).await?;
     }
-    Ok(())
-}
-
-async fn apply_return_workflow_labels_in_tx<C>(
-    conn: &C,
-    project_id: i64,
-    item_id: i64,
-    release_state: &str,
-    mode: ClaimReturnMode<'_>,
-) -> Result<()>
-where
-    C: ConnectionTrait,
-{
-    work_item_labels::upsert_in_tx(
-        conn,
-        project_id,
-        item_id,
-        STATE_LABEL_KEY,
-        Some(release_state),
-    )
-    .await?;
-
-    let plan = mode.workflow_label_plan();
-    delete_workflow_labels_in_tx(conn, project_id, item_id, plan.clear_keys).await?;
-    for label_key in plan.set_keys {
-        work_item_labels::upsert_in_tx(conn, project_id, item_id, label_key, None).await?;
+    for upsert in plan.upserts {
+        work_item_labels::upsert_in_tx(conn, project_id, item_id, upsert.key, upsert.value).await?;
     }
     Ok(())
 }
@@ -726,24 +682,13 @@ async fn record_claim_in_tx<C>(
 where
     C: sea_orm::ConnectionTrait,
 {
-    work_item_labels::upsert_in_tx(
+    apply_workflow_label_plan_in_tx(
         conn,
         project_id,
         item_id,
-        CLAIMED_FROM_STATE_LABEL_KEY,
-        Some(source_state),
+        item_labels::new_claim_workflow_label_plan(source_state),
     )
     .await?;
-    work_item_labels::upsert_in_tx(
-        conn,
-        project_id,
-        item_id,
-        STATE_LABEL_KEY,
-        Some(CLAIMED_STATE_LABEL),
-    )
-    .await?;
-    work_item_labels::delete_by_key_in_tx(conn, project_id, item_id, FEEDBACK_REQUESTED_LABEL_KEY)
-        .await?;
     let comment_body = format!("Claimed by {agent_id}");
     work_item_comments::insert_in_tx(
         conn,
@@ -800,6 +745,10 @@ mod tests {
         item_label_service::add_label,
         items::{CreateWorkItem, create_item, get_item, list_events, list_items, move_item},
         projects::{self, CreateProject, create_project},
+    };
+    use crate::shared::view_models::{
+        AUTOMATION_BLOCKED_LABEL_KEY, CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL,
+        FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL, STATE_LABEL_KEY,
     };
 
     async fn test_store() -> (TempDir, Store) {
