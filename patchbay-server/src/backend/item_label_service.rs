@@ -1,10 +1,10 @@
 use rootcause::{Result, prelude::*};
-use sea_orm::TransactionTrait;
+use sea_orm::{DatabaseTransaction, TransactionTrait};
 
 use crate::{
     backend::{
-        events, item_label_mutations, item_labels, projects, storage::Store, work_item_events,
-        work_item_labels, work_item_views, work_items,
+        entities::work_item::WorkItemModel, events, item_label_mutations, projects, storage::Store,
+        work_item_events, work_item_labels, work_item_views, work_items,
     },
     shared::view_models::{
         DeleteWorkItemLabelResponse, ProjectLabelView, WorkItemLabelView, WorkItemView,
@@ -38,36 +38,26 @@ pub async fn add_label(
     expect_version: Option<i64>,
 ) -> Result<WorkItemView> {
     let label = item_label_mutations::AddLabelMutation::new(key, value)?;
-    let project_id = projects::project_id(store, project_name).await?;
-    let txn = store
-        .db()
-        .begin()
-        .await
-        .context("failed to start label add")?;
-    let item = work_items::get(&txn, project_id, item_id).await?;
-    work_items::check_expected_version(expect_version, item.version)?;
-    if work_item_labels::item_has_key(&txn, project_id, item_id, &label.key, None).await? {
+    let context =
+        LabelMutationContext::start(store, project_name, item_id, expect_version, "label add")
+            .await?;
+    if work_item_labels::item_has_key(&context.txn, context.project_id, item_id, &label.key, None)
+        .await?
+    {
         bail!("item already has label '{}'", label.key);
     }
 
     work_item_labels::insert_in_tx(
-        &txn,
-        project_id,
+        &context.txn,
+        context.project_id,
         item_id,
         &label.key,
         label.value.as_deref(),
     )
     .await?;
-    let updated = work_items::touch(&txn, item).await?;
-    let body = format!(
-        "Added label {}",
-        item_labels::format_label(&label.key, label.value.as_deref())
-    );
-    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "label_added", &body)
-        .await?;
-    txn.commit().await.context("failed to commit label add")?;
-    events::publish_work_item_changed(project_name, item_id);
-    work_item_views::model_to_view(store, updated).await
+    context
+        .finish(store, project_name, label.added_event(), "label add")
+        .await
 }
 
 pub async fn update_label(
@@ -81,34 +71,35 @@ pub async fn update_label(
 ) -> Result<WorkItemView> {
     let label = item_label_mutations::UpdateLabelMutation::new(key, value)?;
 
-    let project_id = projects::project_id(store, project_name).await?;
-    let txn = store
-        .db()
-        .begin()
-        .await
-        .context("failed to start label update")?;
-    let item = work_items::get(&txn, project_id, item_id).await?;
-    work_items::check_expected_version(expect_version, item.version)?;
-    let existing = work_item_labels::get_for_item(&txn, project_id, item_id, label_id).await?;
+    let context =
+        LabelMutationContext::start(store, project_name, item_id, expect_version, "label update")
+            .await?;
+    let existing =
+        work_item_labels::get_for_item(&context.txn, context.project_id, item_id, label_id).await?;
     let label = label.apply_to(&existing)?;
-    if work_item_labels::item_has_key(&txn, project_id, item_id, &label.key, Some(label_id)).await?
+    if work_item_labels::item_has_key(
+        &context.txn,
+        context.project_id,
+        item_id,
+        &label.key,
+        Some(label_id),
+    )
+    .await?
     {
         bail!("item already has label '{}'", label.key);
     }
 
-    work_item_labels::update_in_tx(&txn, existing, label.key.clone(), label.value.clone()).await?;
-    let updated = work_items::touch(&txn, item).await?;
-    let body = format!(
-        "Updated label {}",
-        item_labels::format_label(&label.key, label.value.as_deref())
-    );
-    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "label_updated", &body)
-        .await?;
-    txn.commit()
+    let event = label.updated_event();
+    work_item_labels::update_in_tx(
+        &context.txn,
+        existing,
+        label.key.clone(),
+        label.value.clone(),
+    )
+    .await?;
+    context
+        .finish(store, project_name, event, "label update")
         .await
-        .context("failed to commit label update")?;
-    events::publish_work_item_changed(project_name, item_id);
-    work_item_views::model_to_view(store, updated).await
 }
 
 pub async fn delete_label(
@@ -118,34 +109,83 @@ pub async fn delete_label(
     label_id: i64,
     expect_version: Option<i64>,
 ) -> Result<DeleteWorkItemLabelResponse> {
-    let project_id = projects::project_id(store, project_name).await?;
-    let txn = store
-        .db()
-        .begin()
-        .await
-        .context("failed to start label delete")?;
-    let item = work_items::get(&txn, project_id, item_id).await?;
-    work_items::check_expected_version(expect_version, item.version)?;
-    let label = work_item_labels::get_for_item(&txn, project_id, item_id, label_id).await?;
-    item_label_mutations::ensure_label_can_be_deleted(&label.key)?;
-    let body = format!(
-        "Deleted label {}",
-        item_labels::format_label(&label.key, label.value.as_deref())
-    );
-    work_item_labels::delete_by_id_in_tx(&txn, label_id).await?;
-    let updated = work_items::touch(&txn, item).await?;
-    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "label_deleted", &body)
+    let context =
+        LabelMutationContext::start(store, project_name, item_id, expect_version, "label delete")
+            .await?;
+    let label =
+        work_item_labels::get_for_item(&context.txn, context.project_id, item_id, label_id).await?;
+    let deletion = item_label_mutations::DeleteLabelMutation::new(&label)?;
+    let event = deletion.deleted_event();
+
+    work_item_labels::delete_by_id_in_tx(&context.txn, deletion.label_id()).await?;
+    let work_item = context
+        .finish(store, project_name, event, "label delete")
         .await?;
-    txn.commit()
-        .await
-        .context("failed to commit label delete")?;
-    events::publish_work_item_changed(project_name, item_id);
-    let work_item = work_item_views::model_to_view(store, updated).await?;
     Ok(DeleteWorkItemLabelResponse {
         deleted: true,
-        label_id,
+        label_id: deletion.label_id(),
         work_item,
     })
+}
+
+struct LabelMutationContext {
+    project_id: i64,
+    item: WorkItemModel,
+    txn: DatabaseTransaction,
+}
+
+impl LabelMutationContext {
+    async fn start(
+        store: &Store,
+        project_name: &str,
+        item_id: i64,
+        expect_version: Option<i64>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let project_id = projects::project_id(store, project_name).await?;
+        let txn = store
+            .db()
+            .begin()
+            .await
+            .context_with(|| format!("failed to start {operation}"))?;
+        let item = work_items::get(&txn, project_id, item_id).await?;
+        work_items::check_expected_version(expect_version, item.version)?;
+
+        Ok(Self {
+            project_id,
+            item,
+            txn,
+        })
+    }
+
+    async fn finish(
+        self,
+        store: &Store,
+        project_name: &str,
+        event: item_label_mutations::LabelMutationEvent,
+        operation: &'static str,
+    ) -> Result<WorkItemView> {
+        let Self {
+            project_id,
+            item,
+            txn,
+        } = self;
+        let item_id = item.id;
+        let updated = work_items::touch(&txn, item).await?;
+        work_item_events::record_event_in_tx(
+            &txn,
+            project_id,
+            Some(item_id),
+            event.event_type,
+            &event.body,
+        )
+        .await?;
+        txn.commit()
+            .await
+            .context_with(|| format!("failed to commit {operation}"))?;
+        events::publish_work_item_changed(project_name, item_id);
+        work_item_views::model_to_view(store, updated).await
+    }
 }
 
 #[cfg(test)]
@@ -154,7 +194,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{
-        items::{CreateWorkItem, create_item},
+        items::{CreateWorkItem, create_item, list_events},
         projects::{CreateProject, create_project},
     };
     use crate::shared::view_models::STATE_LABEL_KEY;
@@ -243,6 +283,23 @@ mod tests {
                 .labels
                 .iter()
                 .any(|label| label.key == "priority")
+        );
+
+        let events = list_events(&store, "demo", Some(item.id), None)
+            .await
+            .unwrap();
+        let label_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type.starts_with("label_"))
+            .map(|event| (event.event_type.as_str(), event.body.as_str()))
+            .collect();
+        assert_eq!(
+            label_events,
+            vec![
+                ("label_added", "Added label priority=high"),
+                ("label_updated", "Updated label priority=low"),
+                ("label_deleted", "Deleted label priority=low"),
+            ]
         );
     }
 

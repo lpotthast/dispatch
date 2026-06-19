@@ -23,6 +23,19 @@ pub(crate) struct AppliedLabelMutation {
     pub(crate) value: Option<String>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct DeleteLabelMutation {
+    label_id: i64,
+    key: String,
+    value: Option<String>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct LabelMutationEvent {
+    pub(crate) event_type: &'static str,
+    pub(crate) body: String,
+}
+
 impl AddLabelMutation {
     pub(crate) fn new(key: String, value: Option<String>) -> Result<Self> {
         let key = item_labels::normalize_key(key)?;
@@ -31,6 +44,16 @@ impl AddLabelMutation {
         item_labels::validate_pair(&key, value.as_deref())?;
 
         Ok(Self { key, value })
+    }
+
+    pub(crate) fn added_event(&self) -> LabelMutationEvent {
+        LabelMutationEvent {
+            event_type: "label_added",
+            body: format!(
+                "Added label {}",
+                item_labels::format_label(&self.key, self.value.as_deref())
+            ),
+        }
     }
 }
 
@@ -62,7 +85,44 @@ impl UpdateLabelMutation {
     }
 }
 
-pub(crate) fn ensure_label_can_be_deleted(key: &str) -> Result<()> {
+impl AppliedLabelMutation {
+    pub(crate) fn updated_event(&self) -> LabelMutationEvent {
+        LabelMutationEvent {
+            event_type: "label_updated",
+            body: format!(
+                "Updated label {}",
+                item_labels::format_label(&self.key, self.value.as_deref())
+            ),
+        }
+    }
+}
+
+impl DeleteLabelMutation {
+    pub(crate) fn new(label: &WorkItemLabelModel) -> Result<Self> {
+        ensure_label_can_be_deleted(&label.key)?;
+        Ok(Self {
+            label_id: label.id,
+            key: label.key.clone(),
+            value: label.value.clone(),
+        })
+    }
+
+    pub(crate) fn label_id(&self) -> i64 {
+        self.label_id
+    }
+
+    pub(crate) fn deleted_event(&self) -> LabelMutationEvent {
+        LabelMutationEvent {
+            event_type: "label_deleted",
+            body: format!(
+                "Deleted label {}",
+                item_labels::format_label(&self.key, self.value.as_deref())
+            ),
+        }
+    }
+}
+
+fn ensure_label_can_be_deleted(key: &str) -> Result<()> {
     if key == STATE_LABEL_KEY {
         bail!("state label cannot be deleted; move the item to another state instead");
     }
@@ -106,6 +166,13 @@ mod tests {
                 value: Some("high".to_owned()),
             }
         );
+        assert_eq!(
+            mutation.added_event(),
+            LabelMutationEvent {
+                event_type: "label_added",
+                body: "Added label priority=high".to_owned(),
+            }
+        );
     }
 
     #[test]
@@ -121,6 +188,31 @@ mod tests {
                 value: Some("low".to_owned()),
             }
         );
+        assert_eq!(
+            applied.updated_event(),
+            LabelMutationEvent {
+                event_type: "label_updated",
+                body: "Updated label priority=low".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn delete_label_mutation_rejects_state_and_keeps_deleted_label_snapshot() {
+        let mutation = DeleteLabelMutation::new(&label("priority", Some("high"))).unwrap();
+
+        assert_eq!(mutation.label_id(), 11);
+        assert_eq!(
+            mutation.deleted_event(),
+            LabelMutationEvent {
+                event_type: "label_deleted",
+                body: "Deleted label priority=high".to_owned(),
+            }
+        );
+
+        let state_err =
+            DeleteLabelMutation::new(&label(STATE_LABEL_KEY, Some("open"))).unwrap_err();
+        assert!(state_err.to_string().contains("move the item"));
     }
 
     #[test]
