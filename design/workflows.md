@@ -52,7 +52,7 @@ For the claimed item, launched agents normally run:
 patchbay item release --comment "Blocked by missing credentials."
 ```
 
-The server validates claim ownership, appends the optional release comment, clears active claim ownership, restores the `state` label to the value captured in `patchbay:claimed-from-state`, increments version, and emits events. Agent-facing releases also add `patchbay:automation-blocked` so the item is not picked up again until a user or agent intentionally removes that label. Stale-claim recovery and cancellation restore the source state without newly blocking automation.
+The server validates claim ownership, appends the optional release comment, clears active claim ownership, restores the `state` label to the value captured in `patchbay:claimed-from-state`, increments version, and emits events. Agent-facing releases also add `patchbay:automation-blocked` so the item is not picked up again until a user or agent intentionally removes that label. Server-side claimable releases used for successful unfinished runs, stale-claim recovery, and cancellation clear transient workflow blockers such as `patchbay:automation-blocked` and `patchbay:feedback-requested` so the restored item can actually re-enter claim selection.
 
 ## Request Feedback
 
@@ -102,7 +102,7 @@ Automation rules either produce work items or consume work items. Work-consuming
 
 Queued automation evaluations are consumed only while automation is running for that project. If an operator queues an evaluation for a stopped project, the pending evaluation count remains on the trigger until the project automation loop is active again; another project's running automation must not consume it.
 
-When a launched agent exits successfully while its item is still claimed, Patchbay releases the temporary claim back to the claimed-from state without adding `patchbay:automation-blocked`. This lets prompt-directed metadata, refinement, or verification consumers leave the underlying implementation work available for later automation. Failed runs still release with automation blocked so a broken prompt, missing context, or sandbox failure does not loop indefinitely. An agent can call `patchbay item request-feedback --body ...` when it needs a user answer before work can continue; it can call `patchbay item release --comment ...` for technical blockers or handoffs that need human triage but are not a concrete feedback request.
+When a launched agent exits successfully while its item is still claimed, Patchbay releases the temporary claim back to the claimed-from state and clears transient workflow blockers. This lets prompt-directed metadata, refinement, or verification consumers leave the underlying implementation work available for later automation, including after a manually triggered retry of previously blocked work. Failed runs still release with automation blocked so a broken prompt, missing context, or sandbox failure does not loop indefinitely. An agent can call `patchbay item request-feedback --body ...` when it needs a user answer before work can continue; it can call `patchbay item release --comment ...` for technical blockers or handoffs that need human triage but are not a concrete feedback request.
 
 Patchbay ships editable default consumers for label-routed story preparation:
 

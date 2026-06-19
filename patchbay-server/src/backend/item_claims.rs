@@ -31,6 +31,19 @@ pub enum ReleaseAutomationDisposition {
     Blocked,
 }
 
+const FINISH_CLEARS_WORKFLOW_LABELS: &[&str] = &[
+    CLAIMED_FROM_STATE_LABEL_KEY,
+    AUTOMATION_BLOCKED_LABEL_KEY,
+    FEEDBACK_REQUESTED_LABEL_KEY,
+];
+const CLAIMABLE_RELEASE_CLEARS_WORKFLOW_LABELS: &[&str] = FINISH_CLEARS_WORKFLOW_LABELS;
+const BLOCKED_RELEASE_CLEARS_WORKFLOW_LABELS: &[&str] =
+    &[CLAIMED_FROM_STATE_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY];
+const BLOCKED_RELEASE_SETS_WORKFLOW_LABELS: &[&str] = &[AUTOMATION_BLOCKED_LABEL_KEY];
+const FEEDBACK_REQUEST_CLEARS_WORKFLOW_LABELS: &[&str] = &[CLAIMED_FROM_STATE_LABEL_KEY];
+const FEEDBACK_REQUEST_SETS_WORKFLOW_LABELS: &[&str] =
+    &[AUTOMATION_BLOCKED_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClaimReturnMode<'a> {
     Release {
@@ -50,18 +63,26 @@ impl ClaimReturnMode<'_> {
         }
     }
 
-    fn blocks_automation(&self) -> bool {
+    fn workflow_label_plan(&self) -> WorkflowLabelPlan {
         match self {
             Self::Release {
                 automation_disposition,
                 ..
-            } => *automation_disposition == ReleaseAutomationDisposition::Blocked,
-            Self::FeedbackRequest { .. } => true,
+            } => match automation_disposition {
+                ReleaseAutomationDisposition::Claimable => WorkflowLabelPlan {
+                    clear_keys: CLAIMABLE_RELEASE_CLEARS_WORKFLOW_LABELS,
+                    set_keys: &[],
+                },
+                ReleaseAutomationDisposition::Blocked => WorkflowLabelPlan {
+                    clear_keys: BLOCKED_RELEASE_CLEARS_WORKFLOW_LABELS,
+                    set_keys: BLOCKED_RELEASE_SETS_WORKFLOW_LABELS,
+                },
+            },
+            Self::FeedbackRequest { .. } => WorkflowLabelPlan {
+                clear_keys: FEEDBACK_REQUEST_CLEARS_WORKFLOW_LABELS,
+                set_keys: FEEDBACK_REQUEST_SETS_WORKFLOW_LABELS,
+            },
         }
-    }
-
-    fn requests_feedback(&self) -> bool {
-        matches!(self, Self::FeedbackRequest { .. })
     }
 
     fn update_context(&self) -> &'static str {
@@ -102,6 +123,12 @@ impl ClaimReturnMode<'_> {
             Self::FeedbackRequest { .. } => "failed to commit feedback request",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorkflowLabelPlan {
+    clear_keys: &'static [&'static str],
+    set_keys: &'static [&'static str],
 }
 
 #[derive(Debug)]
@@ -368,17 +395,7 @@ pub async fn finish_item(
         Some(FINISHED_STATE_LABEL),
     )
     .await?;
-    delete_workflow_labels_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        &[
-            CLAIMED_FROM_STATE_LABEL_KEY,
-            AUTOMATION_BLOCKED_LABEL_KEY,
-            FEEDBACK_REQUESTED_LABEL_KEY,
-        ],
-    )
-    .await?;
+    delete_workflow_labels_in_tx(&txn, project_id, item_id, FINISH_CLEARS_WORKFLOW_LABELS).await?;
     work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report)
         .await?;
     txn.commit().await.context("failed to commit item finish")?;
@@ -460,36 +477,7 @@ async fn return_claim_to_source_state(
     let active = claim.clear_active_model(utc_now());
     let updated = active.update(&txn).await.context(mode.update_context())?;
 
-    work_item_labels::upsert_in_tx(
-        &txn,
-        project_id,
-        item_id,
-        STATE_LABEL_KEY,
-        Some(release_state.as_str()),
-    )
-    .await?;
-    delete_workflow_labels_in_tx(&txn, project_id, item_id, &[CLAIMED_FROM_STATE_LABEL_KEY])
-        .await?;
-    if mode.blocks_automation() {
-        work_item_labels::upsert_in_tx(
-            &txn,
-            project_id,
-            item_id,
-            AUTOMATION_BLOCKED_LABEL_KEY,
-            None,
-        )
-        .await?;
-    }
-    if mode.requests_feedback() {
-        work_item_labels::upsert_in_tx(
-            &txn,
-            project_id,
-            item_id,
-            FEEDBACK_REQUESTED_LABEL_KEY,
-            None,
-        )
-        .await?;
-    }
+    apply_return_workflow_labels_in_tx(&txn, project_id, item_id, &release_state, mode).await?;
 
     if let Some(comment) = mode
         .agent_comment_body()
@@ -557,6 +545,33 @@ where
 {
     for label_key in label_keys {
         work_item_labels::delete_by_key_in_tx(conn, project_id, item_id, label_key).await?;
+    }
+    Ok(())
+}
+
+async fn apply_return_workflow_labels_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    release_state: &str,
+    mode: ClaimReturnMode<'_>,
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    work_item_labels::upsert_in_tx(
+        conn,
+        project_id,
+        item_id,
+        STATE_LABEL_KEY,
+        Some(release_state),
+    )
+    .await?;
+
+    let plan = mode.workflow_label_plan();
+    delete_workflow_labels_in_tx(conn, project_id, item_id, plan.clear_keys).await?;
+    for label_key in plan.set_keys {
+        work_item_labels::upsert_in_tx(conn, project_id, item_id, label_key, None).await?;
     }
     Ok(())
 }
@@ -1331,6 +1346,78 @@ mod tests {
             .await
             .unwrap();
         assert!(claimed_again.is_none());
+    }
+
+    #[tokio::test]
+    async fn claimable_release_clears_existing_automation_blocker() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Manual retry".to_owned(),
+                description: "A direct retry should be able to reopen automation.".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            item.id,
+            AUTOMATION_BLOCKED_LABEL_KEY.to_owned(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let claimed = claim_specific_item(&store, "demo", item.id, "agent-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
+        assert!(
+            claimed
+                .labels
+                .iter()
+                .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+        );
+
+        let released = release_item(
+            &store,
+            "demo",
+            item.id,
+            "agent-a",
+            None,
+            ReleaseAutomationDisposition::Claimable,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(released.state.as_deref(), Some("open"));
+        assert_eq!(released.claimed_by, None);
+        for key in [
+            CLAIMED_FROM_STATE_LABEL_KEY,
+            AUTOMATION_BLOCKED_LABEL_KEY,
+            FEEDBACK_REQUESTED_LABEL_KEY,
+        ] {
+            assert!(
+                released.labels.iter().all(|label| label.key != key),
+                "claimable release should remove {key}"
+            );
+        }
+
+        let claimed_again = claim_item(&store, "demo", "agent-b", "open")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_again.id, item.id);
+        assert_eq!(claimed_again.claimed_by.as_deref(), Some("agent-b"));
     }
 
     #[tokio::test]

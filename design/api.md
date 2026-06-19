@@ -94,7 +94,7 @@ GET /api/projects/{project}/items/{item_id}/events
 
 `finish` appends a completion report, marks the item done, clears active claim ownership, records finish metadata, and emits events.
 
-`release` appends an optional release comment, clears the claim, returns the item to an available state, and emits events.
+`release` appends an optional release comment, clears the claim, restores the claimed-from state, adds `patchbay:automation-blocked` for the agent-facing endpoint, and emits events. Internal automation releases may use a claimable disposition for successful unfinished runs, stale-claim recovery, or cancellation; those releases clear transient workflow blockers so the item can re-enter claim selection.
 
 `request-feedback` appends an agent-authored feedback request comment, clears the claim, restores the claimed-from state, adds `patchbay:feedback-requested` and `patchbay:automation-blocked`, and emits events. The caller must own the active claim. Automation must skip items with `patchbay:feedback-requested` until the label is removed after user feedback has been handled.
 
