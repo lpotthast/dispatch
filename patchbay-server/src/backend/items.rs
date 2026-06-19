@@ -1,39 +1,28 @@
 use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
-    QueryOrder, Statement, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
+    Statement, TransactionTrait,
 };
 
 use crate::{
     backend::{
         entities::{
-            work_item::{self, WorkItem, WorkItemActiveModel},
+            work_item::{self, WorkItem},
             work_item_event,
         },
-        events, item_labels, label_conditions, projects,
+        events, label_conditions, projects,
         storage::{Store, utc_now},
+        work_item_creation::{self, CreateWorkItemPlan},
         work_item_events, work_item_labels, work_item_relationships,
         work_item_updates::{self, WorkItemUpdatePlan},
         work_items, workflow_labels,
     },
-    shared::view_models::{
-        AgentReasoningEffort, CreateWorkItemLabelRequest, STATE_LABEL_KEY, WorkItemEventView,
-        WorkItemView,
-    },
+    shared::view_models::{STATE_LABEL_KEY, WorkItemEventView, WorkItemView},
 };
 
+pub use work_item_creation::CreateWorkItem;
 pub use work_item_updates::UpdateWorkItem;
-
-#[derive(Clone, Debug)]
-pub struct CreateWorkItem {
-    pub title: String,
-    pub description: String,
-    pub state: String,
-    pub agent_model_override: Option<String>,
-    pub agent_reasoning_effort_override: Option<AgentReasoningEffort>,
-    pub initial_labels: Vec<CreateWorkItemLabelRequest>,
-}
 
 pub async fn list_items(
     store: &Store,
@@ -129,16 +118,7 @@ pub async fn create_item(
     project_name: &str,
     create: CreateWorkItem,
 ) -> Result<WorkItemView> {
-    work_item_updates::validate_item_text(&create.title, &create.description)?;
-    let state_label = workflow_labels::normalize_state_value(create.state)?;
-    let agent_model_override = projects::normalize_optional(create.agent_model_override);
-    let initial_labels = item_labels::normalize_initial_labels(
-        create
-            .initial_labels
-            .into_iter()
-            .map(|label| (label.key, label.value)),
-    )
-    .context("invalid initial labels")?;
+    let create = CreateWorkItemPlan::new(create)?;
 
     let project_id = projects::project_id(store, project_name).await?;
     let now = utc_now();
@@ -148,20 +128,9 @@ pub async fn create_item(
         .await
         .context("failed to start item create")?;
 
-    let active = WorkItemActiveModel {
-        project_id: Set(project_id),
-        title: Set(create.title),
-        description: Set(create.description),
-        agent_model_override: Set(agent_model_override),
-        agent_reasoning_effort_override: Set(create
-            .agent_reasoning_effort_override
-            .map(|effort| effort.as_storage().to_owned())),
-        version: Set(1),
-        created_at: Set(now.clone()),
-        updated_at: Set(now),
-        ..Default::default()
-    };
-    let item = active
+    let create = create.into_insert(project_id, now);
+    let item = create
+        .active
         .insert(&txn)
         .await
         .context("failed to create work item")?;
@@ -169,10 +138,10 @@ pub async fn create_item(
         &txn,
         project_id,
         item.id,
-        workflow_labels::state_workflow_label_plan(&state_label),
+        workflow_labels::state_workflow_label_plan(&create.state_label),
     )
     .await?;
-    for label in &initial_labels {
+    for label in &create.initial_labels {
         work_item_labels::insert_in_tx(
             &txn,
             project_id,
@@ -371,7 +340,7 @@ mod tests {
         item_label_service::add_label,
         projects::{CreateProject, create_project},
     };
-    use crate::shared::view_models::AuthorType;
+    use crate::shared::view_models::{AuthorType, CreateWorkItemLabelRequest};
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
