@@ -12,18 +12,14 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
     TransactionTrait,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{
-        agent_ids, automation_triggers,
-        entities::{
-            project::{self, Project, ProjectActiveModel, ProjectModel},
-            work_item_event,
-        },
+        automation_triggers,
+        entities::project::{self, Project, ProjectActiveModel, ProjectModel},
         events, personalities,
         storage::{Store, utc_now},
-        swim_lanes, work_item_events, work_item_states,
+        swim_lanes, work_item_states,
     },
     shared::view_models::{
         AgentGitCommandPolicy, AgentReasoningEffort, AgentSandboxMode, AgentToolName,
@@ -35,9 +31,11 @@ use crate::{
     },
 };
 
+mod change_events;
+
+pub use change_events::ProjectChangeSource;
+
 const PROJECT_PATH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
-const SYSTEM_PROMPT_CHANGED_EVENT_TYPE: &str = "SystemPromptChanged";
-const MEMORY_CHANGED_EVENT_TYPE: &str = "MemoryChanged";
 
 #[derive(Clone, Debug)]
 pub struct CreateProject {
@@ -92,55 +90,6 @@ struct ProjectSettingsPlan {
     agent_sandbox_mode: AgentSandboxMode,
     agent_extra_writable_roots: Vec<String>,
     agent_git_command_policy: AgentGitCommandPolicy,
-}
-
-#[derive(Clone, Debug)]
-pub enum ProjectChangeSource {
-    Agent {
-        agent_id: String,
-        agent_run_id: Option<i64>,
-    },
-    User,
-    System,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct MemoryChangedBody {
-    operation: String,
-    memory: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct SystemPromptChangedBody {
-    operation: String,
-    system_prompt: String,
-}
-
-impl ProjectChangeSource {
-    fn actor_type(&self) -> &'static str {
-        match self {
-            Self::Agent { .. } => "agent",
-            Self::User => "user",
-            Self::System => "system",
-        }
-    }
-
-    fn actor_id(&self) -> Option<&str> {
-        match self {
-            Self::Agent { agent_id, .. } => Some(agent_id.as_str()),
-            Self::User | Self::System => None,
-        }
-    }
-
-    fn agent_run_id(&self) -> Option<i64> {
-        match self {
-            Self::Agent {
-                agent_id,
-                agent_run_id,
-            } => agent_run_id.or_else(|| agent_ids::parse_patchbay_run_agent_id(agent_id)),
-            Self::User | Self::System => None,
-        }
-    }
 }
 
 impl UpdateProjectSettings {
@@ -431,7 +380,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
     )
     .await?;
     if !project.system_prompt.trim().is_empty() {
-        record_system_prompt_changed_event_in_tx(
+        change_events::record_system_prompt_changed_in_tx(
             &txn,
             &project,
             "initial",
@@ -440,8 +389,13 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         .await?;
     }
     if !project.memory.trim().is_empty() {
-        record_memory_changed_event_in_tx(&txn, &project, "initial", &ProjectChangeSource::System)
-            .await?;
+        change_events::record_memory_changed_in_tx(
+            &txn,
+            &project,
+            "initial",
+            &ProjectChangeSource::System,
+        )
+        .await?;
     }
     txn.commit()
         .await
@@ -534,7 +488,8 @@ pub async fn update_system_prompt_with_source(
         .update(&txn)
         .await
         .context_with(|| format!("failed to update system prompt for project '{name}'"))?;
-    let event = record_system_prompt_changed_event_in_tx(&txn, &updated, "set", &source).await?;
+    let event =
+        change_events::record_system_prompt_changed_in_tx(&txn, &updated, "set", &source).await?;
     txn.commit()
         .await
         .context("failed to commit project system prompt update")?;
@@ -542,7 +497,7 @@ pub async fn update_system_prompt_with_source(
 
     Ok(ProjectSystemPromptUpdateView {
         project: updated.clone().into(),
-        event: system_prompt_event_to_view(name, event),
+        event: change_events::system_prompt_event_to_view(name, event),
     })
 }
 
@@ -551,18 +506,7 @@ pub async fn list_system_prompt_events(
     project_name: &str,
 ) -> Result<Vec<ProjectSystemPromptEventView>> {
     let project = find_project_by_name(store, project_name).await?;
-    let events = work_item_event::Entity::find()
-        .filter(work_item_event::Column::ProjectId.eq(project.id))
-        .filter(work_item_event::Column::EventType.eq(SYSTEM_PROMPT_CHANGED_EVENT_TYPE))
-        .order_by_desc(work_item_event::Column::Id)
-        .all(store.db().as_ref())
-        .await
-        .context("failed to list project system prompt events")?;
-
-    Ok(events
-        .into_iter()
-        .map(|event| system_prompt_event_to_view(project_name, event))
-        .collect())
+    change_events::list_system_prompt_events(store.db().as_ref(), project.id, project_name).await
 }
 
 pub async fn compact_system_prompt_events(
@@ -570,17 +514,13 @@ pub async fn compact_system_prompt_events(
     project_name: &str,
 ) -> Result<ProjectSystemPromptCompactionView> {
     let project_id = project_id(store, project_name).await?;
-    let deleted = work_item_event::Entity::delete_many()
-        .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(SYSTEM_PROMPT_CHANGED_EVENT_TYPE))
-        .exec(store.db().as_ref())
-        .await
-        .context("failed to compact project system prompt events")?;
+    let deleted =
+        change_events::compact_system_prompt_events(store.db().as_ref(), project_id).await?;
     events::publish_system_prompt_changed(project_name);
     Ok(ProjectSystemPromptCompactionView {
         project_id,
         project_name: project_name.to_owned(),
-        deleted_events: deleted.rows_affected,
+        deleted_events: deleted,
     })
 }
 
@@ -608,9 +548,9 @@ pub async fn append_memory_with_source(
 
 pub async fn get_memory(store: &Store, name: &str) -> Result<ProjectMemoryView> {
     let existing = find_project_by_name(store, name).await?;
-    let last_event = latest_memory_event(store, existing.id)
+    let last_event = change_events::latest_memory_event(store.db().as_ref(), existing.id)
         .await?
-        .map(|event| memory_event_to_view(name, event));
+        .map(|event| change_events::memory_event_to_view(name, event));
     Ok(ProjectMemoryView {
         project_id: existing.id,
         project_name: existing.name,
@@ -625,18 +565,7 @@ pub async fn list_memory_events(
     project_name: &str,
 ) -> Result<Vec<ProjectMemoryEventView>> {
     let project = find_project_by_name(store, project_name).await?;
-    let events = work_item_event::Entity::find()
-        .filter(work_item_event::Column::ProjectId.eq(project.id))
-        .filter(work_item_event::Column::EventType.eq(MEMORY_CHANGED_EVENT_TYPE))
-        .order_by_desc(work_item_event::Column::Id)
-        .all(store.db().as_ref())
-        .await
-        .context("failed to list project memory events")?;
-
-    Ok(events
-        .into_iter()
-        .map(|event| memory_event_to_view(project_name, event))
-        .collect())
+    change_events::list_memory_events(store.db().as_ref(), project.id, project_name).await
 }
 
 pub async fn compact_memory_events(
@@ -644,24 +573,21 @@ pub async fn compact_memory_events(
     project_name: &str,
 ) -> Result<ProjectMemoryCompactionView> {
     let project_id = project_id(store, project_name).await?;
-    let deleted = work_item_event::Entity::delete_many()
-        .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(MEMORY_CHANGED_EVENT_TYPE))
-        .exec(store.db().as_ref())
-        .await
-        .context("failed to compact project memory events")?;
+    let deleted = change_events::compact_memory_events(store.db().as_ref(), project_id).await?;
     events::publish_memory_changed(project_name);
     Ok(ProjectMemoryCompactionView {
         project_id,
         project_name: project_name.to_owned(),
-        deleted_events: deleted.rows_affected,
+        deleted_events: deleted,
     })
 }
 
 pub async fn latest_memory_event_id(store: &Store, project_id: i64) -> Result<Option<i64>> {
-    Ok(latest_memory_event(store, project_id)
-        .await?
-        .map(|event| event.id))
+    Ok(
+        change_events::latest_memory_event(store.db().as_ref(), project_id)
+            .await?
+            .map(|event| event.id),
+    )
 }
 
 pub async fn snapshot_current_memory_event(
@@ -673,9 +599,10 @@ pub async fn snapshot_current_memory_event(
     let project = find_project_by_name(store, project_name).await?;
     let db = store.db();
     let event =
-        record_memory_changed_event_in_tx(db.as_ref(), &project, operation, &source).await?;
+        change_events::record_memory_changed_in_tx(db.as_ref(), &project, operation, &source)
+            .await?;
     events::publish_memory_changed(project_name);
-    Ok(memory_event_to_view(project_name, event))
+    Ok(change_events::memory_event_to_view(project_name, event))
 }
 
 pub async fn memory_event_exists(
@@ -683,13 +610,7 @@ pub async fn memory_event_exists(
     project_id: i64,
     event_id: i64,
 ) -> Result<Option<String>> {
-    Ok(work_item_event::Entity::find_by_id(event_id)
-        .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(MEMORY_CHANGED_EVENT_TYPE))
-        .one(store.db().as_ref())
-        .await
-        .context("failed to load project memory event")?
-        .map(|event| event.created_at))
+    change_events::memory_event_exists(store.db().as_ref(), project_id, event_id).await
 }
 
 async fn change_memory(
@@ -720,7 +641,8 @@ async fn change_memory(
         .update(&txn)
         .await
         .context_with(|| format!("failed to update memory for project '{name}'"))?;
-    let event = record_memory_changed_event_in_tx(&txn, &updated, operation, &source).await?;
+    let event =
+        change_events::record_memory_changed_in_tx(&txn, &updated, operation, &source).await?;
     txn.commit()
         .await
         .context("failed to commit project memory update")?;
@@ -728,125 +650,8 @@ async fn change_memory(
 
     Ok(ProjectMemoryUpdateView {
         project: updated.clone().into(),
-        event: memory_event_to_view(name, event),
+        event: change_events::memory_event_to_view(name, event),
     })
-}
-
-async fn latest_memory_event(
-    store: &Store,
-    project_id: i64,
-) -> Result<Option<work_item_event::Model>> {
-    Ok(work_item_event::Entity::find()
-        .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(MEMORY_CHANGED_EVENT_TYPE))
-        .order_by_desc(work_item_event::Column::Id)
-        .one(store.db().as_ref())
-        .await
-        .context("failed to load latest project memory event")?)
-}
-
-async fn record_system_prompt_changed_event_in_tx<C>(
-    conn: &C,
-    project: &ProjectModel,
-    operation: &str,
-    source: &ProjectChangeSource,
-) -> Result<work_item_event::Model>
-where
-    C: sea_orm::ConnectionTrait,
-{
-    let body = serde_json::to_string(&SystemPromptChangedBody {
-        operation: operation.to_owned(),
-        system_prompt: project.system_prompt.clone(),
-    })
-    .context("failed to encode project system prompt event")?;
-    work_item_events::record_event_with_attribution_in_tx(
-        conn,
-        project.id,
-        None,
-        SYSTEM_PROMPT_CHANGED_EVENT_TYPE,
-        &body,
-        work_item_events::EventAttribution {
-            actor_type: Some(source.actor_type()),
-            actor_id: source.actor_id(),
-            agent_run_id: source.agent_run_id(),
-        },
-    )
-    .await
-}
-
-async fn record_memory_changed_event_in_tx<C>(
-    conn: &C,
-    project: &ProjectModel,
-    operation: &str,
-    source: &ProjectChangeSource,
-) -> Result<work_item_event::Model>
-where
-    C: sea_orm::ConnectionTrait,
-{
-    let body = serde_json::to_string(&MemoryChangedBody {
-        operation: operation.to_owned(),
-        memory: project.memory.clone(),
-    })
-    .context("failed to encode project memory event")?;
-    work_item_events::record_event_with_attribution_in_tx(
-        conn,
-        project.id,
-        None,
-        MEMORY_CHANGED_EVENT_TYPE,
-        &body,
-        work_item_events::EventAttribution {
-            actor_type: Some(source.actor_type()),
-            actor_id: source.actor_id(),
-            agent_run_id: source.agent_run_id(),
-        },
-    )
-    .await
-}
-
-fn system_prompt_event_to_view(
-    project_name: &str,
-    event: work_item_event::Model,
-) -> ProjectSystemPromptEventView {
-    let parsed = serde_json::from_str::<SystemPromptChangedBody>(&event.body).ok();
-    ProjectSystemPromptEventView {
-        id: event.id,
-        project_id: event.project_id,
-        project_name: project_name.to_owned(),
-        operation: parsed
-            .as_ref()
-            .map(|body| body.operation.clone())
-            .unwrap_or_else(|| "unknown".to_owned()),
-        system_prompt: parsed
-            .map(|body| body.system_prompt)
-            .unwrap_or_else(|| event.body.clone()),
-        actor_type: event.actor_type,
-        actor_id: event.actor_id,
-        agent_run_id: event.agent_run_id,
-        created_at: event.created_at,
-    }
-}
-
-fn memory_event_to_view(
-    project_name: &str,
-    event: work_item_event::Model,
-) -> ProjectMemoryEventView {
-    let parsed = serde_json::from_str::<MemoryChangedBody>(&event.body).ok();
-    ProjectMemoryEventView {
-        id: event.id,
-        project_id: event.project_id,
-        project_name: project_name.to_owned(),
-        operation: parsed
-            .as_ref()
-            .map(|body| body.operation.clone())
-            .unwrap_or_else(|| "unknown".to_owned()),
-        memory: parsed
-            .map(|body| body.memory)
-            .unwrap_or_else(|| event.body.clone()),
-        actor_type: event.actor_type,
-        actor_id: event.actor_id,
-        agent_run_id: event.agent_run_id,
-        created_at: event.created_at,
-    }
 }
 
 pub async fn get_settings(store: &Store, project_name: &str) -> Result<ProjectSettingsView> {
@@ -1270,6 +1075,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::backend::entities::work_item_event;
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
@@ -1691,15 +1497,19 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let prompt_body = serde_json::from_str::<SystemPromptChangedBody>(&prompt_row.body)
-            .expect("system prompt event body should decode");
+        let prompt_body =
+            serde_json::from_str::<change_events::SystemPromptChangedBody>(&prompt_row.body)
+                .expect("system prompt event body should decode");
 
         assert_eq!(prompted.event.actor_type.as_deref(), Some("agent"));
         assert_eq!(prompted.event.actor_id.as_deref(), Some("patchbay-run-42"));
         assert_eq!(prompted.event.agent_run_id, Some(42));
         assert_eq!(prompt_row.project_id, project.id);
         assert_eq!(prompt_row.work_item_id, None);
-        assert_eq!(prompt_row.event_type, SYSTEM_PROMPT_CHANGED_EVENT_TYPE);
+        assert_eq!(
+            prompt_row.event_type,
+            change_events::SYSTEM_PROMPT_CHANGED_EVENT_TYPE
+        );
         assert_eq!(prompt_row.actor_type.as_deref(), Some("agent"));
         assert_eq!(prompt_row.actor_id.as_deref(), Some("patchbay-run-42"));
         assert_eq!(prompt_row.agent_run_id, Some(42));
@@ -1722,14 +1532,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let memory_body = serde_json::from_str::<MemoryChangedBody>(&memory_row.body).unwrap();
+        let memory_body =
+            serde_json::from_str::<change_events::MemoryChangedBody>(&memory_row.body).unwrap();
 
         assert_eq!(remembered.event.actor_type.as_deref(), Some("agent"));
         assert_eq!(remembered.event.actor_id.as_deref(), Some("codex-worker"));
         assert_eq!(remembered.event.agent_run_id, Some(77));
         assert_eq!(memory_row.project_id, project.id);
         assert_eq!(memory_row.work_item_id, None);
-        assert_eq!(memory_row.event_type, MEMORY_CHANGED_EVENT_TYPE);
+        assert_eq!(
+            memory_row.event_type,
+            change_events::MEMORY_CHANGED_EVENT_TYPE
+        );
         assert_eq!(memory_row.actor_type.as_deref(), Some("agent"));
         assert_eq!(memory_row.actor_id.as_deref(), Some("codex-worker"));
         assert_eq!(memory_row.agent_run_id, Some(77));
