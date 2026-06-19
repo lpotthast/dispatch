@@ -1,9 +1,10 @@
 use rootcause::{Result, prelude::*};
-use sea_orm::ActiveValue::Set;
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait};
 
 use crate::{
     backend::{
-        entities::work_item::WorkItemActiveModel, item_labels, projects, work_item_updates,
+        entities::work_item::{WorkItemActiveModel, WorkItemModel},
+        item_labels, projects, work_item_events, work_item_labels, work_item_updates,
         workflow_labels,
     },
     shared::view_models::{AgentReasoningEffort, CreateWorkItemLabelRequest},
@@ -78,6 +79,50 @@ impl CreateWorkItemPlan {
             initial_labels: self.initial_labels,
         }
     }
+}
+
+pub(crate) async fn insert_planned_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    plan: CreateWorkItemPlan,
+    created_at: String,
+) -> Result<WorkItemModel>
+where
+    C: ConnectionTrait,
+{
+    let insert = plan.into_insert(project_id, created_at);
+    let item = insert
+        .active
+        .insert(conn)
+        .await
+        .context("failed to create work item")?;
+    workflow_labels::apply_plan_in_tx(
+        conn,
+        project_id,
+        item.id,
+        workflow_labels::state_workflow_label_plan(&insert.state_label),
+    )
+    .await?;
+    for label in &insert.initial_labels {
+        work_item_labels::insert_in_tx(
+            conn,
+            project_id,
+            item.id,
+            &label.key,
+            label.value.as_deref(),
+        )
+        .await?;
+    }
+    work_item_events::record_event_in_tx(
+        conn,
+        project_id,
+        Some(item.id),
+        "item_created",
+        "Created item",
+    )
+    .await?;
+
+    Ok(item)
 }
 
 #[cfg(test)]

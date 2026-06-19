@@ -17,16 +17,18 @@ use crate::{
         automation_triggers,
         entities::{
             agent_run, agent_tool, automation_trigger, comment, personality, project, swim_lane,
-            work_item, work_item_label, work_item_state,
+            work_item, work_item_state,
         },
         events, item_labels, personalities, projects,
         storage::{Store, utc_now},
-        swim_lanes, work_item_events, work_item_labels, work_item_states, workflow_labels,
+        swim_lanes,
+        work_item_creation::{self, CreateWorkItem, CreateWorkItemPlan},
+        work_item_events, work_item_states, work_item_updates, workflow_labels,
     },
     shared::view_models::{
         AgentReasoningEffort, AgentSandboxMode, AgentToolName, AutomationActivation,
         AutomationEffect, AutomationRunMutability, CodexAgentModel, DEFAULT_STATE_LABEL,
-        RevertStrategy, STATE_LABEL_KEY, WorkspaceMode, WorktreeCleanupPolicy,
+        RevertStrategy, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -432,15 +434,6 @@ pub struct CrudInitialWorkItemLabel {
     pub value: Option<String>,
 }
 
-impl From<item_labels::NormalizedLabel> for CrudInitialWorkItemLabel {
-    fn from(label: item_labels::NormalizedLabel) -> Self {
-        Self {
-            key: label.key,
-            value: label.value,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, crudkit_sea_orm::CkField, ToSchema, serde::Deserialize)]
 pub struct CrudCreateWorkItem {
     pub project_id: i64,
@@ -502,6 +495,63 @@ impl WorkItemRepository {
     }
 }
 
+struct PlannedCrudWorkItemCreate {
+    project_id: i64,
+    plan: CreateWorkItemPlan,
+}
+
+fn crud_create_work_item_plan(
+    create_model: CrudCreateWorkItem,
+) -> Result<PlannedCrudWorkItemCreate, String> {
+    let project_id = create_model.project_id;
+    let state = projects::normalize_optional(create_model.state)
+        .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned());
+    let agent_reasoning_effort_override =
+        parse_crud_agent_reasoning_effort(create_model.agent_reasoning_effort_override)?;
+    let initial_labels = normalized_work_item_initial_label_requests(create_model.initial_labels)?;
+
+    let plan = CreateWorkItemPlan::new(CreateWorkItem {
+        title: create_model.title,
+        description: create_model.description,
+        state,
+        agent_model_override: create_model.agent_model_override,
+        agent_reasoning_effort_override,
+        initial_labels,
+    })
+    .map_err(|err| err.to_string())?;
+
+    Ok(PlannedCrudWorkItemCreate { project_id, plan })
+}
+
+fn crud_update_work_item_plan(
+    update_model: work_item::UpdateModel,
+) -> Result<work_item_updates::WorkItemUpdatePlan, String> {
+    let agent_reasoning_effort_override =
+        parse_crud_agent_reasoning_effort(update_model.agent_reasoning_effort_override)?;
+
+    work_item_updates::WorkItemUpdatePlan::new(work_item_updates::UpdateWorkItem {
+        title: Some(update_model.title),
+        description: Some(update_model.description),
+        state: None,
+        agent_model_override: Some(update_model.agent_model_override),
+        agent_reasoning_effort_override: Some(agent_reasoning_effort_override),
+        expect_version: None,
+    })
+    .map_err(|err| err.to_string())
+}
+
+fn parse_crud_agent_reasoning_effort(
+    value: Option<String>,
+) -> Result<Option<AgentReasoningEffort>, String> {
+    projects::normalize_optional(value)
+        .map(|effort| {
+            effort
+                .parse::<AgentReasoningEffort>()
+                .map_err(|err| err.to_string())
+        })
+        .transpose()
+}
+
 impl Repository<CrudWorkItemResource> for WorkItemRepository {
     type Error = WorkItemRepositoryError;
 
@@ -509,63 +559,14 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
         &self,
         create_model: CrudCreateWorkItem,
     ) -> Result<work_item::Model, Self::Error> {
-        let state_label = create_model
-            .state
-            .as_deref()
-            .unwrap_or(DEFAULT_STATE_LABEL)
-            .to_owned();
+        let create =
+            crud_create_work_item_plan(create_model).map_err(WorkItemRepositoryError::Internal)?;
         let now = utc_now();
         let txn = self.db.begin().await.map_err(WorkItemRepositoryError::Db)?;
-        let active = work_item::ActiveModel {
-            project_id: Set(create_model.project_id),
-            title: Set(create_model.title),
-            description: Set(create_model.description),
-            agent_model_override: Set(create_model.agent_model_override),
-            agent_reasoning_effort_override: Set(create_model.agent_reasoning_effort_override),
-            version: Set(1),
-            created_at: Set(now.clone()),
-            updated_at: Set(now.clone()),
-            ..Default::default()
-        };
-        let model = active
-            .insert(&txn)
-            .await
-            .map_err(WorkItemRepositoryError::Db)?;
-        let state_label = work_item_label::ActiveModel {
-            project_id: Set(model.project_id),
-            work_item_id: Set(model.id),
-            key: Set(STATE_LABEL_KEY.to_owned()),
-            value: Set(Some(state_label)),
-            created_at: Set(now.clone()),
-            updated_at: Set(now),
-            ..Default::default()
-        };
-        state_label
-            .insert(&txn)
-            .await
-            .map_err(WorkItemRepositoryError::Db)?;
-        let initial_labels = normalized_work_item_initial_labels(create_model.initial_labels)
-            .map_err(WorkItemRepositoryError::Internal)?;
-        for label in &initial_labels {
-            work_item_labels::insert_in_tx(
-                &txn,
-                model.project_id,
-                model.id,
-                &label.key,
-                label.value.as_deref(),
-            )
-            .await
-            .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
-        }
-        work_item_events::record_event_in_tx(
-            &txn,
-            model.project_id,
-            Some(model.id),
-            "item_created",
-            "Created item",
-        )
-        .await
-        .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        let model =
+            work_item_creation::insert_planned_in_tx(&txn, create.project_id, create.plan, now)
+                .await
+                .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
         txn.commit().await.map_err(WorkItemRepositoryError::Db)?;
         Ok(model)
     }
@@ -665,13 +666,32 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
         existing: work_item::Model,
         update_model: work_item::UpdateModel,
     ) -> Result<work_item::Model, Self::Error> {
-        <SeaOrmRepo as Repository<CrudWorkItemResource>>::update(
-            &self.fallback,
-            existing,
-            update_model,
-        )
-        .await
-        .map_err(WorkItemRepositoryError::SeaOrm)
+        let project_id = existing.project_id;
+        let item_id = existing.id;
+        let update =
+            crud_update_work_item_plan(update_model).map_err(WorkItemRepositoryError::Internal)?;
+        let applied = update
+            .apply_to(existing)
+            .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        let txn = self.db.begin().await.map_err(WorkItemRepositoryError::Db)?;
+        let updated = applied
+            .active
+            .update(&txn)
+            .await
+            .map_err(WorkItemRepositoryError::Db)?;
+        if applied.record_item_updated_event {
+            work_item_events::record_event_in_tx(
+                &txn,
+                project_id,
+                Some(item_id),
+                "item_updated",
+                "Updated item",
+            )
+            .await
+            .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        }
+        txn.commit().await.map_err(WorkItemRepositoryError::Db)?;
+        Ok(updated)
     }
 
     async fn delete(&self, model: work_item::Model) -> Result<DeleteResult, Self::Error> {
@@ -721,17 +741,10 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
         .map_err(|err| work_item_unprocessable_error(err.to_string()))?;
         create_model.agent_model_override =
             projects::normalize_optional(create_model.agent_model_override.take());
-        create_model.agent_reasoning_effort_override = create_model
-            .agent_reasoning_effort_override
-            .take()
-            .and_then(|effort| projects::normalize_optional(Some(effort)))
-            .map(|effort| {
-                effort
-                    .parse::<AgentReasoningEffort>()
-                    .map(|effort| effort.as_storage().to_owned())
-                    .map_err(|err| work_item_unprocessable_error(err.to_string()))
-            })
-            .transpose()?;
+        create_model.agent_reasoning_effort_override =
+            parse_crud_agent_reasoning_effort(create_model.agent_reasoning_effort_override.take())
+                .map_err(work_item_unprocessable_error)?
+                .map(|effort| effort.as_storage().to_owned());
         Ok(data)
     }
 
@@ -757,17 +770,10 @@ impl CrudLifetime<CrudWorkItemResource> for WorkItemLifetime {
         validate_work_item_text(&update_model.title, &update_model.description)?;
         update_model.agent_model_override =
             projects::normalize_optional(update_model.agent_model_override.take());
-        update_model.agent_reasoning_effort_override = update_model
-            .agent_reasoning_effort_override
-            .take()
-            .and_then(|effort| projects::normalize_optional(Some(effort)))
-            .map(|effort| {
-                effort
-                    .parse::<AgentReasoningEffort>()
-                    .map(|effort| effort.as_storage().to_owned())
-                    .map_err(|err| work_item_unprocessable_error(err.to_string()))
-            })
-            .transpose()?;
+        update_model.agent_reasoning_effort_override =
+            parse_crud_agent_reasoning_effort(update_model.agent_reasoning_effort_override.take())
+                .map_err(work_item_unprocessable_error)?
+                .map(|effort| effort.as_storage().to_owned());
         Ok(data)
     }
 
@@ -823,17 +829,8 @@ fn validate_work_item_text(
     title: &str,
     description: &str,
 ) -> Result<(), HookError<WorkItemHookError>> {
-    if title.trim().is_empty() {
-        return Err(work_item_unprocessable_error(
-            "item title cannot be empty".to_owned(),
-        ));
-    }
-    if description.trim().is_empty() {
-        return Err(work_item_unprocessable_error(
-            "item description cannot be empty".to_owned(),
-        ));
-    }
-    Ok(())
+    work_item_updates::validate_item_text(title, description)
+        .map_err(|err| work_item_unprocessable_error(err.to_string()))
 }
 
 fn normalize_work_item_create_state(
@@ -854,6 +851,20 @@ fn normalize_work_item_initial_labels(
 fn normalized_work_item_initial_labels(
     labels: serde_json::Value,
 ) -> Result<Vec<CrudInitialWorkItemLabel>, String> {
+    normalized_work_item_initial_label_requests(labels).map(|labels| {
+        labels
+            .into_iter()
+            .map(|label| CrudInitialWorkItemLabel {
+                key: label.key,
+                value: label.value,
+            })
+            .collect()
+    })
+}
+
+fn normalized_work_item_initial_label_requests(
+    labels: serde_json::Value,
+) -> Result<Vec<patchbay_types::CreateWorkItemLabelRequest>, String> {
     let labels = match labels {
         serde_json::Value::Null => Vec::new(),
         serde_json::Value::String(raw) if raw.trim().is_empty() => Vec::new(),
@@ -865,7 +876,15 @@ fn normalized_work_item_initial_labels(
             .map_err(|err| format!("invalid initial labels: {err}"))?,
     };
     item_labels::normalize_initial_labels(labels.into_iter().map(|label| (label.key, label.value)))
-        .map(|labels| labels.into_iter().map(Into::into).collect())
+        .map(|labels| {
+            labels
+                .into_iter()
+                .map(|label| patchbay_types::CreateWorkItemLabelRequest {
+                    key: label.key,
+                    value: label.value,
+                })
+                .collect()
+        })
         .map_err(|err| err.to_string())
 }
 
@@ -2267,7 +2286,39 @@ pub fn build_contexts(store: Store) -> CrudContexts {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
+    use crate::backend::{
+        items::list_events,
+        projects::{CreateProject, create_project, project_id},
+        storage::Store,
+        work_item_labels,
+    };
+    use crate::shared::view_models::STATE_LABEL_KEY;
+
+    async fn test_store() -> (TempDir, Store, i64) {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(temp.path().join("patchbay.sqlite3"))
+            .await
+            .unwrap();
+        create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+        let project_id = project_id(&store, "demo").await.unwrap();
+        (temp, store, project_id)
+    }
 
     #[test]
     fn work_item_create_state_uses_explicit_state() {
@@ -2298,5 +2349,108 @@ mod tests {
             }
             other => panic!("expected unprocessable state error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn crud_work_item_create_uses_domain_create_plan() {
+        let (_temp, store, project_id) = test_store().await;
+        let repository = WorkItemRepository::new(store.db());
+
+        let created = repository
+            .insert(CrudCreateWorkItem {
+                project_id,
+                title: "Repository create".to_owned(),
+                description: "Created through the CrudKit repository".to_owned(),
+                state: Some(" review ".to_owned()),
+                agent_model_override: Some("  ".to_owned()),
+                agent_reasoning_effort_override: Some(" medium ".to_owned()),
+                initial_labels: serde_json::json!([
+                    { "key": " priority ", "value": " high " },
+                    { "key": "needs-verification", "value": "  " }
+                ]),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(created.version, 1);
+        assert!(created.agent_model_override.is_none());
+        assert_eq!(
+            created.agent_reasoning_effort_override.as_deref(),
+            Some("medium")
+        );
+
+        let labels = work_item_labels::for_item(store.db().as_ref(), project_id, created.id)
+            .await
+            .unwrap();
+        assert!(labels.iter().any(|label| {
+            label.key == STATE_LABEL_KEY && label.value.as_deref() == Some("review")
+        }));
+        assert!(
+            labels
+                .iter()
+                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("high") })
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.key == "needs-verification" && label.value.is_none())
+        );
+
+        let events = list_events(&store, "demo", Some(created.id), None)
+            .await
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "item_created")
+        );
+    }
+
+    #[tokio::test]
+    async fn crud_work_item_update_uses_domain_update_plan() {
+        let (_temp, store, project_id) = test_store().await;
+        let repository = WorkItemRepository::new(store.db());
+        let created = repository
+            .insert(CrudCreateWorkItem {
+                project_id,
+                title: "Before update".to_owned(),
+                description: "Existing CrudKit item".to_owned(),
+                state: Some("open".to_owned()),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+
+        let updated = repository
+            .update(
+                created.clone(),
+                work_item::UpdateModel {
+                    title: "After update".to_owned(),
+                    description: "Updated through the CrudKit repository".to_owned(),
+                    agent_model_override: Some("gpt-5.5".to_owned()),
+                    agent_reasoning_effort_override: Some(" high ".to_owned()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.version, created.version + 1);
+        assert_eq!(updated.title, "After update");
+        assert_eq!(updated.agent_model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(
+            updated.agent_reasoning_effort_override.as_deref(),
+            Some("high")
+        );
+
+        let events = list_events(&store, "demo", Some(created.id), None)
+            .await
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "item_updated")
+        );
     }
 }

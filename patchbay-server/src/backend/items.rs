@@ -128,37 +128,7 @@ pub async fn create_item(
         .await
         .context("failed to start item create")?;
 
-    let create = create.into_insert(project_id, now);
-    let item = create
-        .active
-        .insert(&txn)
-        .await
-        .context("failed to create work item")?;
-    workflow_labels::apply_plan_in_tx(
-        &txn,
-        project_id,
-        item.id,
-        workflow_labels::state_workflow_label_plan(&create.state_label),
-    )
-    .await?;
-    for label in &create.initial_labels {
-        work_item_labels::insert_in_tx(
-            &txn,
-            project_id,
-            item.id,
-            &label.key,
-            label.value.as_deref(),
-        )
-        .await?;
-    }
-    work_item_events::record_event_in_tx(
-        &txn,
-        project_id,
-        Some(item.id),
-        "item_created",
-        "Created item",
-    )
-    .await?;
+    let item = work_item_creation::insert_planned_in_tx(&txn, project_id, create, now).await?;
     txn.commit().await.context("failed to commit item create")?;
     events::publish_work_item_changed(project_name, item.id);
 
