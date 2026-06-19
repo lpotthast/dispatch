@@ -14,7 +14,9 @@ use crate::{
     shared::view_models::WorkItemView,
 };
 
-use super::claim_candidates::{ClaimCandidateScanner, ClaimSelector, has_matching_candidate};
+use super::claim_candidates::{
+    ClaimCandidate, ClaimCandidateScanner, ClaimSelector, has_matching_candidate,
+};
 
 pub(crate) async fn has_claimable_item_matching_condition(
     store: &Store,
@@ -80,6 +82,63 @@ pub(crate) async fn claim_item_matching_condition(
     .await
 }
 
+pub(crate) async fn has_claimable_specific_item_matching_condition(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    condition: &Condition,
+) -> Result<bool> {
+    let selector = ClaimSelector::automation_condition(condition)?;
+    let project_id = projects::project_id(store, project_name).await?;
+    Ok(
+        specific_claim_candidate_in_tx(store.db().as_ref(), project_id, item_id, Some(&selector))
+            .await?
+            .is_some(),
+    )
+}
+
+pub(crate) async fn claim_specific_item_matching_condition(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    agent_id: &str,
+    condition: &Condition,
+) -> Result<Option<WorkItemView>> {
+    agent_ids::validate_agent_id(agent_id)?;
+    let selector = ClaimSelector::automation_condition(condition)?;
+
+    let project_id = projects::project_id(store, project_name).await?;
+    let txn = store
+        .db()
+        .begin()
+        .await
+        .context("failed to start specific item claim")?;
+    let candidate =
+        specific_claim_candidate_in_tx(&txn, project_id, item_id, Some(&selector)).await?;
+    let claimed = match candidate {
+        Some(candidate) => {
+            claim_candidate_in_tx(
+                &txn,
+                project_id,
+                candidate.item_id,
+                agent_id,
+                &candidate.source_state,
+            )
+            .await?
+        }
+        None => None,
+    };
+
+    commit_claim_transaction(
+        store,
+        project_name,
+        txn,
+        claimed,
+        "failed to commit specific item claim",
+    )
+    .await
+}
+
 pub(crate) async fn claim_specific_item(
     store: &Store,
     project_name: &str,
@@ -94,20 +153,20 @@ pub(crate) async fn claim_specific_item(
         .begin()
         .await
         .context("failed to start specific item claim")?;
-    let existing = work_items::get(&txn, project_id, item_id).await?;
-    if existing.claimed_by.is_some() || existing.finished_at.is_some() {
-        return commit_claim_transaction(
-            store,
-            project_name,
-            txn,
-            None,
-            "failed to commit empty specific claim",
-        )
-        .await;
-    }
-    let labels = work_item_labels::for_item(&txn, project_id, item_id).await?;
-    let source_state = workflow_labels::source_state_for_new_claim(&labels);
-    let claimed = claim_candidate_in_tx(&txn, project_id, item_id, agent_id, &source_state).await?;
+    let candidate = specific_claim_candidate_in_tx(&txn, project_id, item_id, None).await?;
+    let claimed = match candidate {
+        Some(candidate) => {
+            claim_candidate_in_tx(
+                &txn,
+                project_id,
+                candidate.item_id,
+                agent_id,
+                &candidate.source_state,
+            )
+            .await?
+        }
+        None => None,
+    };
 
     commit_claim_transaction(
         store,
@@ -145,6 +204,30 @@ where
     }
 
     Ok(None)
+}
+
+async fn specific_claim_candidate_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    item_id: i64,
+    selector: Option<&ClaimSelector>,
+) -> Result<Option<ClaimCandidate>>
+where
+    C: ConnectionTrait,
+{
+    let existing = work_items::get(conn, project_id, item_id).await?;
+    if existing.claimed_by.is_some() || existing.finished_at.is_some() {
+        return Ok(None);
+    }
+    let labels = work_item_labels::for_item(conn, project_id, item_id).await?;
+    if selector.is_some_and(|selector| !selector.matches(&labels)) {
+        return Ok(None);
+    }
+
+    Ok(Some(ClaimCandidate {
+        item_id,
+        source_state: workflow_labels::source_state_for_new_claim(&labels),
+    }))
 }
 
 async fn claim_candidate_in_tx<C>(

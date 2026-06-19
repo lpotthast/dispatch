@@ -57,6 +57,14 @@ async fn test_store() -> (TempDir, Store) {
     (temp, store)
 }
 
+fn open_state_selector() -> Condition {
+    Condition::All(vec![ConditionElement::Clause(ConditionClause {
+        column_name: STATE_LABEL_KEY.to_owned(),
+        operator: Operator::Equal,
+        value: ConditionClauseValue::String("open".to_owned()),
+    })])
+}
+
 #[tokio::test]
 async fn claiming_item_records_agent_identity() {
     let (_temp, store) = test_store().await;
@@ -285,6 +293,47 @@ async fn blocked_items_are_skipped_by_selector_claims() {
         .unwrap();
 
     assert!(claimed.is_none());
+}
+
+#[tokio::test]
+async fn specific_selector_claims_skip_workflow_blockers() {
+    let (_temp, store) = test_store().await;
+    let selector = open_state_selector();
+
+    for key in [AUTOMATION_BLOCKED_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY] {
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: format!("Blocked by {key}"),
+                description: "Specific automation claims should still honor blockers".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        add_label(&store, "demo", item.id, key.to_owned(), None, None)
+            .await
+            .unwrap();
+
+        assert!(
+            !has_claimable_specific_item_matching_condition(&store, "demo", item.id, &selector)
+                .await
+                .unwrap()
+        );
+        let claimed =
+            claim_specific_item_matching_condition(&store, "demo", item.id, "agent-a", &selector)
+                .await
+                .unwrap();
+        let reloaded = get_item(&store, "demo", item.id).await.unwrap();
+
+        assert!(claimed.is_none());
+        assert_eq!(reloaded.claimed_by, None);
+        assert_eq!(reloaded.state.as_deref(), Some("open"));
+    }
 }
 
 #[tokio::test]

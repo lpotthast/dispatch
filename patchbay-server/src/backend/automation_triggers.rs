@@ -763,10 +763,13 @@ async fn trigger_has_consumable_work(
         return Ok(false);
     };
     if let Some(work_item_id) = work_item_id {
-        let item = items::get_item(store, project_name, work_item_id).await?;
-        return Ok(item.claimed_by.is_none()
-            && item.finished_at.is_none()
-            && items::item_matches_condition(store, project_name, work_item_id, selector).await?);
+        return item_claims::has_claimable_specific_item_matching_condition(
+            store,
+            project_name,
+            work_item_id,
+            selector,
+        )
+        .await;
     };
     item_claims::has_claimable_item_matching_condition(store, project_name, selector).await
 }
@@ -1254,15 +1257,22 @@ fn model_to_view(trigger: AutomationTriggerModel) -> Result<AutomationTriggerVie
 mod tests {
     use std::path::PathBuf;
 
+    use crudkit_core::condition::{
+        ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+    };
     use tempfile::TempDir;
 
     use super::*;
     use crate::backend::{
         agent_tools::set_tool_path,
         item_label_service::add_label,
-        items::{CreateWorkItem, create_item, get_item, item_matches_condition},
-        personalities,
+        items::{CreateWorkItem, create_item, get_item},
+        label_conditions, personalities,
         projects::{CreateProject, create_project},
+    };
+    use crate::shared::view_models::{
+        AUTOMATION_BLOCKED_LABEL_KEY, CreateWorkItemLabelRequest, FEEDBACK_REQUESTED_LABEL_KEY,
+        STATE_LABEL_KEY, WorkItemView,
     };
 
     async fn test_store() -> (TempDir, Store) {
@@ -1288,6 +1298,20 @@ mod tests {
             .await
             .unwrap();
         (temp, store)
+    }
+
+    fn open_state_selector() -> Condition {
+        Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: STATE_LABEL_KEY.to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::String("open".to_owned()),
+        })])
+    }
+
+    fn item_matches_selector(item: &WorkItemView, selector: &Condition) -> bool {
+        label_conditions::ValidatedLabelCondition::new(selector)
+            .unwrap()
+            .matches(&item.labels)
     }
 
     #[test]
@@ -1487,7 +1511,7 @@ mod tests {
         )
         .await
         .unwrap();
-        add_label(
+        let refine_item = add_label(
             &store,
             "demo",
             refine_item.id,
@@ -1511,7 +1535,7 @@ mod tests {
         )
         .await
         .unwrap();
-        add_label(
+        let verify_item = add_label(
             &store,
             "demo",
             verify_item.id,
@@ -1522,46 +1546,22 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            !item_matches_condition(
-                &store,
-                "demo",
-                refine_item.id,
-                &default_work_item_selector()
-            )
-            .await
-            .unwrap()
-        );
-        assert!(
-            item_matches_condition(
-                &store,
-                "demo",
-                refine_item.id,
-                &default_refinement_work_item_selector()
-            )
-            .await
-            .unwrap()
-        );
-        assert!(
-            !item_matches_condition(
-                &store,
-                "demo",
-                verify_item.id,
-                &default_work_item_selector()
-            )
-            .await
-            .unwrap()
-        );
-        assert!(
-            item_matches_condition(
-                &store,
-                "demo",
-                verify_item.id,
-                &default_verification_work_item_selector()
-            )
-            .await
-            .unwrap()
-        );
+        assert!(!item_matches_selector(
+            &refine_item,
+            &default_work_item_selector()
+        ));
+        assert!(item_matches_selector(
+            &refine_item,
+            &default_refinement_work_item_selector()
+        ));
+        assert!(!item_matches_selector(
+            &verify_item,
+            &default_work_item_selector()
+        ));
+        assert!(item_matches_selector(
+            &verify_item,
+            &default_verification_work_item_selector()
+        ));
     }
 
     #[test]
@@ -1699,6 +1699,59 @@ mod tests {
                 .iter()
                 .all(|label| label.key != crate::shared::view_models::AUTOMATION_BLOCKED_LABEL_KEY)
         );
+    }
+
+    #[tokio::test]
+    async fn work_item_created_trigger_skips_specific_items_blocked_from_automation() {
+        let (_temp, store) = test_store().await;
+        let trigger = create_trigger(
+            &store,
+            "demo",
+            CreateAutomationTrigger {
+                name: "inspect-new-work".to_owned(),
+                enabled: true,
+                activation: AutomationActivation::WorkItemCreated,
+                effect: AutomationEffect::ConsumeWork,
+                schedule: "@every 15s".to_owned(),
+                tool_name: None,
+                mutability: AutomationRunMutability::ReadOnly,
+                personality_id: None,
+                prompt: "Inspect this new work item.".to_owned(),
+                work_item_selector: Some(open_state_selector()),
+                priority: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        for key in [AUTOMATION_BLOCKED_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY] {
+            create_item(
+                &store,
+                "demo",
+                CreateWorkItem {
+                    title: format!("Blocked by {key}"),
+                    description: "A matching selector should still respect automation blockers."
+                        .to_owned(),
+                    state: "open".to_owned(),
+                    agent_model_override: None,
+                    agent_reasoning_effort_override: None,
+                    initial_labels: vec![CreateWorkItemLabelRequest {
+                        key: key.to_owned(),
+                        value: None,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let outcomes = run_due_triggers(&store).await.unwrap();
+        let trigger_runs = automation::list_runs_for_trigger(&store, "demo", trigger.id, None)
+            .await
+            .unwrap();
+
+        assert!(outcomes.is_empty());
+        assert!(trigger_runs.is_empty());
     }
 
     #[tokio::test]

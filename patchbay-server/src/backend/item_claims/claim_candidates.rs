@@ -41,7 +41,7 @@ impl ClaimSelector {
         ))
     }
 
-    fn matches(&self, labels: &[WorkItemLabelView]) -> bool {
+    pub(super) fn matches(&self, labels: &[WorkItemLabelView]) -> bool {
         match self {
             Self::State(state) => {
                 !workflow_labels::is_automation_blocked(labels)

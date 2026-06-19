@@ -388,9 +388,20 @@ async fn complete_started_automation_run(
 
     let claimed_item = {
         let claimed = if let Some(work_item_id) = start.work_item_id {
-            match item_claims::claim_specific_item(store, &project_name, work_item_id, &agent_id)
+            let claim_result = if let Some(condition) = start.work_item_selector.as_ref() {
+                item_claims::claim_specific_item_matching_condition(
+                    store,
+                    &project_name,
+                    work_item_id,
+                    &agent_id,
+                    condition,
+                )
                 .await
-            {
+            } else {
+                item_claims::claim_specific_item(store, &project_name, work_item_id, &agent_id)
+                    .await
+            };
+            match claim_result {
                 Ok(claimed) => claimed,
                 Err(err) => {
                     return fail_run(

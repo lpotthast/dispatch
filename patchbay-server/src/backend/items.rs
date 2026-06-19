@@ -1,4 +1,3 @@
-use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
@@ -11,7 +10,7 @@ use crate::{
             work_item::{self, WorkItem},
             work_item_event,
         },
-        events, label_conditions, projects,
+        events, projects,
         storage::{Store, utc_now},
         work_item_creation::{self, CreateWorkItemPlan},
         work_item_events, work_item_labels, work_item_relationships,
@@ -92,19 +91,6 @@ pub async fn count_items_outside_work_item_states(
         .transpose()
         .context("failed to read work items outside authored states count")?
         .ok_or_else(|| report!("missing work items outside authored states count"))
-}
-
-pub async fn item_matches_condition(
-    store: &Store,
-    project_name: &str,
-    item_id: i64,
-    condition: &Condition,
-) -> Result<bool> {
-    let selector = label_conditions::ValidatedLabelCondition::new(condition)?;
-    let project_id = projects::project_id(store, project_name).await?;
-    let item = work_items::get(store.db().as_ref(), project_id, item_id).await?;
-    let labels = work_item_labels::for_item(store.db().as_ref(), project_id, item.id).await?;
-    Ok(selector.matches_automation_selector(&labels))
 }
 
 pub async fn get_item(store: &Store, project_name: &str, item_id: i64) -> Result<WorkItemView> {
