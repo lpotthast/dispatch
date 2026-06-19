@@ -12,6 +12,7 @@ use tokio::sync::watch;
 use crate::{
     backend::{
         automation::{self, AutomationTriggerOrigin, StartAutomation},
+        automation_admission,
         automation_controller::AutomationController,
         entities::{
             automation_trigger::{
@@ -472,7 +473,7 @@ async fn run_queued_evaluations(
         }
         let view = model_to_view(trigger.clone())?;
         if view.effect == AutomationEffect::ConsumeWork
-            && !automation::can_start_automation_run(store, &project_name, view.mutability).await?
+            && !automation_admission::can_start_run(store, &project_name, view.mutability).await?
         {
             continue;
         }
@@ -533,7 +534,7 @@ async fn run_next_work_item_automation_for_project(
         if !trigger_is_due(view.next_evaluation_at.as_deref()) {
             continue;
         }
-        if !automation::can_start_automation_run(store, project_name, view.mutability).await? {
+        if !automation_admission::can_start_run(store, project_name, view.mutability).await? {
             continue;
         }
         let Some(selector) = view.work_item_selector.as_ref() else {

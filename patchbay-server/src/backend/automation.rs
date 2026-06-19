@@ -26,7 +26,7 @@ use tokio::{sync::watch, time::timeout};
 
 use crate::{
     backend::{
-        agent_ids, agent_tools,
+        agent_ids, agent_tools, automation_admission,
         automation_commit::{
             CommitOutcomeEvaluation, capture_commit_baseline, evaluate_commit_outcome_for_run,
         },
@@ -208,25 +208,6 @@ struct StartedAutomationRun {
     run: AgentRunModel,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct RunningRunCounts {
-    pub mutating: i64,
-    pub read_only: i64,
-}
-
-impl RunningRunCounts {
-    fn total(self) -> i64 {
-        self.mutating.saturating_add(self.read_only)
-    }
-
-    fn for_mutability(self, mutability: AutomationRunMutability) -> i64 {
-        match mutability {
-            AutomationRunMutability::Mutating => self.mutating,
-            AutomationRunMutability::ReadOnly => self.read_only,
-        }
-    }
-}
-
 pub(crate) fn set_server_api_url(url: String) {
     let _ = SERVER_API_URL.set(url);
 }
@@ -384,7 +365,7 @@ async fn begin_automation_run(
         .unwrap_or(AutomationRunMutability::Mutating);
     let tool = start.tool.unwrap_or(settings.default_agent_tool);
     ensure_tool_supports_mutability(tool, mutability)?;
-    enforce_concurrency(store, project_name, &settings, mutability).await?;
+    automation_admission::enforce_start_allowed(store, project_name, &settings, mutability).await?;
     let run = create_run(store, project.id, tool, mutability, start.trigger.as_ref()).await?;
 
     Ok(StartedAutomationRun {
@@ -1053,7 +1034,7 @@ pub async fn stop_automation(store: &Store, project_name: &str) -> Result<Vec<Ag
 
 pub async fn automation_status(store: &Store, project_name: &str) -> Result<AutomationStatusView> {
     let settings = projects::get_settings(store, project_name).await?;
-    let running_counts = running_run_counts(store, project_name).await?;
+    let running_counts = automation_admission::running_counts(store, project_name).await?;
     let recent_runs = list_runs(store, project_name, Some(10)).await?;
     let tools = agent_tools::list_tools(store).await?;
 
@@ -1073,7 +1054,11 @@ pub async fn active_project_names(store: &Store) -> Result<Vec<String>> {
     let projects = projects::list_projects(store).await?;
     let mut active = Vec::new();
     for project in projects {
-        if running_run_counts(store, &project.name).await?.total() > 0 {
+        if automation_admission::running_counts(store, &project.name)
+            .await?
+            .total()
+            > 0
+        {
             active.push(project.name);
         }
     }
@@ -1280,80 +1265,6 @@ pub async fn recover_configured_stale_claims(store: &Store) -> Result<Vec<Recove
         }
     }
     Ok(recovered)
-}
-
-async fn enforce_concurrency(
-    store: &Store,
-    project_name: &str,
-    settings: &ProjectSettingsView,
-    mutability: AutomationRunMutability,
-) -> Result<()> {
-    if mutability == AutomationRunMutability::Mutating
-        && settings.create_pr
-        && settings.workspace_mode == WorkspaceMode::CurrentBranch
-    {
-        bail!("pull requests can only be created for git_worktree or git_branch strategies");
-    }
-    let allowed = allowed_runs_for_mutability(settings, mutability);
-    let running = running_run_counts(store, project_name)
-        .await?
-        .for_mutability(mutability);
-    if running >= allowed {
-        match mutability {
-            AutomationRunMutability::Mutating => {
-                bail!(
-                    "project already has {running} running mutating agent run(s); limit is {allowed}"
-                );
-            }
-            AutomationRunMutability::ReadOnly => {
-                bail!(
-                    "project already has {running} running read-only agent run(s); limit is {allowed}"
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-pub async fn can_start_automation_run(
-    store: &Store,
-    project_name: &str,
-    mutability: AutomationRunMutability,
-) -> Result<bool> {
-    let settings = projects::get_settings(store, project_name).await?;
-    let allowed = allowed_runs_for_mutability(&settings, mutability);
-    let running = running_run_counts(store, project_name)
-        .await?
-        .for_mutability(mutability);
-    Ok(running < allowed)
-}
-
-fn allowed_runs_for_mutability(
-    settings: &ProjectSettingsView,
-    mutability: AutomationRunMutability,
-) -> i64 {
-    match mutability {
-        AutomationRunMutability::Mutating => projects::allowed_code_edit_agents(settings),
-        AutomationRunMutability::ReadOnly => settings.max_read_only_agents,
-    }
-}
-
-async fn running_run_counts(store: &Store, project_name: &str) -> Result<RunningRunCounts> {
-    let project_id = projects::project_id(store, project_name).await?;
-    let runs = AgentRun::find()
-        .filter(agent_run::Column::ProjectId.eq(project_id))
-        .filter(agent_run::Column::Status.eq(AgentRunStatus::Running.as_storage()))
-        .all(store.db().as_ref())
-        .await
-        .context("failed to load running agent runs")?;
-    let mut counts = RunningRunCounts::default();
-    for run in runs {
-        match AutomationRunMutability::from_str(&run.mutability)? {
-            AutomationRunMutability::Mutating => counts.mutating += 1,
-            AutomationRunMutability::ReadOnly => counts.read_only += 1,
-        }
-    }
-    Ok(counts)
 }
 
 async fn create_run(
@@ -2962,18 +2873,23 @@ mod tests {
             AutomationRunMutability::ReadOnly
         );
         assert!(
-            !can_start_automation_run(&store, "demo", AutomationRunMutability::Mutating)
+            !automation_admission::can_start_run(&store, "demo", AutomationRunMutability::Mutating)
                 .await
                 .unwrap()
         );
         let settings = get_settings(&store, "demo").await.unwrap();
-        let err = enforce_concurrency(&store, "demo", &settings, AutomationRunMutability::Mutating)
-            .await
-            .unwrap_err();
+        let err = automation_admission::enforce_start_allowed(
+            &store,
+            "demo",
+            &settings,
+            AutomationRunMutability::Mutating,
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("mutating"));
         assert!(err.to_string().contains("limit is 1"));
         assert!(
-            can_start_automation_run(&store, "demo", AutomationRunMutability::ReadOnly)
+            automation_admission::can_start_run(&store, "demo", AutomationRunMutability::ReadOnly)
                 .await
                 .unwrap()
         );
@@ -2995,7 +2911,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            !can_start_automation_run(&store, "demo", AutomationRunMutability::ReadOnly)
+            !automation_admission::can_start_run(&store, "demo", AutomationRunMutability::ReadOnly)
                 .await
                 .unwrap()
         );
@@ -3016,13 +2932,18 @@ mod tests {
         .unwrap();
 
         assert!(
-            !can_start_automation_run(&store, "demo", AutomationRunMutability::ReadOnly)
+            !automation_admission::can_start_run(&store, "demo", AutomationRunMutability::ReadOnly)
                 .await
                 .unwrap()
         );
-        let err = enforce_concurrency(&store, "demo", &settings, AutomationRunMutability::ReadOnly)
-            .await
-            .unwrap_err();
+        let err = automation_admission::enforce_start_allowed(
+            &store,
+            "demo",
+            &settings,
+            AutomationRunMutability::ReadOnly,
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("read-only"));
         assert!(err.to_string().contains("limit is 0"));
     }

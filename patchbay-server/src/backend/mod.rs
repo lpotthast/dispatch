@@ -3,6 +3,7 @@ pub(crate) mod agent_tools;
 pub(crate) mod api;
 pub(crate) mod app_state;
 pub(crate) mod automation;
+pub(crate) mod automation_admission;
 pub(crate) mod automation_commit;
 pub(crate) mod automation_controller;
 pub(crate) mod automation_output;
