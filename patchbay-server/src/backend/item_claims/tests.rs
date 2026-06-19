@@ -386,6 +386,49 @@ async fn idea_item_is_skipped_until_moved_open() {
 }
 
 #[tokio::test]
+async fn claiming_scans_past_non_matching_candidate_batch() {
+    let (_temp, store) = test_store().await;
+    for title in ["Draft one", "Draft two"] {
+        create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: title.to_owned(),
+                description: "This item should not match an open-state claim".to_owned(),
+                state: "idea".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let open = create_item(
+        &store,
+        "demo",
+        CreateWorkItem {
+            title: "Open after drafts".to_owned(),
+            description: "The scanner should continue until it finds this item".to_owned(),
+            state: "open".to_owned(),
+            agent_model_override: None,
+            agent_reasoning_effort_override: None,
+            initial_labels: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let claimed = claim_item(&store, "demo", "agent-a", "open")
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(claimed.id, open.id);
+    assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
+}
+
+#[tokio::test]
 async fn claimed_items_include_verified_automation_source() {
     let (_temp, store) = test_store().await;
     let item = create_item(

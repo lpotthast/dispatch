@@ -1,4 +1,5 @@
 mod active_claims;
+mod claim_candidates;
 mod claim_returns;
 mod claiming;
 mod progress_finish;
