@@ -7,6 +7,7 @@ pub(crate) mod automation;
 pub(crate) mod automation_commit;
 pub(crate) mod automation_controller;
 pub(crate) mod automation_output;
+pub(crate) mod automation_prompt;
 pub(crate) mod automation_triggers;
 pub(crate) mod claim_returns;
 pub(crate) mod claim_selection;
