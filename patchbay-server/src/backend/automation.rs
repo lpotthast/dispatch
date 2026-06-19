@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt, fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -10,13 +10,9 @@ use std::{
 };
 
 use codex_app_server_sdk::{
-    ApprovalMode, ClientError, ModelReasoningEffort as CodexReasoningEffort, SandboxMode,
-    StreamedTurn, Thread, ThreadEvent, ThreadOptions, TurnOptions,
+    ApprovalMode, ClientError, StreamedTurn, Thread, ThreadEvent, ThreadOptions, TurnOptions,
 };
 use crudkit_core::condition::Condition;
-use git2::{
-    Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions, build::CheckoutBuilder,
-};
 use rootcause::{Result, prelude::*};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
@@ -27,6 +23,7 @@ use tokio::{sync::watch, time::timeout};
 use crate::{
     backend::{
         agent_ids, agent_tools, automation_admission,
+        automation_cli::patchbay_cli_path,
         automation_commit::{
             CommitOutcomeEvaluation, capture_commit_baseline, evaluate_commit_outcome_for_run,
         },
@@ -36,6 +33,8 @@ use crate::{
             write_run_output_log,
         },
         automation_prompt::{PromptContext, build_prompt},
+        automation_runtime::{self, GitRuntimeFiles},
+        automation_workspace::{self, WorkspacePlan},
         codex_app_server,
         entities::agent_run::{self, AgentRun, AgentRunActiveModel, AgentRunModel},
         events, item_claims, items, personalities,
@@ -44,12 +43,11 @@ use crate::{
         storage::{Store, utc_now},
     },
     shared::view_models::{
-        AgentCommitOutcome, AgentGitHardResetPolicy, AgentGitRuntimePolicy, AgentReasoningEffort,
-        AgentRunOutputKind, AgentRunOutputPiece, AgentRunStatus, AgentRunTokenUsageView,
-        AgentRunView, AgentSandboxMode, AgentToolName, AutomationRunMutability,
-        AutomationStatusView, DEFAULT_STATE_LABEL, FINISHED_STATE_LABEL, ProjectMemoryEventRefView,
-        ProjectSettingsView, RecoveredClaimView, RunLogView, WorkItemView, WorkspaceMode,
-        WorktreeCleanupPolicy,
+        AgentCommitOutcome, AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece,
+        AgentRunStatus, AgentRunTokenUsageView, AgentRunView, AgentSandboxMode, AgentToolName,
+        AutomationRunMutability, AutomationStatusView, DEFAULT_STATE_LABEL, FINISHED_STATE_LABEL,
+        ProjectMemoryEventRefView, ProjectSettingsView, RecoveredClaimView, RunLogView,
+        WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -77,17 +75,6 @@ pub struct StartAutomation {
 pub struct AutomationTriggerOrigin {
     pub trigger_id: i64,
     pub trigger_name: String,
-}
-
-struct WorkspacePlan {
-    working_dir: PathBuf,
-    worktree_path: Option<PathBuf>,
-    branch_name: Option<String>,
-}
-
-struct GitRuntimeFiles {
-    shim_dir: PathBuf,
-    policy_path: PathBuf,
 }
 
 struct LaunchDetails {
@@ -145,8 +132,7 @@ struct AgentProcessStart {
     patchbay_binary: PathBuf,
     prompt_path: PathBuf,
     working_dir: PathBuf,
-    git_shim_dir: PathBuf,
-    git_policy_path: PathBuf,
+    git_runtime: GitRuntimeFiles,
     real_git_path: PathBuf,
     agent_id: String,
     claimed_item_id: Option<i64>,
@@ -210,86 +196,6 @@ struct StartedAutomationRun {
 
 pub(crate) fn set_server_api_url(url: String) {
     let _ = SERVER_API_URL.set(url);
-}
-
-fn patchbay_cli_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("PATCHBAY_CLI_PATH")
-        .or_else(|| std::env::var_os("PATCHBAY_CLI"))
-        .map(PathBuf::from)
-    {
-        return ensure_patchbay_cli_path(path);
-    }
-
-    let dev_script_search = find_dev_patchbay_cli();
-    if let Some(dev_script) = dev_script_search.path {
-        return ensure_patchbay_cli_path(dev_script);
-    }
-
-    let searched = dev_script_search
-        .searched
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    bail!(
-        "Patchbay agent-facing CLI is not configured; set PATCHBAY_CLI_PATH or create dev-bin/patchbay (searched: {searched})"
-    )
-}
-
-#[derive(Debug)]
-struct DevPatchbayCliSearch {
-    path: Option<PathBuf>,
-    searched: Vec<PathBuf>,
-}
-
-fn find_dev_patchbay_cli() -> DevPatchbayCliSearch {
-    let mut roots = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        roots.push(current_dir);
-    }
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    if let Ok(current_exe) = std::env::current_exe()
-        && let Some(parent) = current_exe.parent()
-    {
-        roots.push(parent.to_path_buf());
-    }
-    find_dev_patchbay_cli_from_roots(roots)
-}
-
-fn find_dev_patchbay_cli_from_roots(
-    roots: impl IntoIterator<Item = PathBuf>,
-) -> DevPatchbayCliSearch {
-    let mut seen = HashSet::new();
-    let mut searched = Vec::new();
-    for root in roots {
-        for ancestor in root.ancestors() {
-            let candidate = ancestor.join("dev-bin/patchbay");
-            if !seen.insert(candidate.clone()) {
-                continue;
-            }
-            if candidate.is_file() {
-                return DevPatchbayCliSearch {
-                    path: Some(candidate),
-                    searched,
-                };
-            }
-            searched.push(candidate);
-        }
-    }
-    DevPatchbayCliSearch {
-        path: None,
-        searched,
-    }
-}
-
-fn ensure_patchbay_cli_path(path: PathBuf) -> Result<PathBuf> {
-    if !path.is_file() {
-        bail!(
-            "Patchbay agent-facing CLI path '{}' does not exist or is not a file",
-            path.display()
-        );
-    }
-    Ok(path)
 }
 
 fn ensure_tool_supports_mutability(
@@ -552,7 +458,7 @@ async fn complete_started_automation_run(
         .await;
     }
 
-    let workspace = match prepare_workspace_for_run(
+    let workspace = match automation_workspace::prepare_workspace_for_run(
         run.id,
         &project_name,
         &project_path,
@@ -612,7 +518,7 @@ async fn complete_started_automation_run(
             .await;
         }
     };
-    let real_git_path = match resolve_real_git_path() {
+    let real_git_path = match automation_runtime::resolve_real_git_path() {
         Ok(real_git_path) => real_git_path,
         Err(err) => {
             return fail_run_after_claim(
@@ -626,7 +532,7 @@ async fn complete_started_automation_run(
             .await;
         }
     };
-    let git_runtime = match prepare_git_runtime(
+    let git_runtime = match automation_runtime::prepare_git_runtime(
         run.id,
         &log_dir,
         &patchbay_binary,
@@ -680,7 +586,8 @@ async fn complete_started_automation_run(
             .await;
         }
     };
-    let prompt_git_policy = git_runtime_policy_for_run(&settings, run_mutability);
+    let prompt_git_policy =
+        automation_runtime::git_runtime_policy_for_run(&settings, run_mutability);
     let prompt = build_prompt(PromptContext {
         project_name: &project_name,
         system_prompt: &project.system_prompt,
@@ -765,8 +672,7 @@ async fn complete_started_automation_run(
             patchbay_binary,
             prompt_path,
             working_dir: PathBuf::from(&run.working_dir),
-            git_shim_dir: git_runtime.shim_dir,
-            git_policy_path: git_runtime.policy_path,
+            git_runtime,
             real_git_path,
             agent_id: agent_id.clone(),
             claimed_item_id: claimed_item.as_ref().map(|item| item.id),
@@ -1460,75 +1366,6 @@ async fn publish_run_model_event(store: &Store, run: &AgentRunModel) {
     }
 }
 
-fn prepare_workspace_for_run(
-    run_id: i64,
-    project_name: &str,
-    project_path: &Path,
-    workspace_mode: WorkspaceMode,
-    mutability: AutomationRunMutability,
-) -> Result<WorkspacePlan> {
-    if mutability == AutomationRunMutability::ReadOnly {
-        return prepare_read_only_workspace(project_path);
-    }
-    prepare_workspace(run_id, project_name, project_path, workspace_mode)
-}
-
-fn prepare_read_only_workspace(project_path: &Path) -> Result<WorkspacePlan> {
-    if !project_path.is_dir() {
-        bail!("path '{}' is not a directory", project_path.display());
-    }
-    Ok(WorkspacePlan {
-        working_dir: project_path.to_path_buf(),
-        worktree_path: None,
-        branch_name: None,
-    })
-}
-
-fn prepare_workspace(
-    run_id: i64,
-    project_name: &str,
-    project_path: &Path,
-    workspace_mode: WorkspaceMode,
-) -> Result<WorkspacePlan> {
-    if !project_path.is_dir() {
-        bail!("path '{}' is not a directory", project_path.display());
-    }
-
-    match workspace_mode {
-        WorkspaceMode::CurrentBranch => Ok(WorkspacePlan {
-            working_dir: project_path.to_path_buf(),
-            worktree_path: None,
-            branch_name: None,
-        }),
-        WorkspaceMode::GitWorktree => {
-            let slug = slugify(project_name);
-            let root = project_path
-                .parent()
-                .unwrap_or(project_path)
-                .join(".patchbay-worktrees");
-            let worktree_path = root.join(format!("{slug}-{run_id}"));
-            let branch_name = format!("patchbay/{slug}-{run_id}");
-            fs::create_dir_all(&root)
-                .context_with(|| format!("failed to create {}", root.display()))?;
-            create_git_worktree(project_path, &branch_name, &worktree_path)?;
-            Ok(WorkspacePlan {
-                working_dir: worktree_path.clone(),
-                worktree_path: Some(worktree_path),
-                branch_name: Some(branch_name),
-            })
-        }
-        WorkspaceMode::GitBranch => {
-            let branch_name = format!("patchbay/{}-{}", slugify(project_name), run_id);
-            create_and_checkout_git_branch(project_path, &branch_name)?;
-            Ok(WorkspacePlan {
-                working_dir: project_path.to_path_buf(),
-                worktree_path: None,
-                branch_name: Some(branch_name),
-            })
-        }
-    }
-}
-
 async fn release_claim_if_needed(store: &Store, context: ClaimReleaseContext<'_>) -> Result<()> {
     let ClaimReleaseContext {
         project_name,
@@ -1623,223 +1460,6 @@ fn pr_requested_for_run(
     mutability: AutomationRunMutability,
 ) -> bool {
     mutability == AutomationRunMutability::Mutating && settings.create_pr
-}
-
-fn to_codex_reasoning(effort: AgentReasoningEffort) -> CodexReasoningEffort {
-    match effort {
-        AgentReasoningEffort::None => CodexReasoningEffort::None,
-        AgentReasoningEffort::Minimal => CodexReasoningEffort::Minimal,
-        AgentReasoningEffort::Low => CodexReasoningEffort::Low,
-        AgentReasoningEffort::Medium => CodexReasoningEffort::Medium,
-        AgentReasoningEffort::High => CodexReasoningEffort::High,
-        AgentReasoningEffort::XHigh => CodexReasoningEffort::XHigh,
-    }
-}
-
-fn prepare_git_runtime(
-    run_id: i64,
-    log_dir: &Path,
-    patchbay_binary: &Path,
-    settings: &ProjectSettingsView,
-    mutability: AutomationRunMutability,
-) -> Result<GitRuntimeFiles> {
-    let shim_dir = log_dir.join(format!("run-{run_id}-bin"));
-    fs::create_dir_all(&shim_dir)
-        .context_with(|| format!("failed to create git shim dir {}", shim_dir.display()))?;
-    let policy_path = log_dir.join(format!("run-{run_id}.git-policy.json"));
-    let runtime_policy = git_runtime_policy_for_run(settings, mutability);
-    let policy_json = serde_json::to_string_pretty(&runtime_policy)
-        .context("failed to encode git runtime policy")?;
-    fs::write(&policy_path, policy_json)
-        .context_with(|| format!("failed to write git policy {}", policy_path.display()))?;
-    let shim_path = shim_dir.join("git");
-    fs::write(
-        &shim_path,
-        format!(
-            "#!/bin/sh\nexec {} git \"$@\"\n",
-            shell_quote(&patchbay_binary.to_string_lossy())
-        ),
-    )
-    .context_with(|| format!("failed to write git shim {}", shim_path.display()))?;
-    mark_executable(&shim_path)?;
-    Ok(GitRuntimeFiles {
-        shim_dir,
-        policy_path,
-    })
-}
-
-fn git_runtime_policy_for_run(
-    settings: &ProjectSettingsView,
-    mutability: AutomationRunMutability,
-) -> AgentGitRuntimePolicy {
-    match mutability {
-        AutomationRunMutability::Mutating => AgentGitRuntimePolicy {
-            policy: settings.agent_git_command_policy.clone(),
-            workspace_mode: settings.workspace_mode,
-        },
-        AutomationRunMutability::ReadOnly => AgentGitRuntimePolicy {
-            policy: read_only_git_command_policy(),
-            workspace_mode: WorkspaceMode::CurrentBranch,
-        },
-    }
-}
-
-fn read_only_git_command_policy() -> patchbay_types::AgentGitCommandPolicy {
-    patchbay_types::AgentGitCommandPolicy {
-        add: false,
-        commit: false,
-        push: false,
-        reset: false,
-        hard_reset: AgentGitHardResetPolicy::Never,
-    }
-}
-
-fn resolve_real_git_path() -> Result<PathBuf> {
-    let path = std::env::var_os("PATH").ok_or_else(|| report!("PATH is not set"))?;
-    for directory in std::env::split_paths(&path) {
-        let candidate = directory.join("git");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    bail!("git was not found on PATH")
-}
-
-#[cfg(unix)]
-fn mark_executable(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::metadata(path)
-        .context_with(|| format!("failed to stat {}", path.display()))?
-        .permissions();
-    permissions.set_mode(0o755);
-    Ok(fs::set_permissions(path, permissions)
-        .context_with(|| format!("failed to mark {} executable", path.display()))?)
-}
-
-#[cfg(not(unix))]
-fn mark_executable(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-fn shell_quote(value: &str) -> String {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':'))
-    {
-        return value.to_owned();
-    }
-
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn agent_environment(
-    patchbay_binary: &Path,
-    git_runtime: &GitRuntimeFiles,
-    real_git_path: &Path,
-    project_name: &str,
-    agent_id: &str,
-    claimed_item_id: Option<i64>,
-    api_url: Option<&str>,
-) -> HashMap<String, String> {
-    let mut env = HashMap::new();
-    let path = std::env::var("PATH").unwrap_or_default();
-    if let Some(bin_dir) = patchbay_binary.parent() {
-        env.insert(
-            "PATH".to_owned(),
-            format!(
-                "{}:{}:{path}",
-                git_runtime.shim_dir.to_string_lossy(),
-                bin_dir.to_string_lossy()
-            ),
-        );
-    } else {
-        env.insert(
-            "PATH".to_owned(),
-            format!("{}:{path}", git_runtime.shim_dir.to_string_lossy()),
-        );
-    }
-    env.insert(
-        "PATCHBAY_GIT_POLICY_PATH".to_owned(),
-        git_runtime.policy_path.to_string_lossy().into_owned(),
-    );
-    env.insert(
-        "PATCHBAY_REAL_GIT".to_owned(),
-        real_git_path.to_string_lossy().into_owned(),
-    );
-    env.insert("PATCHBAY_PROJECT".to_owned(), project_name.to_owned());
-    env.insert("PATCHBAY_AGENT_ID".to_owned(), agent_id.to_owned());
-    if let Some(item_id) = claimed_item_id {
-        env.insert("PATCHBAY_CLAIMED_ITEM_ID".to_owned(), item_id.to_string());
-    }
-    if let Some(api_url) = api_url {
-        env.insert("PATCHBAY_API_URL".to_owned(), api_url.to_owned());
-    }
-    env
-}
-
-fn agent_sandbox_mode(mode: AgentSandboxMode) -> SandboxMode {
-    match mode {
-        AgentSandboxMode::WorkspaceWrite => SandboxMode::WorkspaceWrite,
-        AgentSandboxMode::DangerFullAccess => SandboxMode::DangerFullAccess,
-    }
-}
-
-fn agent_sandbox_mode_for_run(
-    mutability: AutomationRunMutability,
-    mode: AgentSandboxMode,
-) -> SandboxMode {
-    match mutability {
-        AutomationRunMutability::Mutating => agent_sandbox_mode(mode),
-        AutomationRunMutability::ReadOnly => SandboxMode::ReadOnly,
-    }
-}
-
-fn agent_sandbox_policy(
-    mode: AgentSandboxMode,
-    agent_extra_writable_roots: &[String],
-) -> serde_json::Value {
-    match mode {
-        AgentSandboxMode::WorkspaceWrite => serde_json::json!({
-            "type": "workspaceWrite",
-            "networkAccess": true,
-            "writableRoots": agent_extra_writable_roots,
-        }),
-        AgentSandboxMode::DangerFullAccess => serde_json::json!({
-            "type": "dangerFullAccess",
-        }),
-    }
-}
-
-fn agent_sandbox_policy_for_run(
-    mutability: AutomationRunMutability,
-    mode: AgentSandboxMode,
-    agent_extra_writable_roots: &[String],
-) -> serde_json::Value {
-    match mutability {
-        AutomationRunMutability::Mutating => agent_sandbox_policy(mode, agent_extra_writable_roots),
-        AutomationRunMutability::ReadOnly => serde_json::json!({
-            "type": "readOnly",
-            "networkAccess": true,
-        }),
-    }
-}
-
-fn codex_memory_config_overrides() -> serde_json::Map<String, serde_json::Value> {
-    serde_json::Map::from_iter([
-        (
-            "features.memories".to_owned(),
-            serde_json::Value::Bool(false),
-        ),
-        (
-            "memories.use_memories".to_owned(),
-            serde_json::Value::Bool(false),
-        ),
-        (
-            "memories.generate_memories".to_owned(),
-            serde_json::Value::Bool(false),
-        ),
-    ])
 }
 
 async fn run_agent_process(
@@ -1977,12 +1597,9 @@ async fn run_codex_app_server_turn(
     )
     .await;
 
-    let env = agent_environment(
+    let env = automation_runtime::agent_environment(
         &start.patchbay_binary,
-        &GitRuntimeFiles {
-            shim_dir: start.git_shim_dir.clone(),
-            policy_path: start.git_policy_path.clone(),
-        },
+        &start.git_runtime,
         &start.real_git_path,
         &start.project_name,
         &start.agent_id,
@@ -1991,24 +1608,25 @@ async fn run_codex_app_server_turn(
     );
     let mut thread_options = ThreadOptions::builder()
         .working_directory(working_dir)
-        .sandbox_mode(agent_sandbox_mode_for_run(
+        .sandbox_mode(automation_runtime::agent_sandbox_mode_for_run(
             start.mutability,
             start.agent_sandbox_mode,
         ))
         .approval_policy(ApprovalMode::Never)
         .network_access_enabled(true)
-        .sandbox_policy(agent_sandbox_policy_for_run(
+        .sandbox_policy(automation_runtime::agent_sandbox_policy_for_run(
             start.mutability,
             start.agent_sandbox_mode,
             &start.agent_extra_writable_roots,
         ))
-        .config(codex_memory_config_overrides());
+        .config(automation_runtime::codex_memory_config_overrides());
     if let Some(agent_model) = start.agent_model.as_deref() {
         thread_options = thread_options.model(agent_model);
     }
     if let Some(agent_reasoning_effort) = start.agent_reasoning_effort {
-        thread_options =
-            thread_options.model_reasoning_effort(to_codex_reasoning(agent_reasoning_effort));
+        thread_options = thread_options.model_reasoning_effort(
+            automation_runtime::to_codex_reasoning(agent_reasoning_effort),
+        );
     }
     let thread_options = thread_options.build();
     let (mut thread, mut streamed) =
@@ -2407,7 +2025,7 @@ async fn cleanup_worktree_for_run(
         .branch_name
         .clone()
         .ok_or_else(|| report!("run {} has a worktree but no branch name", run.id))?;
-    prune_git_worktree(repo_path, &branch_name, Path::new(&worktree_path))?;
+    automation_workspace::prune_git_worktree(repo_path, &branch_name, Path::new(&worktree_path))?;
     update_run_cleanup(store, run, "cleaned", Some(utc_now())).await
 }
 
@@ -2427,101 +2045,6 @@ async fn update_run_cleanup(
         .context("failed to update worktree cleanup status")?;
     publish_run_model_event(store, &updated).await;
     Ok(updated)
-}
-
-fn prune_git_worktree(repo_path: &Path, branch_name: &str, worktree_path: &Path) -> Result<()> {
-    let repo = Repository::open(repo_path)
-        .context_with(|| format!("failed to open git repository '{}'", repo_path.display()))?;
-    match repo.find_worktree(&worktree_name(branch_name)) {
-        Ok(worktree) => {
-            let mut prune_options = WorktreePruneOptions::new();
-            prune_options.valid(true).working_tree(true);
-            worktree.prune(Some(&mut prune_options)).context_with(|| {
-                format!("failed to prune git worktree '{}'", worktree_path.display())
-            })?;
-        }
-        Err(err) => {
-            if !worktree_path.exists() {
-                return Ok(());
-            }
-            fs::remove_dir_all(worktree_path).context_with(|| {
-                format!(
-                    "failed to remove stale worktree directory '{}' after git lookup failed: {err}",
-                    worktree_path.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_git_worktree_clean(path: &Path) -> Result<()> {
-    if !git_worktree_is_clean(path)? {
-        bail!(
-            "current workspace '{}' has uncommitted changes",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn git_worktree_is_clean(path: &Path) -> Result<bool> {
-    let repo = Repository::open(path)
-        .context_with(|| format!("failed to open git repository '{}'", path.display()))?;
-    let mut status_options = StatusOptions::new();
-    status_options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true);
-    let statuses = repo
-        .statuses(Some(&mut status_options))
-        .context_with(|| format!("failed to read git status for '{}'", path.display()))?;
-    Ok(statuses.is_empty())
-}
-
-fn create_and_checkout_git_branch(repo_path: &Path, branch_name: &str) -> Result<()> {
-    let repo = Repository::open(repo_path)
-        .context_with(|| format!("failed to open git repository '{}'", repo_path.display()))?;
-    ensure_git_worktree_clean(repo_path)?;
-    let head = repo.head().context("failed to read repository HEAD")?;
-    let target = head
-        .peel_to_commit()
-        .context("repository HEAD does not point to a commit")?;
-    repo.branch(branch_name, &target, false)
-        .context_with(|| format!("failed to create branch '{branch_name}'"))?;
-    repo.set_head(&format!("refs/heads/{branch_name}"))
-        .context_with(|| format!("failed to set HEAD to '{branch_name}'"))?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.safe();
-    repo.checkout_head(Some(&mut checkout))
-        .context_with(|| format!("failed to check out branch '{branch_name}'"))?;
-    Ok(())
-}
-
-fn create_git_worktree(repo_path: &Path, branch_name: &str, worktree_path: &Path) -> Result<()> {
-    let repo = Repository::open(repo_path)
-        .context_with(|| format!("failed to open git repository '{}'", repo_path.display()))?;
-    let head = repo.head().context("failed to read repository HEAD")?;
-    let target = head
-        .peel_to_commit()
-        .context("repository HEAD does not point to a commit")?;
-    repo.branch(branch_name, &target, false)
-        .context_with(|| format!("failed to create branch '{branch_name}'"))?;
-    let branch_reference = repo
-        .find_reference(&format!("refs/heads/{branch_name}"))
-        .context_with(|| format!("failed to read branch reference '{branch_name}'"))?;
-    let mut options = WorktreeAddOptions::new();
-    options.reference(Some(&branch_reference));
-    repo.worktree(
-        worktree_name(branch_name).as_str(),
-        worktree_path,
-        Some(&options),
-    )
-    .context_with(|| format!("failed to create worktree '{}'", worktree_path.display()))?;
-    Ok(())
-}
-
-fn worktree_name(branch_name: &str) -> String {
-    branch_name.replace('/', "-")
 }
 
 fn automation_log_dir() -> PathBuf {
@@ -2568,26 +2091,6 @@ fn summarize_text(value: &str) -> String {
         summary.push_str("...");
     }
     summary
-}
-
-fn slugify(value: &str) -> String {
-    let slug = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_owned();
-    if slug.is_empty() {
-        "project".to_owned()
-    } else {
-        slug
-    }
 }
 
 fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
@@ -2694,68 +2197,6 @@ mod tests {
         .await
         .unwrap();
         (temp, store)
-    }
-
-    #[test]
-    fn dev_patchbay_cli_search_walks_up_to_repo_root() {
-        let temp = TempDir::new().unwrap();
-        let shim = temp.path().join("dev-bin/patchbay");
-        fs::create_dir_all(shim.parent().unwrap()).unwrap();
-        fs::write(&shim, "#!/usr/bin/env sh\n").unwrap();
-        let server_workdir = temp.path().join("patchbay-server/target/debug");
-        fs::create_dir_all(&server_workdir).unwrap();
-
-        let search = find_dev_patchbay_cli_from_roots([server_workdir]);
-
-        assert_eq!(search.path.as_deref(), Some(shim.as_path()));
-    }
-
-    #[test]
-    fn current_branch_accepts_non_git_directory() {
-        let temp = TempDir::new().unwrap();
-
-        let plan = prepare_workspace(1, "demo", temp.path(), WorkspaceMode::CurrentBranch).unwrap();
-
-        assert_eq!(plan.working_dir, temp.path());
-        assert!(plan.worktree_path.is_none());
-        assert!(plan.branch_name.is_none());
-    }
-
-    #[test]
-    fn current_branch_accepts_dirty_unborn_git_repository() {
-        let temp = TempDir::new().unwrap();
-        Repository::init(temp.path()).unwrap();
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"demo\"\n",
-        )
-        .unwrap();
-        fs::create_dir(temp.path().join("src")).unwrap();
-        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-
-        let plan = prepare_workspace(1, "demo", temp.path(), WorkspaceMode::CurrentBranch).unwrap();
-
-        assert_eq!(plan.working_dir, temp.path());
-        assert!(plan.worktree_path.is_none());
-        assert!(plan.branch_name.is_none());
-    }
-
-    #[test]
-    fn read_only_workspace_uses_project_checkout_without_branch_or_worktree() {
-        let temp = TempDir::new().unwrap();
-
-        let plan = prepare_workspace_for_run(
-            1,
-            "demo",
-            temp.path(),
-            WorkspaceMode::GitWorktree,
-            AutomationRunMutability::ReadOnly,
-        )
-        .unwrap();
-
-        assert_eq!(plan.working_dir, temp.path());
-        assert!(plan.worktree_path.is_none());
-        assert!(plan.branch_name.is_none());
     }
 
     #[tokio::test]
@@ -2988,72 +2429,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_environment_exposes_api_but_not_database() {
-        let git_runtime = GitRuntimeFiles {
-            shim_dir: PathBuf::from("/tmp/patchbay-run-bin"),
-            policy_path: PathBuf::from("/tmp/patchbay-git-policy.json"),
-        };
-        let env = agent_environment(
-            Path::new("/tmp/patchbay"),
-            &git_runtime,
-            Path::new("/usr/bin/git"),
-            "demo",
-            "patchbay-run-1",
-            Some(42),
-            Some("http://127.0.0.1:4000"),
-        );
-
-        assert_eq!(
-            env.get("PATCHBAY_PROJECT").map(String::as_str),
-            Some("demo")
-        );
-        assert_eq!(
-            env.get("PATCHBAY_AGENT_ID").map(String::as_str),
-            Some("patchbay-run-1")
-        );
-        assert_eq!(
-            env.get("PATCHBAY_CLAIMED_ITEM_ID").map(String::as_str),
-            Some("42")
-        );
-        assert_eq!(
-            env.get("PATCHBAY_API_URL").map(String::as_str),
-            Some("http://127.0.0.1:4000")
-        );
-        assert_eq!(
-            env.get("PATCHBAY_GIT_POLICY_PATH").map(String::as_str),
-            Some("/tmp/patchbay-git-policy.json")
-        );
-        assert_eq!(
-            env.get("PATCHBAY_REAL_GIT").map(String::as_str),
-            Some("/usr/bin/git")
-        );
-        assert!(
-            env.get("PATH")
-                .is_some_and(|path| path.starts_with("/tmp/patchbay-run-bin:"))
-        );
-        assert!(!env.contains_key("PATCHBAY_DATABASE"));
-        assert!(!env.contains_key("PATCHBAY_URL"));
-    }
-
-    #[test]
-    fn codex_thread_config_disables_internal_memory() {
-        let config = codex_memory_config_overrides();
-
-        assert_eq!(
-            config.get("features.memories"),
-            Some(&serde_json::Value::Bool(false))
-        );
-        assert_eq!(
-            config.get("memories.use_memories"),
-            Some(&serde_json::Value::Bool(false))
-        );
-        assert_eq!(
-            config.get("memories.generate_memories"),
-            Some(&serde_json::Value::Bool(false))
-        );
-    }
-
-    #[test]
     fn codex_stream_recovery_classifies_transport_interruptions() {
         assert_eq!(
             recoverable_codex_stream_error_reason(&ClientError::TransportClosed),
@@ -3155,96 +2530,6 @@ mod tests {
 
         assert!(!is_automation_cancelled(&err));
         assert!(err.to_string().contains("permanent Codex SDK failure"));
-    }
-
-    #[test]
-    fn codex_thread_sandbox_uses_project_writable_roots() {
-        let roots = vec![
-            "/tmp/patchbay-browser".to_owned(),
-            "/Users/test/.patchbay/codex".to_owned(),
-        ];
-        let policy = agent_sandbox_policy(AgentSandboxMode::WorkspaceWrite, &roots);
-
-        assert_eq!(
-            policy,
-            serde_json::json!({
-                "type": "workspaceWrite",
-                "networkAccess": true,
-                "writableRoots": roots,
-            })
-        );
-    }
-
-    #[test]
-    fn codex_thread_sandbox_can_disable_sandbox_for_project() {
-        let roots = vec!["/tmp/ignored-when-full-access".to_owned()];
-
-        assert_eq!(
-            agent_sandbox_mode(AgentSandboxMode::DangerFullAccess),
-            SandboxMode::DangerFullAccess
-        );
-        assert_eq!(
-            agent_sandbox_policy(AgentSandboxMode::DangerFullAccess, &roots),
-            serde_json::json!({
-                "type": "dangerFullAccess",
-            })
-        );
-    }
-
-    #[test]
-    fn read_only_codex_thread_sandbox_ignores_project_writable_roots() {
-        let roots = vec!["/tmp/ignored-for-read-only".to_owned()];
-
-        assert_eq!(
-            agent_sandbox_mode_for_run(
-                AutomationRunMutability::ReadOnly,
-                AgentSandboxMode::DangerFullAccess
-            ),
-            SandboxMode::ReadOnly
-        );
-        assert_eq!(
-            agent_sandbox_policy_for_run(
-                AutomationRunMutability::ReadOnly,
-                AgentSandboxMode::WorkspaceWrite,
-                &roots
-            ),
-            serde_json::json!({
-                "type": "readOnly",
-                "networkAccess": true,
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn read_only_git_runtime_policy_disables_mutable_commands() {
-        let (_temp, store) = test_store().await;
-        let settings = update_settings(
-            &store,
-            "demo",
-            UpdateProjectSettings {
-                workspace_mode: Some(WorkspaceMode::GitWorktree),
-                max_code_edit_agents: Some(2),
-                agent_git_command_policy: Some(patchbay_types::AgentGitCommandPolicy {
-                    add: true,
-                    commit: true,
-                    push: true,
-                    reset: true,
-                    hard_reset: AgentGitHardResetPolicy::IsolatedWorkspaces,
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        let policy = git_runtime_policy_for_run(&settings, AutomationRunMutability::ReadOnly);
-
-        assert_eq!(policy.workspace_mode, WorkspaceMode::CurrentBranch);
-        assert!(!policy.policy.add);
-        assert!(!policy.policy.commit);
-        assert!(!policy.policy.push);
-        assert!(!policy.policy.reset);
-        assert_eq!(policy.policy.hard_reset, AgentGitHardResetPolicy::Never);
     }
 
     #[tokio::test]
