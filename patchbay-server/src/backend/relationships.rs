@@ -15,7 +15,7 @@ use crate::{
             RelationshipEvent, UpdateRelationshipMutation,
         },
         storage::Store,
-        work_item_events, work_item_relationships, work_item_views, work_items,
+        work_item_events, work_item_labels, work_item_relationships, work_items, workflow_labels,
     },
     shared::view_models::{
         DeleteWorkItemRelationshipResponse, WorkItemRelationshipDirection,
@@ -317,39 +317,8 @@ async fn relationships_to_views(
         return Ok(Vec::new());
     }
 
-    let mut item_ids = relationships
-        .iter()
-        .flat_map(|relationship| {
-            [
-                relationship.source_work_item_id,
-                relationship.target_work_item_id,
-            ]
-        })
-        .collect::<Vec<_>>();
-    item_ids.sort_unstable();
-    item_ids.dedup();
-
-    let items = WorkItem::find()
-        .filter(work_item::Column::ProjectId.eq(project_id))
-        .filter(work_item::Column::Id.is_in(item_ids))
-        .all(store.db().as_ref())
-        .await
-        .context("failed to load relationship item summaries")?;
-    let summaries = work_item_views::models_to_views(store, project_id, items)
-        .await?
-        .into_iter()
-        .map(|item| {
-            (
-                item.id,
-                WorkItemRelationshipItemSummary {
-                    id: item.id,
-                    title: item.title,
-                    state: item.state,
-                    version: item.version,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let summaries =
+        relationship_item_summaries(store.db().as_ref(), project_id, relationships).await?;
 
     relationships
         .iter()
@@ -389,6 +358,55 @@ async fn relationships_to_views(
         .collect()
 }
 
+async fn relationship_item_summaries<C>(
+    conn: &C,
+    project_id: i64,
+    relationships: &[WorkItemRelationshipModel],
+) -> Result<BTreeMap<i64, WorkItemRelationshipItemSummary>>
+where
+    C: ConnectionTrait,
+{
+    let item_ids = relationship_item_ids(relationships);
+    let items = WorkItem::find()
+        .filter(work_item::Column::ProjectId.eq(project_id))
+        .filter(work_item::Column::Id.is_in(item_ids.clone()))
+        .all(conn)
+        .await
+        .context("failed to load relationship item summaries")?;
+    let mut labels_by_item = work_item_labels::for_items(conn, project_id, &item_ids).await?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| {
+            let labels = labels_by_item.remove(&item.id).unwrap_or_default();
+            (
+                item.id,
+                WorkItemRelationshipItemSummary {
+                    id: item.id,
+                    title: item.title,
+                    state: workflow_labels::current_state(&labels),
+                    version: item.version,
+                },
+            )
+        })
+        .collect())
+}
+
+fn relationship_item_ids(relationships: &[WorkItemRelationshipModel]) -> Vec<i64> {
+    let mut item_ids = relationships
+        .iter()
+        .flat_map(|relationship| {
+            [
+                relationship.source_work_item_id,
+                relationship.target_work_item_id,
+            ]
+        })
+        .collect::<Vec<_>>();
+    item_ids.sort_unstable();
+    item_ids.dedup();
+    item_ids
+}
+
 async fn record_relationship_event<C>(
     conn: &C,
     project_id: i64,
@@ -410,7 +428,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{
-        items::{CreateWorkItem, create_item, delete_item, get_item, list_events},
+        items::{CreateWorkItem, create_item, delete_item, get_item, list_events, move_item},
         projects::{CreateProject, create_project},
     };
 
@@ -467,6 +485,9 @@ mod tests {
     #[tokio::test]
     async fn relationships_list_incoming_and_outgoing_entries() {
         let (_temp, store, source_id, target_id) = test_store().await;
+        move_item(&store, "demo", target_id, "review".to_owned(), None)
+            .await
+            .unwrap();
 
         let created = create_relationship(
             &store,
@@ -481,7 +502,9 @@ mod tests {
         assert_eq!(created.direction, WorkItemRelationshipDirection::Outgoing);
         assert_eq!(created.relationship.kind, "is follow-up of");
         assert_eq!(created.relationship.source.id, source_id);
+        assert_eq!(created.relationship.source.state.as_deref(), Some("open"));
         assert_eq!(created.relationship.target.id, target_id);
+        assert_eq!(created.relationship.target.state.as_deref(), Some("review"));
 
         let source_relationships = list_item_relationships(&store, "demo", source_id)
             .await
@@ -490,6 +513,10 @@ mod tests {
         assert_eq!(
             source_relationships[0].direction,
             WorkItemRelationshipDirection::Outgoing
+        );
+        assert_eq!(
+            source_relationships[0].relationship.target.state.as_deref(),
+            Some("review")
         );
 
         let target_relationships = list_item_relationships(&store, "demo", target_id)
