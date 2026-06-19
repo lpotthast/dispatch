@@ -1,5 +1,6 @@
 pub mod app;
 mod crudkit;
+mod item_detail;
 mod live_events;
 mod rich_text;
 mod routes;
