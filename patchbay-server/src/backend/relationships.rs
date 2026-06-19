@@ -11,7 +11,7 @@ use crate::{
         },
         events, projects,
         storage::Store,
-        work_item_events, work_item_relationships, work_items,
+        work_item_events, work_item_relationships, work_item_views, work_items,
     },
     shared::view_models::{
         DeleteWorkItemRelationshipResponse, WorkItemRelationshipDirection,
@@ -426,7 +426,7 @@ async fn relationships_to_views(
         .all(store.db().as_ref())
         .await
         .context("failed to load relationship item summaries")?;
-    let summaries = work_items::models_to_views(store, project_id, items)
+    let summaries = work_item_views::models_to_views(store, project_id, items)
         .await?
         .into_iter()
         .map(|item| {

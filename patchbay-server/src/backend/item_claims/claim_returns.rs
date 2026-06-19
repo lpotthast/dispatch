@@ -5,7 +5,7 @@ use crate::{
     backend::{
         agent_ids, events, projects,
         storage::{Store, utc_now},
-        work_item_comments, work_item_events, work_item_labels, work_items, workflow_labels,
+        work_item_comments, work_item_events, work_item_labels, work_item_views, workflow_labels,
     },
     shared::view_models::WorkItemView,
 };
@@ -183,5 +183,5 @@ async fn return_claim_to_source_state(
     txn.commit().await.context(mode.commit_context())?;
     events::publish_work_item_changed(project_name, item_id);
 
-    work_items::model_to_view(store, updated).await
+    work_item_views::model_to_view(store, updated).await
 }

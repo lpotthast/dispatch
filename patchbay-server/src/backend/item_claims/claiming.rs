@@ -13,7 +13,8 @@ use crate::{
         entities::work_item::{self, WorkItem, WorkItemModel},
         events, label_conditions, projects,
         storage::{Store, utc_now},
-        work_item_comments, work_item_events, work_item_labels, work_items, workflow_labels,
+        work_item_comments, work_item_events, work_item_labels, work_item_views, work_items,
+        workflow_labels,
     },
     shared::view_models::{WorkItemLabelView, WorkItemView},
 };
@@ -214,7 +215,7 @@ async fn commit_claim_transaction(
     };
 
     events::publish_work_item_changed(project_name, item.id);
-    Ok(Some(work_items::model_to_view(store, item).await?))
+    Ok(Some(work_item_views::model_to_view(store, item).await?))
 }
 
 async fn record_claim_in_tx<C>(

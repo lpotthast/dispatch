@@ -16,7 +16,7 @@ use crate::{
         work_item_creation::{self, CreateWorkItemPlan},
         work_item_events, work_item_labels, work_item_relationships,
         work_item_updates::{self, WorkItemUpdatePlan},
-        work_items, workflow_labels,
+        work_item_views, work_items, workflow_labels,
     },
     shared::view_models::{STATE_LABEL_KEY, WorkItemEventView, WorkItemView},
 };
@@ -56,7 +56,7 @@ pub async fn list_items(
         .all(store.db().as_ref())
         .await
         .context("failed to list work items")?;
-    work_items::models_to_views(store, project_id, items).await
+    work_item_views::models_to_views(store, project_id, items).await
 }
 
 pub async fn count_items_outside_work_item_states(
@@ -110,7 +110,7 @@ pub async fn item_matches_condition(
 pub async fn get_item(store: &Store, project_name: &str, item_id: i64) -> Result<WorkItemView> {
     let project_id = projects::project_id(store, project_name).await?;
     let item = work_items::get(store.db().as_ref(), project_id, item_id).await?;
-    work_items::model_to_view(store, item).await
+    work_item_views::model_to_view(store, item).await
 }
 
 pub async fn create_item(
@@ -162,7 +162,7 @@ pub async fn create_item(
     txn.commit().await.context("failed to commit item create")?;
     events::publish_work_item_changed(project_name, item.id);
 
-    work_items::model_to_view(store, item).await
+    work_item_views::model_to_view(store, item).await
 }
 
 pub async fn update_item(
@@ -219,7 +219,7 @@ pub async fn update_item(
     txn.commit().await.context("failed to commit item update")?;
     events::publish_work_item_changed(project_name, item_id);
 
-    work_items::model_to_view(store, updated).await
+    work_item_views::model_to_view(store, updated).await
 }
 
 pub async fn move_item(

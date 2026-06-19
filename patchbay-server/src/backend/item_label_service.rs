@@ -4,7 +4,7 @@ use sea_orm::TransactionTrait;
 use crate::{
     backend::{
         events, item_label_mutations, item_labels, projects, storage::Store, work_item_events,
-        work_item_labels, work_items,
+        work_item_labels, work_item_views, work_items,
     },
     shared::view_models::{
         DeleteWorkItemLabelResponse, ProjectLabelView, WorkItemLabelView, WorkItemView,
@@ -67,7 +67,7 @@ pub async fn add_label(
         .await?;
     txn.commit().await.context("failed to commit label add")?;
     events::publish_work_item_changed(project_name, item_id);
-    work_items::model_to_view(store, updated).await
+    work_item_views::model_to_view(store, updated).await
 }
 
 pub async fn update_label(
@@ -108,7 +108,7 @@ pub async fn update_label(
         .await
         .context("failed to commit label update")?;
     events::publish_work_item_changed(project_name, item_id);
-    work_items::model_to_view(store, updated).await
+    work_item_views::model_to_view(store, updated).await
 }
 
 pub async fn delete_label(
@@ -140,7 +140,7 @@ pub async fn delete_label(
         .await
         .context("failed to commit label delete")?;
     events::publish_work_item_changed(project_name, item_id);
-    let work_item = work_items::model_to_view(store, updated).await?;
+    let work_item = work_item_views::model_to_view(store, updated).await?;
     Ok(DeleteWorkItemLabelResponse {
         deleted: true,
         label_id,
