@@ -17,7 +17,7 @@ use crate::{
             automation_trigger::{
                 self, AutomationTrigger, AutomationTriggerActiveModel, AutomationTriggerModel,
             },
-            project, work_item_event,
+            work_item_event,
         },
         events, item_claims, item_labels,
         items::{self, CreateWorkItem},
@@ -297,8 +297,8 @@ async fn run_due_triggers_with_sessions_for_projects(
     active_project_names: Option<&[String]>,
     project_cancellations: Option<&HashMap<String, watch::Receiver<bool>>>,
 ) -> Result<Vec<TriggerRunOutcome>> {
-    let mut outcomes =
-        run_queued_evaluations(store, sessions.clone(), project_cancellations).await?;
+    let scope = AutomationProjectScope::new(active_project_names, project_cancellations);
+    let mut outcomes = run_queued_evaluations(store, sessions.clone(), scope).await?;
     let triggers = AutomationTrigger::find()
         .filter(automation_trigger::Column::Enabled.eq(true))
         .order_by_asc(automation_trigger::Column::Id)
@@ -314,10 +314,8 @@ async fn run_due_triggers_with_sessions_for_projects(
         ) {
             continue;
         }
-        let project_name = project_name_for_id(store, view.project_id).await?;
-        if let Some(active_project_names) = active_project_names
-            && !active_project_names.contains(&project_name)
-        {
+        let project_name = projects::project_name_by_id(store, view.project_id).await?;
+        if !scope.includes_project(&project_name) {
             continue;
         }
         match view.activation {
@@ -331,9 +329,7 @@ async fn run_due_triggers_with_sessions_for_projects(
                         trigger,
                         None,
                         sessions.clone(),
-                        project_cancellations
-                            .and_then(|cancellations| cancellations.get(&project_name))
-                            .cloned(),
+                        scope.cancellation_for(&project_name),
                     )
                     .await
                 {
@@ -352,9 +348,7 @@ async fn run_due_triggers_with_sessions_for_projects(
                         trigger.clone(),
                         event.work_item_id,
                         sessions.clone(),
-                        project_cancellations
-                            .and_then(|cancellations| cancellations.get(&project_name))
-                            .cloned(),
+                        scope.cancellation_for(&project_name),
                     )
                     .await
                     {
@@ -367,15 +361,13 @@ async fn run_due_triggers_with_sessions_for_projects(
             }
         }
     }
-    if let Some(active_project_names) = active_project_names {
+    if let Some(active_project_names) = scope.active_project_names() {
         for project_name in active_project_names {
             if let Some(outcome) = run_next_work_item_automation_for_project(
                 store,
                 project_name,
                 sessions.clone(),
-                project_cancellations
-                    .and_then(|cancellations| cancellations.get(project_name))
-                    .cloned(),
+                scope.cancellation_for(project_name),
             )
             .await?
             {
@@ -384,6 +376,43 @@ async fn run_due_triggers_with_sessions_for_projects(
         }
     }
     Ok(outcomes)
+}
+
+#[derive(Clone, Copy)]
+struct AutomationProjectScope<'a> {
+    active_project_names: Option<&'a [String]>,
+    project_cancellations: Option<&'a HashMap<String, watch::Receiver<bool>>>,
+}
+
+impl<'a> AutomationProjectScope<'a> {
+    fn new(
+        active_project_names: Option<&'a [String]>,
+        project_cancellations: Option<&'a HashMap<String, watch::Receiver<bool>>>,
+    ) -> Self {
+        Self {
+            active_project_names,
+            project_cancellations,
+        }
+    }
+
+    fn includes_project(&self, project_name: &str) -> bool {
+        match self.active_project_names {
+            Some(active_project_names) => active_project_names
+                .iter()
+                .any(|active_project_name| active_project_name == project_name),
+            None => true,
+        }
+    }
+
+    fn active_project_names(&self) -> Option<&'a [String]> {
+        self.active_project_names
+    }
+
+    fn cancellation_for(&self, project_name: &str) -> Option<watch::Receiver<bool>> {
+        self.project_cancellations
+            .and_then(|cancellations| cancellations.get(project_name))
+            .cloned()
+    }
 }
 
 pub async fn schedule_trigger_evaluation(
@@ -415,7 +444,7 @@ pub async fn schedule_trigger_evaluation(
 async fn run_queued_evaluations(
     store: &Store,
     sessions: Option<ProcessSessionRegistry>,
-    project_cancellations: Option<&HashMap<String, watch::Receiver<bool>>>,
+    scope: AutomationProjectScope<'_>,
 ) -> Result<Vec<TriggerRunOutcome>> {
     let triggers = AutomationTrigger::find()
         .filter(automation_trigger::Column::PendingEvaluationCount.gt(0))
@@ -428,7 +457,10 @@ async fn run_queued_evaluations(
 
     let mut outcomes = Vec::new();
     for trigger in triggers {
-        let project_name = project_name_for_id(store, trigger.project_id).await?;
+        let project_name = projects::project_name_by_id(store, trigger.project_id).await?;
+        if !scope.includes_project(&project_name) {
+            continue;
+        }
         let view = model_to_view(trigger.clone())?;
         if view.effect == AutomationEffect::ConsumeWork
             && !automation::can_start_automation_run(store, &project_name, view.mutability).await?
@@ -442,9 +474,7 @@ async fn run_queued_evaluations(
             trigger,
             None,
             sessions.clone(),
-            project_cancellations
-                .and_then(|cancellations| cancellations.get(&project_name))
-                .cloned(),
+            scope.cancellation_for(&project_name),
         )
         .await
         {
@@ -910,15 +940,6 @@ pub(crate) async fn latest_item_created_event_id(
         .await
         .context("failed to load latest item-created event")?;
     Ok(event.map(|event| event.id))
-}
-
-async fn project_name_for_id(store: &Store, project_id: i64) -> Result<String> {
-    let project = project::Entity::find_by_id(project_id)
-        .one(store.db().as_ref())
-        .await
-        .context("failed to load trigger project")?
-        .ok_or_else(|| report!("project {project_id} does not exist"))?;
-    Ok(project.name)
 }
 
 fn normalize_schedule(schedule: String) -> Result<String> {
@@ -1637,5 +1658,61 @@ mod tests {
             .unwrap();
         assert_eq!(trigger.pending_evaluation_count, 0);
         assert_eq!(trigger.evaluation_count, 1);
+    }
+
+    #[tokio::test]
+    async fn queued_evaluations_wait_until_project_is_active() {
+        let (temp, store) = test_store().await;
+        create_project(
+            &store,
+            CreateProject {
+                name: "other".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+        let trigger = create_trigger(
+            &store,
+            "other",
+            CreateAutomationTrigger {
+                name: "other-project-review".to_owned(),
+                enabled: true,
+                activation: AutomationActivation::Manual,
+                effect: AutomationEffect::ProduceWork,
+                schedule: "@every 15s".to_owned(),
+                tool_name: None,
+                mutability: AutomationRunMutability::Mutating,
+                prompt: "Review work in the other project.".to_owned(),
+                work_item_selector: None,
+                priority: 100,
+            },
+        )
+        .await
+        .unwrap();
+        schedule_trigger_evaluation(&store, "other", trigger.id)
+            .await
+            .unwrap();
+
+        let active_projects = vec!["demo".to_owned()];
+        let outcomes =
+            run_due_triggers_with_sessions_for_projects(&store, None, Some(&active_projects), None)
+                .await
+                .unwrap();
+        let trigger = list_triggers(&store, "other")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == trigger.id)
+            .unwrap();
+
+        assert!(outcomes.is_empty());
+        assert_eq!(trigger.pending_evaluation_count, 1);
+        assert_eq!(trigger.evaluation_count, 0);
     }
 }

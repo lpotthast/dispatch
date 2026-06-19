@@ -98,6 +98,8 @@ For the claimed item, omit project, agent, and item id arguments unless intentio
 
 Automation rules either produce work items or consume work items. Work-consuming automation has an explicit run mutability, either `mutating` or `read_only`. The rule prompt tells the launched agent how to handle the claimed item, including whether the expected outcome is implementation, refinement, verification, review preparation, or another project-specific workflow.
 
+Queued automation evaluations are consumed only while automation is running for that project. If an operator queues an evaluation for a stopped project, the pending evaluation count remains on the trigger until the project automation loop is active again; another project's running automation must not consume it.
+
 When a launched agent exits successfully while its item is still claimed, Patchbay releases the temporary claim back to the claimed-from state without adding `patchbay:automation-blocked`. This lets prompt-directed metadata, refinement, or verification consumers leave the underlying implementation work available for later automation. Failed runs still release with automation blocked so a broken prompt, missing context, or sandbox failure does not loop indefinitely. An agent can call `patchbay item request-feedback --body ...` when it needs a user answer before work can continue; it can call `patchbay item release --comment ...` for technical blockers or handoffs that need human triage but are not a concrete feedback request.
 
 Patchbay ships editable default consumers for label-routed story preparation:
