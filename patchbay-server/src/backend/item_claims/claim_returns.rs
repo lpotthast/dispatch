@@ -5,7 +5,8 @@ use crate::{
     backend::{
         agent_ids, events, projects,
         storage::{Store, utc_now},
-        work_item_comments, work_item_events, work_item_labels, work_item_views, workflow_labels,
+        work_item_comments, work_item_events, work_item_labels, work_item_views, work_items,
+        workflow_labels,
     },
     shared::view_models::WorkItemView,
 };
@@ -16,6 +17,22 @@ use super::active_claims;
 pub(crate) enum ReleaseAutomationDisposition {
     Claimable,
     Blocked,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AutomationClaimOutcome {
+    CompletedUnfinished,
+    Failed,
+    Cancelled,
+}
+
+pub(crate) struct AutomationClaimFinalization<'a> {
+    pub(crate) project_name: &'a str,
+    pub(crate) run_id: i64,
+    pub(crate) claimed_item_id: Option<i64>,
+    pub(crate) agent_id: &'a str,
+    pub(crate) outcome: AutomationClaimOutcome,
+    pub(crate) detail: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +113,27 @@ impl ClaimReturnMode<'_> {
     }
 }
 
+impl AutomationClaimOutcome {
+    fn release_disposition(self) -> ReleaseAutomationDisposition {
+        match self {
+            Self::CompletedUnfinished | Self::Cancelled => ReleaseAutomationDisposition::Claimable,
+            Self::Failed => ReleaseAutomationDisposition::Blocked,
+        }
+    }
+
+    fn release_comment_base(self) -> &'static str {
+        match self {
+            Self::CompletedUnfinished => {
+                "Automation turn completed without finishing the item; releasing claim."
+            }
+            Self::Failed => "Automation turn failed before finishing the item; releasing claim.",
+            Self::Cancelled => {
+                "Automation turn was cancelled before finishing the item; releasing claim."
+            }
+        }
+    }
+}
+
 pub(crate) async fn release_item(
     store: &Store,
     project_name: &str,
@@ -116,6 +154,40 @@ pub(crate) async fn release_item(
         },
     )
     .await
+}
+
+pub(crate) async fn finalize_automation_claim(
+    store: &Store,
+    context: AutomationClaimFinalization<'_>,
+) -> Result<()> {
+    let AutomationClaimFinalization {
+        project_name,
+        run_id,
+        claimed_item_id,
+        agent_id,
+        outcome,
+        detail,
+    } = context;
+    let Some(item_id) = claimed_item_id else {
+        return Ok(());
+    };
+
+    let project_id = projects::project_id(store, project_name).await?;
+    let current = work_items::get(store.db().as_ref(), project_id, item_id).await?;
+    if current.claimed_by.as_deref() != Some(agent_id) || current.finished_at.is_some() {
+        return Ok(());
+    }
+
+    release_item(
+        store,
+        project_name,
+        item_id,
+        agent_id,
+        Some(automation_claim_release_comment(outcome, run_id, detail)),
+        outcome.release_disposition(),
+    )
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn request_feedback(
@@ -184,4 +256,38 @@ async fn return_claim_to_source_state(
     events::publish_work_item_changed(project_name, item_id);
 
     work_item_views::model_to_view(store, updated).await
+}
+
+fn automation_claim_release_comment(
+    outcome: AutomationClaimOutcome,
+    run_id: i64,
+    detail: Option<&str>,
+) -> String {
+    let mut comment = format!("{} Run #{run_id}.", outcome.release_comment_base());
+    if let Some(detail) = detail
+        .map(summarize_text)
+        .filter(|detail| !detail.is_empty())
+    {
+        comment.push(' ');
+        comment.push_str(&detail);
+    }
+    comment
+}
+
+fn summarize_text(value: &str) -> String {
+    let mut summary = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_owned();
+    if summary.len() > 4000 {
+        let mut end = 4000;
+        while end > 0 && !summary.is_char_boundary(end) {
+            end -= 1;
+        }
+        summary.truncate(end);
+        summary.push_str("...");
+    }
+    summary
 }

@@ -46,7 +46,7 @@ use crate::{
     shared::view_models::{
         AgentCommitOutcome, AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece,
         AgentRunStatus, AgentRunTokenUsageView, AgentRunView, AgentSandboxMode, AgentToolName,
-        AutomationRunMutability, AutomationStatusView, DEFAULT_STATE_LABEL, FINISHED_STATE_LABEL,
+        AutomationRunMutability, AutomationStatusView, DEFAULT_STATE_LABEL,
         ProjectMemoryEventRefView, ProjectSettingsView, ProjectView, RecoveredClaimView,
         RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
@@ -179,23 +179,6 @@ struct AgentProcessStart {
     agent_sandbox_mode: AgentSandboxMode,
     agent_extra_writable_roots: Vec<String>,
     mutability: AutomationRunMutability,
-}
-
-#[derive(Clone, Copy)]
-enum ClaimReleaseReason {
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-struct ClaimReleaseContext<'a> {
-    project_name: &'a str,
-    run_id: i64,
-    claimed_item: Option<&'a WorkItemView>,
-    agent_id: &'a str,
-    reason: ClaimReleaseReason,
-    detail: Option<&'a str>,
-    automation_disposition: item_claims::ReleaseAutomationDisposition,
 }
 
 #[derive(Debug)]
@@ -583,24 +566,19 @@ async fn complete_started_automation_run(
                     }
                 }
             }
-            release_claim_if_needed(
+            item_claims::finalize_automation_claim(
                 store,
-                ClaimReleaseContext {
+                item_claims::AutomationClaimFinalization {
                     project_name: &project_name,
                     run_id: run.id,
-                    claimed_item: claimed_item.as_ref(),
+                    claimed_item_id: claimed_item.as_ref().map(|item| item.id),
                     agent_id: &agent_id,
-                    reason: if success {
-                        ClaimReleaseReason::Completed
+                    outcome: if success {
+                        item_claims::AutomationClaimOutcome::CompletedUnfinished
                     } else {
-                        ClaimReleaseReason::Failed
+                        item_claims::AutomationClaimOutcome::Failed
                     },
                     detail: Some(&result_summary),
-                    automation_disposition: if success {
-                        item_claims::ReleaseAutomationDisposition::Claimable
-                    } else {
-                        item_claims::ReleaseAutomationDisposition::Blocked
-                    },
                 },
             )
             .await?;
@@ -645,24 +623,19 @@ async fn complete_started_automation_run(
                 run_mutability,
             );
             run = update_run_commit_outcome(store, run, &commit_evaluation).await?;
-            release_claim_if_needed(
+            item_claims::finalize_automation_claim(
                 store,
-                ClaimReleaseContext {
+                item_claims::AutomationClaimFinalization {
                     project_name: &project_name,
                     run_id: run.id,
-                    claimed_item: claimed_item.as_ref(),
+                    claimed_item_id: claimed_item.as_ref().map(|item| item.id),
                     agent_id: &agent_id,
-                    reason: if cancelled {
-                        ClaimReleaseReason::Cancelled
+                    outcome: if cancelled {
+                        item_claims::AutomationClaimOutcome::Cancelled
                     } else {
-                        ClaimReleaseReason::Failed
+                        item_claims::AutomationClaimOutcome::Failed
                     },
                     detail: Some(&message),
-                    automation_disposition: if cancelled {
-                        item_claims::ReleaseAutomationDisposition::Claimable
-                    } else {
-                        item_claims::ReleaseAutomationDisposition::Blocked
-                    },
                 },
             )
             .await?;
@@ -907,16 +880,15 @@ async fn fail_run_after_claim(
     agent_id: &str,
     result_summary: String,
 ) -> Result<AgentRunView> {
-    release_claim_if_needed(
+    item_claims::finalize_automation_claim(
         store,
-        ClaimReleaseContext {
+        item_claims::AutomationClaimFinalization {
             project_name,
             run_id: run.id,
-            claimed_item,
+            claimed_item_id: claimed_item.map(|item| item.id),
             agent_id,
-            reason: ClaimReleaseReason::Failed,
+            outcome: item_claims::AutomationClaimOutcome::Failed,
             detail: Some(&result_summary),
-            automation_disposition: item_claims::ReleaseAutomationDisposition::Claimable,
         },
     )
     .await?;
@@ -931,16 +903,15 @@ async fn cancel_run_after_claim(
     agent_id: &str,
     result_summary: String,
 ) -> Result<AgentRunView> {
-    release_claim_if_needed(
+    item_claims::finalize_automation_claim(
         store,
-        ClaimReleaseContext {
+        item_claims::AutomationClaimFinalization {
             project_name,
             run_id: run.id,
-            claimed_item,
+            claimed_item_id: claimed_item.map(|item| item.id),
             agent_id,
-            reason: ClaimReleaseReason::Cancelled,
+            outcome: item_claims::AutomationClaimOutcome::Cancelled,
             detail: Some(&result_summary),
-            automation_disposition: item_claims::ReleaseAutomationDisposition::Claimable,
         },
     )
     .await?;
@@ -965,16 +936,15 @@ pub async fn stop_automation(store: &Store, project_name: &str) -> Result<Vec<Ag
             None => None,
         };
         let result_summary = "Marked cancelled by automation stop".to_owned();
-        release_claim_if_needed(
+        item_claims::finalize_automation_claim(
             store,
-            ClaimReleaseContext {
+            item_claims::AutomationClaimFinalization {
                 project_name,
                 run_id,
-                claimed_item: claimed_item.as_ref(),
+                claimed_item_id: claimed_item.as_ref().map(|item| item.id),
                 agent_id: &agent_id,
-                reason: ClaimReleaseReason::Cancelled,
+                outcome: item_claims::AutomationClaimOutcome::Cancelled,
                 detail: Some(&result_summary),
-                automation_disposition: item_claims::ReleaseAutomationDisposition::Claimable,
             },
         )
         .await?;
@@ -1411,62 +1381,6 @@ async fn publish_run_model_event(store: &Store, run: &AgentRunModel) {
             );
         }
     }
-}
-
-async fn release_claim_if_needed(store: &Store, context: ClaimReleaseContext<'_>) -> Result<()> {
-    let ClaimReleaseContext {
-        project_name,
-        run_id,
-        claimed_item,
-        agent_id,
-        reason,
-        detail,
-        automation_disposition,
-    } = context;
-    let Some(claimed_item) = claimed_item else {
-        return Ok(());
-    };
-    let current = items::get_item(store, project_name, claimed_item.id).await?;
-    if current.claimed_by.as_deref() != Some(agent_id)
-        || current.state.as_deref() == Some(FINISHED_STATE_LABEL)
-    {
-        return Ok(());
-    }
-
-    let base = match reason {
-        ClaimReleaseReason::Completed => {
-            "Automation turn completed without finishing the item; releasing claim."
-        }
-        ClaimReleaseReason::Failed => {
-            "Automation turn failed before finishing the item; releasing claim."
-        }
-        ClaimReleaseReason::Cancelled => {
-            "Automation turn was cancelled before finishing the item; releasing claim."
-        }
-    };
-    let comment = claim_release_comment(base, run_id, detail);
-    item_claims::release_item(
-        store,
-        project_name,
-        claimed_item.id,
-        agent_id,
-        Some(comment),
-        automation_disposition,
-    )
-    .await?;
-    Ok(())
-}
-
-fn claim_release_comment(base: &str, run_id: i64, detail: Option<&str>) -> String {
-    let mut comment = format!("{base} Run #{run_id}.");
-    if let Some(detail) = detail
-        .map(summarize_text)
-        .filter(|detail| !detail.is_empty())
-    {
-        comment.push(' ');
-        comment.push_str(&detail);
-    }
-    comment
 }
 
 fn effective_agent_model(
@@ -2120,24 +2034,6 @@ async fn model_to_view_with_log_usage(run: AgentRunModel) -> Result<AgentRunView
         view.token_usage = read_run_token_usage(log_path.as_deref()).await;
     }
     Ok(view)
-}
-
-fn summarize_text(value: &str) -> String {
-    let mut summary = value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_owned();
-    if summary.len() > 4000 {
-        let mut end = 4000;
-        while end > 0 && !summary.is_char_boundary(end) {
-            end -= 1;
-        }
-        summary.truncate(end);
-        summary.push_str("...");
-    }
-    summary
 }
 
 fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {

@@ -5,6 +5,9 @@ mod claiming;
 mod progress_finish;
 mod stale_recovery;
 
+pub(crate) use claim_returns::{
+    AutomationClaimFinalization, AutomationClaimOutcome, finalize_automation_claim,
+};
 pub(crate) use claim_returns::{ReleaseAutomationDisposition, release_item, request_feedback};
 pub(crate) use claiming::{
     claim_item, claim_item_matching_condition, claim_specific_item,

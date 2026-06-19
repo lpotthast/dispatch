@@ -725,6 +725,264 @@ async fn claimable_release_clears_existing_automation_blocker() {
 }
 
 #[tokio::test]
+async fn failed_automation_claim_finalization_blocks_retry() {
+    let (_temp, store) = test_store().await;
+    let item = create_item(
+        &store,
+        "demo",
+        CreateWorkItem {
+            title: "Failed setup".to_owned(),
+            description: "Failed automation should not re-enter claim selection immediately."
+                .to_owned(),
+            state: "open".to_owned(),
+            agent_model_override: None,
+            agent_reasoning_effort_override: None,
+            initial_labels: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let agent_id = "patchbay-run-17";
+    claim_item(&store, "demo", agent_id, "open")
+        .await
+        .unwrap()
+        .unwrap();
+
+    finalize_automation_claim(
+        &store,
+        AutomationClaimFinalization {
+            project_name: "demo",
+            run_id: 17,
+            claimed_item_id: Some(item.id),
+            agent_id,
+            outcome: AutomationClaimOutcome::Failed,
+            detail: Some("Workspace setup failed\nbecause git was unavailable."),
+        },
+    )
+    .await
+    .unwrap();
+
+    let released = get_item(&store, "demo", item.id).await.unwrap();
+    let comments = list_comments(&store, "demo", item.id).await.unwrap();
+
+    assert_eq!(released.state.as_deref(), Some("open"));
+    assert_eq!(released.claimed_by, None);
+    assert!(
+        released
+            .labels
+            .iter()
+            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+    );
+    assert!(comments.iter().any(|comment| {
+        comment.author_type == AuthorType::Agent
+            && comment.author_name.as_deref() == Some(agent_id)
+            && comment.body.contains("Automation turn failed")
+            && comment.body.contains("Run #17")
+            && comment
+                .body
+                .contains("Workspace setup failed because git was unavailable.")
+    }));
+
+    let claimed_again = claim_item(&store, "demo", "agent-b", "open").await.unwrap();
+    assert!(claimed_again.is_none());
+}
+
+#[tokio::test]
+async fn successful_and_cancelled_automation_claim_finalization_remains_claimable() {
+    let (_temp, store) = test_store().await;
+
+    for (index, outcome) in [
+        (1, AutomationClaimOutcome::CompletedUnfinished),
+        (2, AutomationClaimOutcome::Cancelled),
+    ] {
+        let source_state = format!("ready-{index}");
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: format!("Claimable outcome {index}"),
+                description: "Non-failed automation outcomes should release without blockers."
+                    .to_owned(),
+                state: source_state.clone(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        add_label(
+            &store,
+            "demo",
+            item.id,
+            AUTOMATION_BLOCKED_LABEL_KEY.to_owned(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let agent_id = format!("patchbay-run-{}", 20 + index);
+        claim_specific_item(&store, "demo", item.id, &agent_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        finalize_automation_claim(
+            &store,
+            AutomationClaimFinalization {
+                project_name: "demo",
+                run_id: 20 + index,
+                claimed_item_id: Some(item.id),
+                agent_id: &agent_id,
+                outcome,
+                detail: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let released = get_item(&store, "demo", item.id).await.unwrap();
+        assert_eq!(released.state.as_deref(), Some(source_state.as_str()));
+        assert_eq!(released.claimed_by, None);
+        assert!(
+            released
+                .labels
+                .iter()
+                .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
+        );
+
+        let claimed_again = claim_item(&store, "demo", "agent-b", &source_state)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_again.id, item.id);
+        release_item(
+            &store,
+            "demo",
+            item.id,
+            "agent-b",
+            None,
+            ReleaseAutomationDisposition::Claimable,
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn automation_claim_finalization_uses_finish_metadata_not_state_label() {
+    let (_temp, store) = test_store().await;
+    let item = create_item(
+        &store,
+        "demo",
+        CreateWorkItem {
+            title: "Moved to done".to_owned(),
+            description: "A done state label alone should not suppress claim cleanup.".to_owned(),
+            state: "open".to_owned(),
+            agent_model_override: None,
+            agent_reasoning_effort_override: None,
+            initial_labels: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let agent_id = "patchbay-run-31";
+    claim_item(&store, "demo", agent_id, "open")
+        .await
+        .unwrap()
+        .unwrap();
+    move_item(
+        &store,
+        "demo",
+        item.id,
+        FINISHED_STATE_LABEL.to_owned(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    finalize_automation_claim(
+        &store,
+        AutomationClaimFinalization {
+            project_name: "demo",
+            run_id: 31,
+            claimed_item_id: Some(item.id),
+            agent_id,
+            outcome: AutomationClaimOutcome::Failed,
+            detail: Some("Run failed after the state label changed."),
+        },
+    )
+    .await
+    .unwrap();
+
+    let released = get_item(&store, "demo", item.id).await.unwrap();
+    assert_eq!(released.state.as_deref(), Some("open"));
+    assert_eq!(released.claimed_by, None);
+    assert!(released.finished_at.is_none());
+    assert!(
+        released
+            .labels
+            .iter()
+            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
+    );
+}
+
+#[tokio::test]
+async fn automation_claim_finalization_leaves_finished_items_alone() {
+    let (_temp, store) = test_store().await;
+    let item = create_item(
+        &store,
+        "demo",
+        CreateWorkItem {
+            title: "Already finished".to_owned(),
+            description: "Finished timestamp is the terminal item marker.".to_owned(),
+            state: "open".to_owned(),
+            agent_model_override: None,
+            agent_reasoning_effort_override: None,
+            initial_labels: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let agent_id = "patchbay-run-41";
+    claim_item(&store, "demo", agent_id, "open")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let model = work_items::get(store.db().as_ref(), item.project_id, item.id)
+        .await
+        .unwrap();
+    let mut active: WorkItemActiveModel = model.into();
+    active.finished_at = Set(Some(utc_now()));
+    active.update(store.db().as_ref()).await.unwrap();
+
+    finalize_automation_claim(
+        &store,
+        AutomationClaimFinalization {
+            project_name: "demo",
+            run_id: 41,
+            claimed_item_id: Some(item.id),
+            agent_id,
+            outcome: AutomationClaimOutcome::Failed,
+            detail: Some("This should be ignored."),
+        },
+    )
+    .await
+    .unwrap();
+
+    let current = get_item(&store, "demo", item.id).await.unwrap();
+    assert_eq!(current.claimed_by.as_deref(), Some(agent_id));
+    assert!(current.finished_at.is_some());
+    assert!(
+        current
+            .labels
+            .iter()
+            .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
+    );
+}
+
+#[tokio::test]
 async fn request_feedback_restores_source_state_and_blocks_automation() {
     let (_temp, store) = test_store().await;
     let item = create_item(
