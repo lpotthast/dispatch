@@ -1,36 +1,53 @@
 use leptos_routes::routes;
 
-#[routes(with_views, fallback = "PageErr404")]
+#[routes]
 pub mod routes {
     use crate::frontend::{
         MainLayout, PageApiDocs, PageBoard, PageCodex, PageErr404, PageError, PageItem,
         PageProjects, PageRunLog, PageRuns, PageTriggers,
     };
 
-    #[route("/", layout = "MainLayout", fallback = "PageBoard")]
-    pub mod root {
-        #[route("/projects", view = "PageProjects")]
-        pub mod projects {}
+    fallback!(PageErr404);
+    layout!(MainLayout);
+    index!(PageBoard);
 
-        #[route("/automation", view = "PageTriggers")]
-        pub mod automation {}
+    #[route("/projects")]
+    mod projects {
+        page!(PageProjects);
+    }
 
-        #[route("/runs", view = "PageRuns")]
-        pub mod runs {}
+    #[route("/automation")]
+    mod automation {
+        page!(PageTriggers);
+    }
 
-        #[route("/codex", view = "PageCodex")]
-        pub mod codex {}
+    #[route("/runs")]
+    mod runs {
+        page!(PageRuns);
+    }
 
-        #[route("/api/docs", view = "PageApiDocs")]
-        pub mod api_docs {}
+    #[route("/codex")]
+    mod codex {
+        page!(PageCodex);
+    }
 
-        #[route("/error", view = "PageError")]
-        pub mod error {}
+    #[route("/api/docs")]
+    mod api_docs {
+        page!(PageApiDocs);
+    }
 
-        #[route("/projects/:project/items/:item_id", view = "PageItem")]
-        pub mod item {}
+    #[route("/error")]
+    mod error {
+        page!(PageError);
+    }
 
-        #[route("/projects/:project/automation/runs/:run_id/log", view = "PageRunLog")]
-        pub mod run_log {}
+    #[route("/projects/:project/items/:item_id")]
+    mod item {
+        page!(PageItem);
+    }
+
+    #[route("/projects/:project/automation/runs/:run_id/log")]
+    mod run_log {
+        page!(PageRunLog);
     }
 }

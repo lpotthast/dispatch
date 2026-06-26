@@ -294,7 +294,7 @@ pub fn App() -> impl IntoView {
     view! {
         <Root default_theme=LeptonicTheme::Light>
             <Router>
-                {routes::generated_routes()}
+                {routes::route_tree()}
             </Router>
         </Root>
     }

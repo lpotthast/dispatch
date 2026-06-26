@@ -1271,6 +1271,7 @@ async fn update_item(
 
 #[derive(serde::Deserialize)]
 struct MoveItemForm {
+    #[serde(alias = "value")]
     state: String,
     version: i64,
 }
