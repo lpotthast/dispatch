@@ -1296,7 +1296,8 @@ pub struct AgentRunView {
     pub process_id: Option<i64>,
     pub exit_code: Option<i64>,
     pub log_path: Option<String>,
-    pub prompt_path: Option<String>,
+    pub developer_instructions_path: Option<String>,
+    pub user_prompt_path: Option<String>,
     pub agent_model: Option<String>,
     pub agent_reasoning_effort: Option<AgentReasoningEffort>,
     pub token_usage: Option<AgentRunTokenUsageView>,
@@ -1328,7 +1329,8 @@ pub struct RunLogView {
     #[serde(default)]
     pub active: bool,
     pub memory_event: Option<ProjectMemoryEventRefView>,
-    pub prompt: Option<String>,
+    pub developer_instructions: Option<String>,
+    pub user_prompt: Option<String>,
     pub output: Vec<AgentRunOutputPiece>,
 }
 

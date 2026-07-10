@@ -30,7 +30,7 @@ The main workflow surface should make these states easy to inspect:
 - automation status;
 - stale or blocked work;
 - feedback-requested work that is waiting for a user answer;
-- run logs and run outcomes, including linked operated work items, prompt-before-output detail ordering, live output for active runs, stable selected-run inspection during live refreshes, active-run cancellation, commit outcome, and created commit SHA visibility.
+- run logs and run outcomes, including linked operated work items, separate developer-instructions and user-prompt sections before output, live output for active runs, stable selected-run inspection during live refreshes, active-run cancellation, commit outcome, and created commit SHA visibility.
 - per-run Codex token usage when reported by the agent runtime.
 - Dispatch-owned workflow labels such as `state`, `dispatch:claimed-from-state`, `dispatch:automation-blocked`, and `dispatch:feedback-requested`.
 

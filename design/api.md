@@ -82,7 +82,7 @@ GET /api/projects/{project}/automation/runs/{run_id}/log
 GET /api/projects/{project}/automation/sessions
 ```
 
-Automation run responses use `AgentRunView`, which includes run mutability (`mutating` or `read_only`) and reported Codex token usage for the run when available. Usage is reported as input tokens, cached input tokens, output tokens, and a derived total. Run-log responses include active in-memory session output while a run is still ongoing and fall back to the persisted output log when no active session is present.
+Automation run responses use `AgentRunView`, which includes run mutability (`mutating` or `read_only`), separate developer-instructions and user-prompt paths, and reported Codex token usage for the run when available. Usage is reported as input tokens, cached input tokens, output tokens, and a derived total. Run-log responses expose developer instructions and the user prompt as separate fields, include active in-memory session output while a run is still ongoing, and fall back to the persisted output log when no active session is present.
 
 Event endpoints:
 

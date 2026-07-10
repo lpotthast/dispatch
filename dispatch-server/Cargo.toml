@@ -63,6 +63,7 @@ ssr = [
     "dep:crudkit-sea-orm",
     "dep:futures-core",
     "dep:git2",
+    "dep:htmd",
     "dep:indexmap",
     "dep:leptos-use",
     "dep:leptos_axum",
@@ -100,6 +101,7 @@ crudkit-sea-orm = { path = "../crudkit/crudkit-sea-orm", optional = true }
 futures-core = { version = "0.3", optional = true }
 git2 = { version = "0.20", optional = true }
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"], optional = true }
+htmd = { version = "0.5.4", optional = true }
 indexmap = { version = "2", features = ["serde"], optional = true }
 leptonic = { version = "0.5.0", git = "https://github.com/lpotthast/leptonic", branch = "migrate-to-leptos-0.8", features = ["tiptap"] }
 leptos = "0.8.19"

@@ -37,7 +37,7 @@ use crate::{
             read_run_token_usage, thread_event_output_piece, update_response_candidates,
             write_run_output_log,
         },
-        automation_prompt::{PromptContext, build_prompt},
+        automation_prompt::{AutomationPrompt, PromptContext, build_prompt},
         automation_runtime::{self, GitRuntimeFiles},
         automation_workspace::{self, WorkspacePlan},
         codex_app_server,
@@ -87,7 +87,8 @@ struct LaunchDetails {
     work_item_id: Option<i64>,
     command: String,
     workspace: WorkspacePlan,
-    prompt_path: Option<String>,
+    developer_instructions_path: Option<String>,
+    user_prompt_path: Option<String>,
     log_path: Option<String>,
     memory_event_id: Option<i64>,
     agent_model: Option<String>,
@@ -174,7 +175,7 @@ struct AgentProcessStart {
     codex_home: PathBuf,
     codex_stderr_path: PathBuf,
     dispatch_binary: PathBuf,
-    prompt_path: PathBuf,
+    prompt: AutomationPrompt,
     working_dir: PathBuf,
     git_runtime: GitRuntimeFiles,
     real_git_path: PathBuf,
@@ -851,7 +852,9 @@ async fn prepare_automation_launch(
             format!("Failed to create automation log directory: {err:#}"),
         ));
     }
-    let prompt_path = log_dir.join(format!("run-{}.prompt.md", run.id));
+    let developer_instructions_path =
+        log_dir.join(format!("run-{}.developer-instructions.md", run.id));
+    let user_prompt_path = log_dir.join(format!("run-{}.user-prompt.md", run.id));
     let log_path = log_dir.join(format!("run-{}.output.json", run.id));
     let codex_stderr_path = log_dir.join(format!("run-{}.codex-stderr.log", run.id));
     if let Err(err) = fs::write(&codex_stderr_path, "").context_with(|| {
@@ -926,7 +929,7 @@ async fn prepare_automation_launch(
     };
     let prompt_git_policy =
         automation_runtime::git_runtime_policy_for_run(settings, run_mutability);
-    let prompt = build_prompt(PromptContext {
+    let prompt = match build_prompt(PromptContext {
         project_name,
         system_prompt: &project.system_prompt,
         memory: &project.memory,
@@ -943,21 +946,38 @@ async fn prepare_automation_launch(
         create_pr: settings.create_pr,
         git_command_policy: prompt_git_policy.policy,
         git_policy_workspace_mode: prompt_git_policy.workspace_mode,
-    });
-    if let Err(err) = fs::write(&prompt_path, prompt)
-        .context_with(|| format!("failed to write prompt {}", prompt_path.display()))
+    }) {
+        Ok(prompt) => prompt,
+        Err(err) => {
+            return Err(LaunchPreparationFailure::new(
+                run,
+                format!("Failed to build automation prompt: {err:#}"),
+            ));
+        }
+    };
+    if let Err(err) = fs::write(&developer_instructions_path, &prompt.developer_instructions)
+        .context_with(|| {
+            format!(
+                "failed to write developer instructions {}",
+                developer_instructions_path.display()
+            )
+        })
     {
         return Err(LaunchPreparationFailure::new(
             run,
-            format!("Failed to write automation prompt: {err:#}"),
+            format!("Failed to write automation developer instructions: {err:#}"),
+        ));
+    }
+    if let Err(err) = fs::write(&user_prompt_path, &prompt.user_prompt)
+        .context_with(|| format!("failed to write user prompt {}", user_prompt_path.display()))
+    {
+        return Err(LaunchPreparationFailure::new(
+            run,
+            format!("Failed to write automation user prompt: {err:#}"),
         ));
     }
 
-    let command = format!(
-        "{} app-server turn {}",
-        codex_binary.display(),
-        prompt_path.display()
-    );
+    let command = format!("{} app-server", codex_binary.display());
     let commit_required = commit_required_for_run(settings, run_mutability);
     let pr_requested = pr_requested_for_run(settings, run_mutability);
     let run_before_launch_update = run.clone();
@@ -968,7 +988,10 @@ async fn prepare_automation_launch(
             work_item_id: claimed_item.map(|item| item.id),
             command,
             workspace,
-            prompt_path: Some(prompt_path.to_string_lossy().into_owned()),
+            developer_instructions_path: Some(
+                developer_instructions_path.to_string_lossy().into_owned(),
+            ),
+            user_prompt_path: Some(user_prompt_path.to_string_lossy().into_owned()),
             log_path: Some(log_path.to_string_lossy().into_owned()),
             memory_event_id,
             agent_model: agent_model.clone(),
@@ -997,7 +1020,7 @@ async fn prepare_automation_launch(
         codex_home,
         codex_stderr_path,
         dispatch_binary,
-        prompt_path,
+        prompt,
         working_dir: PathBuf::from(&run.working_dir),
         git_runtime,
         real_git_path,
@@ -1244,7 +1267,9 @@ pub async fn get_run(store: &Store, project_name: &str, run_id: i64) -> Result<A
 
 pub async fn read_run_log(store: &Store, project_name: &str, run_id: i64) -> Result<RunLogView> {
     let run = get_run(store, project_name, run_id).await?;
-    let prompt = read_optional_text(run.prompt_path.as_deref()).await?;
+    let developer_instructions =
+        read_optional_text(run.developer_instructions_path.as_deref()).await?;
+    let user_prompt = read_optional_text(run.user_prompt_path.as_deref()).await?;
     let output = read_run_output(run.log_path.as_deref()).await?;
     let memory_event = match run.memory_event_id {
         Some(event_id) => {
@@ -1261,7 +1286,8 @@ pub async fn read_run_log(store: &Store, project_name: &str, run_id: i64) -> Res
         run,
         active: false,
         memory_event,
-        prompt,
+        developer_instructions,
+        user_prompt,
         output,
     })
 }
@@ -1378,7 +1404,8 @@ async fn create_run(
         process_id: Set(None),
         exit_code: Set(None),
         log_path: Set(None),
-        prompt_path: Set(None),
+        developer_instructions_path: Set(None),
+        user_prompt_path: Set(None),
         agent_model: Set(None),
         agent_reasoning_effort: Set(None),
         input_tokens: Set(None),
@@ -1421,7 +1448,8 @@ async fn update_run_launch_details(
         .worktree_path
         .map(|path| path.to_string_lossy().into_owned()));
     active.branch_name = Set(details.workspace.branch_name);
-    active.prompt_path = Set(details.prompt_path);
+    active.developer_instructions_path = Set(details.developer_instructions_path);
+    active.user_prompt_path = Set(details.user_prompt_path);
     active.log_path = Set(details.log_path);
     active.agent_model = Set(details.agent_model);
     active.agent_reasoning_effort = Set(details
@@ -1592,11 +1620,7 @@ async fn run_agent_process(
     sessions: Option<ProcessSessionRegistry>,
     external_cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentProcessOutput> {
-    let command_label = format!(
-        "{} app-server turn {}",
-        start.codex_binary.display(),
-        start.prompt_path.display()
-    );
+    let command_label = format!("{} app-server", start.codex_binary.display());
     let session_cancellation = if let Some(registry) = &sessions {
         Some(
             registry
@@ -1701,9 +1725,8 @@ async fn run_codex_app_server_turn(
     start: AgentProcessStart,
     sessions: Option<ProcessSessionRegistry>,
 ) -> Result<AgentProcessOutput> {
-    let prompt = tokio::fs::read_to_string(&start.prompt_path)
-        .await
-        .context_with(|| format!("failed to read prompt {}", start.prompt_path.display()))?;
+    let developer_instructions = start.prompt.developer_instructions.clone();
+    let user_prompt = start.prompt.user_prompt.clone();
     let working_dir = start.working_dir.to_string_lossy().into_owned();
     let mut output = Vec::new();
 
@@ -1748,6 +1771,7 @@ async fn run_codex_app_server_turn(
             start.agent_sandbox_mode,
             &start.agent_extra_writable_roots,
         ))
+        .developer_instructions(developer_instructions)
         .config(automation_runtime::codex_memory_config_overrides());
     if let Some(agent_model) = start.agent_model.as_deref() {
         thread_options = thread_options.model(agent_model);
@@ -1759,7 +1783,7 @@ async fn run_codex_app_server_turn(
     }
     let thread_options = thread_options.build();
     let (mut thread, mut streamed) =
-        start_codex_streamed_turn(&start, &env, &thread_options, None, prompt)
+        start_codex_streamed_turn(&start, &env, &thread_options, None, user_prompt)
             .await
             .map_err(|err| report!(err))
             .context("failed to start Codex app-server turn")?;
@@ -2225,7 +2249,8 @@ fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
         process_id: run.process_id,
         exit_code: run.exit_code,
         log_path: run.log_path,
-        prompt_path: run.prompt_path,
+        developer_instructions_path: run.developer_instructions_path,
+        user_prompt_path: run.user_prompt_path,
         agent_model: projects::normalize_optional(run.agent_model),
         agent_reasoning_effort: run
             .agent_reasoning_effort
@@ -2339,18 +2364,25 @@ mod tests {
             )],
         )
         .unwrap();
+        let developer_instructions_path = temp.path().join("run.developer-instructions.md");
+        let user_prompt_path = temp.path().join("run.user-prompt.md");
+        fs::write(&developer_instructions_path, "Follow Dispatch policy.").unwrap();
+        fs::write(&user_prompt_path, "Implement the requested change.").unwrap();
         let run = update_run_launch_details(
             &store,
             run,
             LaunchDetails {
                 work_item_id: None,
-                command: "codex app-server turn prompt.md".to_owned(),
+                command: "codex app-server".to_owned(),
                 workspace: WorkspacePlan {
                     working_dir: temp.path().to_path_buf(),
                     worktree_path: None,
                     branch_name: None,
                 },
-                prompt_path: None,
+                developer_instructions_path: Some(
+                    developer_instructions_path.to_string_lossy().into_owned(),
+                ),
+                user_prompt_path: Some(user_prompt_path.to_string_lossy().into_owned()),
                 log_path: Some(log_path.to_string_lossy().into_owned()),
                 memory_event_id: None,
                 agent_model: None,
@@ -2367,7 +2399,7 @@ mod tests {
                 run_id: run.id,
                 project_name: "demo".to_owned(),
                 tool_name: "codex".to_owned(),
-                command: "codex app-server turn prompt.md".to_owned(),
+                command: "codex app-server".to_owned(),
                 working_dir: temp.path().to_string_lossy().into_owned(),
             })
             .await;
@@ -2390,6 +2422,14 @@ mod tests {
             .unwrap();
 
         assert!(run_log.active);
+        assert_eq!(
+            run_log.developer_instructions.as_deref(),
+            Some("Follow Dispatch policy.")
+        );
+        assert_eq!(
+            run_log.user_prompt.as_deref(),
+            Some("Implement the requested change.")
+        );
         assert_eq!(run_log.output.len(), 1);
         assert_eq!(run_log.output[0].title, "active");
         assert_eq!(run_log.output[0].body, "active output");
@@ -2766,13 +2806,14 @@ mod tests {
             run,
             LaunchDetails {
                 work_item_id: Some(item.id),
-                command: "codex app-server turn prompt.md".to_owned(),
+                command: "codex app-server".to_owned(),
                 workspace: WorkspacePlan {
                     working_dir: temp.path().to_path_buf(),
                     worktree_path: None,
                     branch_name: None,
                 },
-                prompt_path: None,
+                developer_instructions_path: None,
+                user_prompt_path: None,
                 log_path: None,
                 memory_event_id: None,
                 agent_model: None,

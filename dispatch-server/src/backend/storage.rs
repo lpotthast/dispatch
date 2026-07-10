@@ -119,6 +119,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automation_run_input_migration_replaces_the_combined_path() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("dispatch.sqlite3");
+        let db = Database::connect(sqlite_url(&path)).await.unwrap();
+        let migration_count_before_input_split = Migrator::migrations()
+            .iter()
+            .position(|migration| {
+                migration.name() == "m20260710_000037_separate_automation_run_inputs"
+            })
+            .unwrap() as u32;
+        Migrator::up(&db, Some(migration_count_before_input_split))
+            .await
+            .unwrap();
+        for statement in [
+            r#"DROP VIEW "agent_runs_read_view";"#,
+            r#"ALTER TABLE "agent_runs" DROP COLUMN "developer_instructions_path";"#,
+            r#"ALTER TABLE "agent_runs" DROP COLUMN "user_prompt_path";"#,
+            r#"ALTER TABLE "agent_runs" ADD COLUMN "prompt_path" TEXT;"#,
+            r#"CREATE VIEW "agent_runs_read_view" AS SELECT "agent_runs".*, 0 AS has_validation_errors FROM "agent_runs";"#,
+            r#"INSERT INTO "projects" ("id", "name", "display_name") VALUES (1, 'demo', 'Demo');"#,
+            r#"INSERT INTO "agent_runs" ("project_id", "tool_name", "status", "command", "working_dir", "prompt_path") VALUES (1, 'codex', 'completed', 'codex app-server', '/tmp/project', '/tmp/combined-prompt.md');"#,
+        ] {
+            db.execute(Statement::from_string(
+                DbBackend::Sqlite,
+                statement.to_owned(),
+            ))
+            .await
+            .unwrap();
+        }
+
+        Migrator::up(&db, None).await.unwrap();
+        let row = db
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                r#"
+                SELECT
+                    SUM(name = 'developer_instructions_path') AS developer_count,
+                    SUM(name = 'user_prompt_path') AS user_count,
+                    SUM(name = 'prompt_path') AS combined_count
+                FROM pragma_table_info('agent_runs');
+                "#
+                .to_owned(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(row.try_get::<i64>("", "developer_count").unwrap(), 1);
+        assert_eq!(row.try_get::<i64>("", "user_count").unwrap(), 1);
+        assert_eq!(row.try_get::<i64>("", "combined_count").unwrap(), 0);
+
+        let run = db
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                r#"
+                SELECT "developer_instructions_path", "user_prompt_path"
+                FROM "agent_runs"
+                LIMIT 1;
+                "#
+                .to_owned(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            run.try_get::<String>("", "developer_instructions_path")
+                .unwrap(),
+            "/tmp/combined-prompt.md"
+        );
+        assert_eq!(
+            run.try_get::<String>("", "user_prompt_path").unwrap(),
+            "/tmp/combined-prompt.md"
+        );
+    }
+
+    #[tokio::test]
     async fn refinement_concurrency_column_is_removed_from_projects() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("dispatch.sqlite3");
@@ -372,6 +448,7 @@ mod tests {
             "m20260618_000034_add_automation_run_mutability",
             "m20260618_000035_add_work_item_relationships",
             "m20260619_000036_add_automation_personalities",
+            "m20260710_000037_separate_automation_run_inputs",
         ];
 
         assert_eq!(names.as_slice(), expected.as_slice());

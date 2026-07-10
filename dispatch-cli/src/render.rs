@@ -188,14 +188,19 @@ pub(crate) fn write_run_log(output: &mut dyn Write, log: &RunLogView) -> io::Res
     writeln!(output, "summary: {}", log.run.result_summary)?;
     writeln!(output, "tokens: {}", run_token_usage_text(&log.run))?;
     writeln!(output, "commit: {}", run_commit_outcome_text(&log.run))?;
+    if let Some(developer_instructions) = &log.developer_instructions {
+        writeln!(output)?;
+        writeln!(output, "developer instructions:")?;
+        writeln!(output, "{developer_instructions}")?;
+    }
+    if let Some(user_prompt) = &log.user_prompt {
+        writeln!(output)?;
+        writeln!(output, "user prompt:")?;
+        writeln!(output, "{user_prompt}")?;
+    }
     writeln!(output)?;
     writeln!(output, "output:")?;
     write_output_pieces(output, &log.output)?;
-    if let Some(prompt) = &log.prompt {
-        writeln!(output)?;
-        writeln!(output, "prompt:")?;
-        writeln!(output, "{prompt}")?;
-    }
     Ok(())
 }
 
@@ -402,7 +407,8 @@ mod tests {
             process_id: None,
             exit_code: Some(0),
             log_path: None,
-            prompt_path: None,
+            developer_instructions_path: None,
+            user_prompt_path: None,
             agent_model: None,
             agent_reasoning_effort: None,
             token_usage: Some(AgentRunTokenUsageView {
@@ -477,7 +483,8 @@ mod tests {
             run: agent_run(),
             active: false,
             memory_event: None,
-            prompt: Some("Run this task".to_owned()),
+            developer_instructions: Some("Follow Dispatch policy".to_owned()),
+            user_prompt: Some("Run this task".to_owned()),
             output: vec![AgentRunOutputPiece {
                 sequence: 2,
                 timestamp: "2026-06-18T00:00:00Z".to_owned(),
@@ -498,7 +505,8 @@ mod tests {
         assert!(output.contains("commit: committed abc123 (required)"));
         assert!(output.contains("[#2 tool_call] Command\ncargo test\noutput:\n"));
         assert!(output.contains("\"status\": \"ok\""));
-        assert!(output.contains("\nprompt:\nRun this task\n"));
+        assert!(output.contains("\ndeveloper instructions:\nFollow Dispatch policy\n"));
+        assert!(output.contains("\nuser prompt:\nRun this task\n"));
     }
 
     #[test]

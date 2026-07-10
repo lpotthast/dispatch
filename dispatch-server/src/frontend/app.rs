@@ -132,7 +132,8 @@ pub struct RuntimeConfigView {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BoardRunSessionView {
     pub run: AgentRunView,
-    pub prompt: Option<String>,
+    pub developer_instructions: Option<String>,
+    pub user_prompt: Option<String>,
     pub output: Vec<AgentRunOutputPiece>,
     pub active: bool,
 }
@@ -2094,9 +2095,12 @@ fn run_log_content(page: RunLogPage) -> AnyView {
         }
     });
     let output = run_output_view(run_log.output.clone());
-    let prompt = run_log
-        .prompt
-        .unwrap_or_else(|| "No prompt file has been written.".to_owned());
+    let developer_instructions = run_log
+        .developer_instructions
+        .unwrap_or_else(|| "No developer instructions have been written.".to_owned());
+    let user_prompt = run_log
+        .user_prompt
+        .unwrap_or_else(|| "No user prompt has been written.".to_owned());
 
     view! {
         <div>
@@ -2151,8 +2155,12 @@ fn run_log_content(page: RunLogPage) -> AnyView {
                     </dl>
                 </section>
                 <section>
-                    <h2>"Prompt"</h2>
-                    <pre>{prompt}</pre>
+                    <h2>"Developer instructions"</h2>
+                    <pre>{developer_instructions}</pre>
+                </section>
+                <section>
+                    <h2>"User prompt"</h2>
+                    <pre>{user_prompt}</pre>
                 </section>
                 <section>
                     <h2>"Output"</h2>
@@ -3347,9 +3355,12 @@ fn run_session_detail(
     let working_dir = run_workspace_actions(project, &session.run, workspace_editors, href.clone());
     let status_class = run_status_class(session.run.status);
     let output = run_output_view(session.output.clone());
-    let prompt = session
-        .prompt
-        .unwrap_or_else(|| "No prompt file has been written yet.".to_owned());
+    let developer_instructions = session
+        .developer_instructions
+        .unwrap_or_else(|| "No developer instructions have been written yet.".to_owned());
+    let user_prompt = session
+        .user_prompt
+        .unwrap_or_else(|| "No user prompt has been written yet.".to_owned());
 
     view! {
         <article>
@@ -3400,8 +3411,12 @@ fn run_session_detail(
                 <p>{summary}</p>
             </div>
             <div class="run-detail-section">
-                <h4>"Prompt"</h4>
-                <pre>{prompt}</pre>
+                <h4>"Developer instructions"</h4>
+                <pre>{developer_instructions}</pre>
+            </div>
+            <div class="run-detail-section">
+                <h4>"User prompt"</h4>
+                <pre>{user_prompt}</pre>
             </div>
             <div class="run-detail-section">
                 <h4>"Output"</h4>

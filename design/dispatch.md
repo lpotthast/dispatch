@@ -18,6 +18,7 @@ Dispatch coordinates software work across a local project, a server-owned work i
 - [cli.md](cli.md): standalone CLI contract, context resolution, commands, and development shim.
 - [workflows.md](workflows.md): claim, progress, finish, release, automation launch, automation rules, stale claims, and run logs.
 - [ui.md](ui.md): Leptos routes, admin surfaces, live workflow visibility, and browser coverage.
+- [branding.md](branding.md): application icon concept, source prompt, assets, and iteration guidance.
 
 ## Repository Shape
 

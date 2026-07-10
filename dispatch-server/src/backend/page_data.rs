@@ -226,7 +226,8 @@ async fn board_run_sessions(
             .unwrap_or(run_log.output);
         views.push(BoardRunSessionView {
             run,
-            prompt: run_log.prompt,
+            developer_instructions: run_log.developer_instructions,
+            user_prompt: run_log.user_prompt,
             output,
             active: active_session.is_some(),
         });

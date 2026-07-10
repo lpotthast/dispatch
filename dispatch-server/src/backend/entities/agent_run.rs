@@ -96,7 +96,11 @@ pub struct Model {
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
-    pub prompt_path: Option<String>,
+    pub developer_instructions_path: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub user_prompt_path: Option<String>,
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]

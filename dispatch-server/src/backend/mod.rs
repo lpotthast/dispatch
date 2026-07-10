@@ -35,6 +35,7 @@ pub(crate) mod page_data;
 pub(crate) mod personalities;
 pub(crate) mod process_sessions;
 pub(crate) mod projects;
+pub(crate) mod prompt_text;
 pub(crate) mod relationship_mutations;
 pub(crate) mod relationships;
 pub(crate) mod server;

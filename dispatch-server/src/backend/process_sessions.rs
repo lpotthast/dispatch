@@ -240,7 +240,7 @@ mod tests {
                 run_id: 7,
                 project_name: "demo".to_owned(),
                 tool_name: "codex".to_owned(),
-                command: "codex app-server turn prompt.md".to_owned(),
+                command: "codex app-server".to_owned(),
                 working_dir: "/tmp/demo".to_owned(),
             })
             .await;
@@ -264,7 +264,7 @@ mod tests {
                 run_id: 7,
                 project_name: "demo".to_owned(),
                 tool_name: "codex".to_owned(),
-                command: "codex app-server turn prompt.md".to_owned(),
+                command: "codex app-server".to_owned(),
                 working_dir: "/tmp/demo".to_owned(),
             })
             .await;

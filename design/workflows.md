@@ -86,16 +86,15 @@ When Dispatch launches an agent, it:
 7. omits `DISPATCH_DATABASE`;
 8. omits database paths from the prompt.
 
-For work-consuming automation runs started from an automation rule, Dispatch resolves the rule's selected project-local personality before writing the prompt. If the personality description is non-empty, the generated prompt includes it as a `## Personality` section before the automation-specific trigger prompt. The empty `Default` personality is behavior-neutral and does not add a section. Work-producing automation and direct starts that do not launch from a personality-bearing consume-work rule do not need personality prompt injection.
+Dispatch sends role-separated model input. Codex thread developer instructions contain Dispatch's execution contract, explicit instruction precedence, the effective sandbox/Git/commit policy, trusted project instructions, the selected personality, and the automation trigger instructions. The turn's user prompt starts with the claimed work-item title and description, followed by a launch-time item-state snapshot and project memory. Work-item descriptions and automation trigger prompts are converted from stored Tiptap HTML to Markdown at this boundary; Dispatch preserves the original rich text in storage.
 
-The prompt tells the agent:
+Project memory remains in the user prompt because agents may write it. The prompt labels it as historical reference rather than instructions and requires drift-prone facts to be verified. Dispatch does not inject comment history into the launch prompt. Instead, claimed-item agents must fetch `dispatch item show --json` and `dispatch comment list --json` at startup and again before choosing a terminal transition, so current comments enter context only through live reads.
 
-```text
-Use the `dispatch` CLI for Dispatch work state.
-The CLI is available on PATH.
-DISPATCH_PROJECT, DISPATCH_AGENT_ID, and DISPATCH_CLAIMED_ITEM_ID are already set.
-For the claimed item, omit project, agent, and item id arguments unless intentionally addressing another item.
-```
+For work-consuming automation runs started from an automation rule, Dispatch resolves the rule's selected project-local personality before building the role-separated input. A non-empty personality is included before the automation-specific trigger instructions in the developer instructions. The empty `Default` personality is behavior-neutral and does not add a section. Work-producing automation and direct starts that do not launch from a personality-bearing consume-work rule do not need personality injection.
+
+The developer contract gives the common claimed-item command path and points agents to `dispatch <command> --help` for less common operations instead of embedding the entire CLI grammar. Internal Git-shim environment variables are implementation details and are not advertised in model instructions. The effective run policy still enumerates the Git commands expected to work, commit/revert behavior, and sandbox blocker reporting.
+
+For auditability, every run persists developer instructions and the user prompt as two independent Markdown files with separate database paths, API fields, CLI sections, and UI sections. Dispatch never combines new run input into one prompt artifact. When migrating a historical run whose legacy prompt artifact contains both roles, Dispatch preserves access by initializing both role-specific paths from that legacy path before removing the combined database column. The live Codex call supplies the same two role-specific strings through their respective SDK fields. Repository conventions remain in `AGENTS.md`, which Codex discovers from the run working directory rather than Dispatch duplicating them in its generated input.
 
 ## Automation Rule Behavior
 

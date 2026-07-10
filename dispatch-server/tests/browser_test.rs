@@ -623,7 +623,8 @@ async fn seed_run_commit_outcome_fixtures(app: &DispatchTestApp) -> Result<(), R
                 "process_id",
                 "exit_code",
                 "log_path",
-                "prompt_path",
+                "developer_instructions_path",
+                "user_prompt_path",
                 "agent_model",
                 "agent_reasoning_effort",
                 "input_tokens",
@@ -658,6 +659,7 @@ async fn seed_run_commit_outcome_fixtures(app: &DispatchTestApp) -> Result<(), R
                 NULL,
                 NULL,
                 0,
+                NULL,
                 NULL,
                 NULL,
                 NULL,
@@ -707,7 +709,8 @@ async fn seed_run_commit_outcome_fixtures(app: &DispatchTestApp) -> Result<(), R
                 "process_id",
                 "exit_code",
                 "log_path",
-                "prompt_path",
+                "developer_instructions_path",
+                "user_prompt_path",
                 "agent_model",
                 "agent_reasoning_effort",
                 "input_tokens",
@@ -742,6 +745,7 @@ async fn seed_run_commit_outcome_fixtures(app: &DispatchTestApp) -> Result<(), R
                 NULL,
                 NULL,
                 0,
+                NULL,
                 NULL,
                 NULL,
                 NULL,
@@ -790,6 +794,18 @@ async fn assert_run_log_commit_fixture(
         By::XPath(format!(
             "//main[contains(@class, 'run-log')]//h1[normalize-space()='Run #{run_id}']"
         )),
+    )
+    .await?;
+    find(
+        driver,
+        By::XPath(
+            "//main[contains(@class, 'run-log')]//h2[normalize-space()='Developer instructions']",
+        ),
+    )
+    .await?;
+    find(
+        driver,
+        By::XPath("//main[contains(@class, 'run-log')]//h2[normalize-space()='User prompt']"),
     )
     .await?;
 

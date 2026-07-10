@@ -21,9 +21,9 @@ Project data includes:
 
 All item and automation API calls are project-scoped. Missing project context is an error for agent-facing operations.
 
-The project system prompt is the project-owned instruction text included in automation prompts. Every project system prompt write creates a project-level `SystemPromptChanged` event with the full prompt snapshot after the write. System prompt events carry optional actor and agent-run attribution so a prompt change can be traced back to the Dispatch user or agent/session that wrote it.
+The project system prompt is trusted project-owned instruction text included in the developer instructions for automation runs. It remains subordinate to Dispatch's execution contract and effective run policy. Every project system prompt write creates a project-level `SystemPromptChanged` event with the full prompt snapshot after the write. System prompt events carry optional actor and agent-run attribution so a prompt change can be traced back to the Dispatch user or agent/session that wrote it.
 
-Project memory is the project-owned shared memory for agents. Every project memory write creates a project-level `MemoryChanged` event with the full memory snapshot after the write. Memory events carry optional actor and agent-run attribution so a memory change can be traced back to the Dispatch agent/session that wrote it.
+Project memory is the project-owned shared historical reference for agents. Because agents may write it, Dispatch includes memory in the user prompt rather than developer instructions and explicitly tells agents to verify drift-prone facts instead of treating memory as current policy. Every project memory write creates a project-level `MemoryChanged` event with the full memory snapshot after the write. Memory events carry optional actor and agent-run attribution so a memory change can be traced back to the Dispatch agent/session that wrote it.
 
 Project personalities are reusable, project-scoped prompt fragments for automation-launched agents. Every project has a `Default` personality with an initially empty `personality_description`. Personality names are required after trimming, unique within a project, and suitable for display in automation selectors. The `personality_description` field is free-form text and defaults to empty.
 
@@ -97,7 +97,7 @@ Run data includes:
 - command and working directory;
 - worktree path and branch name when applicable;
 - process id and exit code;
-- log path and prompt path;
+- log path, developer-instructions path, and user-prompt path;
 - selected agent model and reasoning effort;
 - Codex token usage when reported: input tokens, cached input tokens, and output tokens;
 - commit policy outcome: whether a commit was required, the commit outcome status, and created commit SHA(s);

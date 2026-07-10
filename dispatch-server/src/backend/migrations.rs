@@ -186,7 +186,8 @@ enum AgentRuns {
     ProcessId,
     ExitCode,
     LogPath,
-    PromptPath,
+    DeveloperInstructionsPath,
+    UserPromptPath,
     AgentModel,
     AgentReasoningEffort,
     InputTokens,
@@ -338,6 +339,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddAutomationRunMutability),
             Box::new(AddWorkItemRelationships),
             Box::new(AddAutomationPersonalities),
+            Box::new(SeparateAutomationRunInputs),
         ]
     }
 }
@@ -967,7 +969,12 @@ async fn create_agent_runs(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
                 .col(ColumnDef::new(AgentRuns::ProcessId).big_integer().null())
                 .col(ColumnDef::new(AgentRuns::ExitCode).big_integer().null())
                 .col(ColumnDef::new(AgentRuns::LogPath).string().null())
-                .col(ColumnDef::new(AgentRuns::PromptPath).string().null())
+                .col(
+                    ColumnDef::new(AgentRuns::DeveloperInstructionsPath)
+                        .string()
+                        .null(),
+                )
+                .col(ColumnDef::new(AgentRuns::UserPromptPath).string().null())
                 .col(ColumnDef::new(AgentRuns::AgentModel).string().null())
                 .col(
                     ColumnDef::new(AgentRuns::AgentReasoningEffort)
@@ -2666,6 +2673,48 @@ impl MigrationTrait for AddAutomationPersonalities {
             "automation_triggers_read_view",
         )
         .await
+    }
+}
+
+struct SeparateAutomationRunInputs;
+
+impl MigrationName for SeparateAutomationRunInputs {
+    fn name(&self) -> &str {
+        "m20260710_000037_separate_automation_run_inputs"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for SeparateAutomationRunInputs {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "agent_runs_read_view").await?;
+        add_column_if_missing(manager, "agent_runs", "developer_instructions_path", "TEXT").await?;
+        add_column_if_missing(manager, "agent_runs", "user_prompt_path", "TEXT").await?;
+        if column_exists(manager, "agent_runs", "prompt_path").await? {
+            manager
+                .get_connection()
+                .execute(Statement::from_string(
+                    manager.get_database_backend(),
+                    r#"
+                    UPDATE "agent_runs"
+                    SET "developer_instructions_path" = "prompt_path",
+                        "user_prompt_path" = "prompt_path"
+                    WHERE "prompt_path" IS NOT NULL;
+                    "#
+                    .to_owned(),
+                ))
+                .await?;
+        }
+        drop_column_if_present(manager, "agent_runs", "prompt_path").await?;
+        create_read_view(manager, "agent_runs", "agent_runs_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "agent_runs_read_view").await?;
+        add_column_if_missing(manager, "agent_runs", "prompt_path", "TEXT").await?;
+        drop_column_if_present(manager, "agent_runs", "user_prompt_path").await?;
+        drop_column_if_present(manager, "agent_runs", "developer_instructions_path").await?;
+        create_read_view(manager, "agent_runs", "agent_runs_read_view").await
     }
 }
 
