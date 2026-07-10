@@ -12,6 +12,9 @@ types_manifest := "dispatch-types/Cargo.toml"
 default:
     @just --list
 
+icons *args:
+    ./scripts/derive-icons.sh {{args}}
+
 fmt:
     cargo fmt --manifest-path "{{server_manifest}}"
     cargo fmt --manifest-path "{{cli_manifest}}"
