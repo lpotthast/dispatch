@@ -118,6 +118,8 @@ For Codex-backed launches, Dispatch prepares a project-specific Codex home befor
 
 Codex app-server stream transport interruptions that are consistent with host sleep, reconnect, broken pipe, or timeout behavior are recoverable. Dispatch keeps the run in `running`, keeps any claimed work item claimed, appends a concise recovery note to the active run output, and restarts Codex against the same persisted thread before asking it to continue. Recovery is bounded by an explicit retry limit. Explicit operator cancellation, project automation stop, server shutdown cancellation, the automation timeout, and non-retryable Codex turn failures remain terminal and continue to use the existing cancellation or failure release behavior.
 
+Dispatch repairs stale shared-asset symlinks in a project Codex home before launch. During each app-server run, Dispatch captures a bounded stderr diagnostic alongside the structured run log. When launch or execution fails, the run summary and automatic claim-release comment put the root cause reported by Codex first, followed by the SDK and transport details; a generic transport closure must not hide an available process error.
+
 ## Automation Concurrency
 
 Mutating and read-only runs use independent admission limits. A mutating run can start only when the running mutating count is below the workspace-constrained code-edit allowance derived from `max_code_edit_agents`; current-branch projects still cap that allowance at one. A read-only run can start only when the running read-only count is below `max_read_only_agents`; setting the read-only limit to zero disables read-only automation admission. Running read-only runs do not consume mutating slots, and running mutating runs do not consume read-only slots.

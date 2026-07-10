@@ -1,3 +1,9 @@
+//! Server-owned persistence, workflow services, automation, and transport adapters.
+//!
+//! `entities` mirrors SQLite closely and may contain text representations required by SeaORM and
+//! CrudKit. Domain services must decode those representations into the shared enum and view types
+//! before applying workflow policy or returning data to clients.
+
 pub(crate) mod agent_ids;
 pub(crate) mod agent_tools;
 pub(crate) mod api;

@@ -7,7 +7,7 @@ use crate::{
         item_labels, projects, work_item_events, work_item_labels, work_item_updates,
         workflow_labels,
     },
-    shared::view_models::{AgentReasoningEffort, CreateWorkItemLabelRequest},
+    shared::view_models::{AgentReasoningEffort, CreateWorkItemLabelRequest, WorkItemEventType},
 };
 
 #[derive(Clone, Debug)]
@@ -117,7 +117,7 @@ where
         conn,
         project_id,
         Some(item.id),
-        "item_created",
+        WorkItemEventType::ItemCreated,
         "Created item",
     )
     .await?;

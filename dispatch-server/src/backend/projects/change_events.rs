@@ -8,11 +8,14 @@ use crate::{
         entities::{project::ProjectModel, work_item_event},
         work_item_events,
     },
-    shared::view_models::{ProjectMemoryEventView, ProjectSystemPromptEventView},
+    shared::view_models::{
+        AuthorType, ProjectMemoryEventView, ProjectSystemPromptEventView, WorkItemEventType,
+    },
 };
 
-pub(super) const SYSTEM_PROMPT_CHANGED_EVENT_TYPE: &str = "SystemPromptChanged";
-pub(super) const MEMORY_CHANGED_EVENT_TYPE: &str = "MemoryChanged";
+pub(super) const SYSTEM_PROMPT_CHANGED_EVENT_TYPE: WorkItemEventType =
+    WorkItemEventType::SystemPromptChanged;
+pub(super) const MEMORY_CHANGED_EVENT_TYPE: WorkItemEventType = WorkItemEventType::MemoryChanged;
 
 #[derive(Clone, Debug)]
 pub enum ProjectChangeSource {
@@ -37,11 +40,11 @@ pub(super) struct SystemPromptChangedBody {
 }
 
 impl ProjectChangeSource {
-    fn actor_type(&self) -> &'static str {
+    fn actor_type(&self) -> AuthorType {
         match self {
-            Self::Agent { .. } => "agent",
-            Self::User => "user",
-            Self::System => "system",
+            Self::Agent { .. } => AuthorType::Agent,
+            Self::User => AuthorType::User,
+            Self::System => AuthorType::System,
         }
     }
 
@@ -184,7 +187,7 @@ where
 {
     Ok(work_item_event::Entity::find_by_id(event_id)
         .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(MEMORY_CHANGED_EVENT_TYPE))
+        .filter(work_item_event::Column::EventType.eq(MEMORY_CHANGED_EVENT_TYPE.as_storage()))
         .one(conn)
         .await
         .context("failed to load project memory event")?
@@ -240,7 +243,7 @@ pub(super) fn memory_event_to_view(
 async fn record_project_text_event<C>(
     conn: &C,
     project_id: i64,
-    event_type: &str,
+    event_type: WorkItemEventType,
     body: &str,
     source: &ProjectChangeSource,
 ) -> Result<work_item_event::Model>
@@ -265,26 +268,30 @@ where
 async fn list_project_text_events<C>(
     conn: &C,
     project_id: i64,
-    event_type: &str,
+    event_type: WorkItemEventType,
 ) -> Result<Vec<work_item_event::Model>>
 where
     C: ConnectionTrait,
 {
     Ok(work_item_event::Entity::find()
         .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(event_type))
+        .filter(work_item_event::Column::EventType.eq(event_type.as_storage()))
         .order_by_desc(work_item_event::Column::Id)
         .all(conn)
         .await?)
 }
 
-async fn compact_project_text_events<C>(conn: &C, project_id: i64, event_type: &str) -> Result<u64>
+async fn compact_project_text_events<C>(
+    conn: &C,
+    project_id: i64,
+    event_type: WorkItemEventType,
+) -> Result<u64>
 where
     C: ConnectionTrait,
 {
     Ok(work_item_event::Entity::delete_many()
         .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(event_type))
+        .filter(work_item_event::Column::EventType.eq(event_type.as_storage()))
         .exec(conn)
         .await?
         .rows_affected)
@@ -293,14 +300,14 @@ where
 async fn latest_project_text_event<C>(
     conn: &C,
     project_id: i64,
-    event_type: &str,
+    event_type: WorkItemEventType,
 ) -> Result<Option<work_item_event::Model>>
 where
     C: ConnectionTrait,
 {
     Ok(work_item_event::Entity::find()
         .filter(work_item_event::Column::ProjectId.eq(project_id))
-        .filter(work_item_event::Column::EventType.eq(event_type))
+        .filter(work_item_event::Column::EventType.eq(event_type.as_storage()))
         .order_by_desc(work_item_event::Column::Id)
         .one(conn)
         .await?)

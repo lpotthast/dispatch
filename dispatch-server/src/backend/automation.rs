@@ -44,16 +44,17 @@ use crate::{
         storage::{Store, utc_now},
     },
     shared::view_models::{
-        AgentCommitOutcome, AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece,
-        AgentRunStatus, AgentRunTokenUsageView, AgentRunView, AgentSandboxMode, AgentToolName,
-        AutomationRunMutability, AutomationStatusView, DEFAULT_STATE_LABEL,
-        ProjectMemoryEventRefView, ProjectSettingsView, ProjectView, RecoveredClaimView,
-        RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentCommitOutcome, AgentReasoningEffort, AgentRunCleanupStatus, AgentRunOutputKind,
+        AgentRunOutputPiece, AgentRunStatus, AgentRunTokenUsageView, AgentRunView,
+        AgentSandboxMode, AgentToolName, AutomationRunMutability, AutomationStatusView,
+        DEFAULT_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView, ProjectView,
+        RecoveredClaimView, RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
 const AGENT_PROCESS_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
 const CODEX_STREAM_RECOVERY_MAX_ATTEMPTS: usize = 12;
+const CODEX_STDERR_TAIL_MAX_CHARS: usize = 12_000;
 static SERVER_API_URL: OnceLock<String> = OnceLock::new();
 const CODEX_STREAM_RECOVERY_PROMPT: &str = "\
 Dispatch recovered from a transient Codex app-server reconnect or transport interruption during \
@@ -167,6 +168,7 @@ struct AgentProcessStart {
     tool_name: AgentToolName,
     codex_binary: PathBuf,
     codex_home: PathBuf,
+    codex_stderr_path: PathBuf,
     dispatch_binary: PathBuf,
     prompt_path: PathBuf,
     working_dir: PathBuf,
@@ -192,12 +194,127 @@ impl fmt::Display for AutomationCancelled {
 
 impl std::error::Error for AutomationCancelled {}
 
+#[derive(Debug)]
+struct CodexAppServerStderr {
+    root_cause: String,
+    tail: String,
+}
+
+impl fmt::Display for CodexAppServerStderr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Codex app-server reported on stderr: {}",
+            self.root_cause
+        )?;
+        if self.tail.trim() != self.root_cause {
+            write!(f, "\nCodex app-server stderr tail:\n{}", self.tail)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CodexAppServerStderr {}
+
 fn is_automation_cancelled(err: &Report) -> bool {
     err.iter_reports().any(|report| {
         report
             .downcast_current_context::<AutomationCancelled>()
             .is_some()
     })
+}
+
+async fn attach_codex_stderr(err: Report, stderr_path: &Path) -> Report {
+    let bytes = match tokio::fs::read(stderr_path).await {
+        Ok(bytes) => bytes,
+        Err(read_err) if read_err.kind() == ErrorKind::NotFound => return err,
+        Err(read_err) => {
+            tracing::warn!(
+                path = %stderr_path.display(),
+                error = %read_err,
+                "failed to read Codex app-server stderr diagnostics"
+            );
+            return err;
+        }
+    };
+    let stderr = String::from_utf8_lossy(&bytes);
+    let Some(root_cause) = codex_stderr_root_cause(&stderr) else {
+        return err;
+    };
+    let diagnostic = CodexAppServerStderr {
+        root_cause,
+        tail: bounded_text_tail(&stderr, CODEX_STDERR_TAIL_MAX_CHARS),
+    };
+    err.context(diagnostic).into_dynamic()
+}
+
+fn automation_failure_message(err: &Report) -> (String, String) {
+    let root_cause = err
+        .iter_reports()
+        .find_map(|report| {
+            report
+                .downcast_current_context::<CodexAppServerStderr>()
+                .map(|diagnostic| diagnostic.root_cause.clone())
+        })
+        .or_else(|| {
+            err.iter_reports()
+                .last()
+                .map(|report| single_line(&report.to_string()))
+        })
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| "Codex app-server failed without a diagnostic message".to_owned());
+    let message =
+        format!("Codex automation failed. Root cause: {root_cause}\n\nTechnical details:\n{err}");
+    (message, root_cause)
+}
+
+fn codex_stderr_root_cause(stderr: &str) -> Option<String> {
+    let lines = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+
+    if let Some(caused_by) = lines
+        .iter()
+        .rposition(|line| line.eq_ignore_ascii_case("caused by:"))
+        && let Some(line) = lines[caused_by + 1..].last()
+    {
+        return Some(single_line(strip_diagnostic_line_prefix(line)));
+    }
+    if let Some(message) = lines
+        .iter()
+        .rev()
+        .find_map(|line| line.strip_prefix("Error:"))
+    {
+        return Some(single_line(message));
+    }
+    None
+}
+
+fn strip_diagnostic_line_prefix(line: &str) -> &str {
+    let line = line.trim();
+    let digit_count = line.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    line.get(digit_count..)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .map(str::trim)
+        .unwrap_or(line)
+}
+
+fn bounded_text_tail(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.trim().to_owned();
+    }
+    let tail = value
+        .chars()
+        .skip(char_count - max_chars)
+        .collect::<String>();
+    format!("[earlier stderr omitted]\n{}", tail.trim_start())
+}
+
+fn single_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn cancellation_requested(cancellation: &Option<watch::Receiver<bool>>) -> bool {
@@ -612,10 +729,11 @@ async fn complete_started_automation_run(
         }
         Err(err) => {
             let cancelled = is_automation_cancelled(&err);
-            let message = if cancelled {
-                "Automation run cancelled".to_owned()
+            let (message, root_cause) = if cancelled {
+                ("Automation run cancelled".to_owned(), None)
             } else {
-                format!("Failed to launch or run Codex app-server turn: {err}")
+                let (message, root_cause) = automation_failure_message(&err);
+                (message, Some(root_cause))
             };
             let output = vec![new_output_piece(
                 1,
@@ -623,7 +741,10 @@ async fn complete_started_automation_run(
                 None,
                 if cancelled { "cancelled" } else { "error" },
                 message.clone(),
-                serde_json::json!({ "cancelled": cancelled }),
+                serde_json::json!({
+                    "cancelled": cancelled,
+                    "root_cause": root_cause,
+                }),
             )];
             write_run_output_log(&log_path, &output).context_with(|| {
                 format!("failed to write automation log {}", log_path.display())
@@ -713,6 +834,18 @@ async fn prepare_automation_launch(
     }
     let prompt_path = log_dir.join(format!("run-{}.prompt.md", run.id));
     let log_path = log_dir.join(format!("run-{}.output.json", run.id));
+    let codex_stderr_path = log_dir.join(format!("run-{}.codex-stderr.log", run.id));
+    if let Err(err) = fs::write(&codex_stderr_path, "").context_with(|| {
+        format!(
+            "failed to prepare Codex stderr log {}",
+            codex_stderr_path.display()
+        )
+    }) {
+        return Err(LaunchPreparationFailure::new(
+            run,
+            format!("Failed to prepare Codex diagnostics: {err:#}"),
+        ));
+    }
     let agent_model = effective_agent_model(settings, claimed_item);
     let agent_reasoning_effort = effective_agent_reasoning_effort(settings, claimed_item);
     let codex_home = match codex_app_server::ensure_project_codex_home(settings) {
@@ -843,6 +976,7 @@ async fn prepare_automation_launch(
         tool_name: tool,
         codex_binary,
         codex_home,
+        codex_stderr_path,
         dispatch_binary,
         prompt_path,
         working_dir: PathBuf::from(&run.working_dir),
@@ -1236,7 +1370,7 @@ async fn create_run(
         commit_shas: Set("[]".to_owned()),
         pr_requested: Set(false),
         pr_url: Set(None),
-        cleanup_status: Set("not_applicable".to_owned()),
+        cleanup_status: Set(AgentRunCleanupStatus::NotApplicable.as_storage().to_owned()),
         worktree_cleaned_at: Set(None),
         result_summary: Set(String::new()),
         started_at: Set(Some(now.clone())),
@@ -1277,9 +1411,9 @@ async fn update_run_launch_details(
     active.commit_required = Set(details.commit_required);
     active.pr_requested = Set(details.pr_requested);
     active.cleanup_status = Set(if has_worktree {
-        "pending".to_owned()
+        AgentRunCleanupStatus::Pending.as_storage().to_owned()
     } else {
-        "not_applicable".to_owned()
+        AgentRunCleanupStatus::NotApplicable.as_storage().to_owned()
     });
     active.updated_at = Set(utc_now());
     let updated = active
@@ -1460,6 +1594,7 @@ async fn run_agent_process(
         None
     };
     let run_id = start.run_id;
+    let codex_stderr_path = start.codex_stderr_path.clone();
 
     let result = run_agent_process_inner(
         start,
@@ -1472,7 +1607,10 @@ async fn run_agent_process(
     if let Some(registry) = &sessions {
         registry.finish(run_id).await;
     }
-    result
+    match result {
+        Ok(output) => Ok(output),
+        Err(err) => Err(attach_codex_stderr(err, &codex_stderr_path).await),
+    }
 }
 
 async fn run_agent_process_inner(
@@ -1704,6 +1842,7 @@ async fn start_codex_streamed_turn(
     let codex = codex_app_server::spawn_codex_with_home_and_env(
         &start.codex_binary,
         &start.codex_home,
+        &start.codex_stderr_path,
         env.clone(),
     )
     .await
@@ -1988,9 +2127,11 @@ async fn cleanup_worktree_for_run(
         return Ok(run);
     }
     let Some(worktree_path) = run.worktree_path.clone() else {
-        return update_run_cleanup(store, run, "not_applicable", None).await;
+        return update_run_cleanup(store, run, AgentRunCleanupStatus::NotApplicable, None).await;
     };
-    if run.cleanup_status == "cleaned" {
+    let cleanup_status = AgentRunCleanupStatus::from_str(&run.cleanup_status)
+        .context("agent run has invalid worktree cleanup status")?;
+    if cleanup_status == AgentRunCleanupStatus::Cleaned {
         return Ok(run);
     }
     let branch_name = run
@@ -1998,17 +2139,17 @@ async fn cleanup_worktree_for_run(
         .clone()
         .ok_or_else(|| report!("run {} has a worktree but no branch name", run.id))?;
     automation_workspace::prune_git_worktree(repo_path, &branch_name, Path::new(&worktree_path))?;
-    update_run_cleanup(store, run, "cleaned", Some(utc_now())).await
+    update_run_cleanup(store, run, AgentRunCleanupStatus::Cleaned, Some(utc_now())).await
 }
 
 async fn update_run_cleanup(
     store: &Store,
     run: AgentRunModel,
-    cleanup_status: &str,
+    cleanup_status: AgentRunCleanupStatus,
     worktree_cleaned_at: Option<String>,
 ) -> Result<AgentRunModel> {
     let mut active: AgentRunActiveModel = run.into();
-    active.cleanup_status = Set(cleanup_status.to_owned());
+    active.cleanup_status = Set(cleanup_status.as_storage().to_owned());
     active.worktree_cleaned_at = Set(worktree_cleaned_at);
     active.updated_at = Set(utc_now());
     let updated = active
@@ -2082,7 +2223,7 @@ fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
         commit_shas: parse_commit_shas(&run.commit_shas)?,
         pr_requested: run.pr_requested,
         pr_url: run.pr_url,
-        cleanup_status: run.cleanup_status,
+        cleanup_status: AgentRunCleanupStatus::from_str(&run.cleanup_status)?,
         worktree_cleaned_at: run.worktree_cleaned_at,
         result_summary: run.result_summary,
         started_at: run.started_at,
@@ -2451,6 +2592,68 @@ mod tests {
         assert!(piece.body.contains("reconnect attempt 1/"));
         assert_eq!(piece.metadata["recoverable"], true);
         assert_eq!(piece.metadata["thread_id"], "thread-1");
+    }
+
+    #[test]
+    fn codex_stderr_prefers_the_reported_root_cause() {
+        let stderr = "2026-07-10T13:08:04Z ERROR stale state path\n\
+                      Error: No such file or directory (os error 2)\n";
+
+        assert_eq!(
+            codex_stderr_root_cause(stderr).as_deref(),
+            Some("No such file or directory (os error 2)")
+        );
+    }
+
+    #[test]
+    fn codex_stderr_uses_the_deepest_chained_cause() {
+        let stderr = "Error: failed to initialize Codex state\n\n\
+                      Caused by:\n\
+                        0: failed to open state database\n\
+                        1: Permission denied (os error 13)\n";
+
+        assert_eq!(
+            codex_stderr_root_cause(stderr).as_deref(),
+            Some("Permission denied (os error 13)")
+        );
+    }
+
+    #[test]
+    fn codex_stderr_does_not_promote_ordinary_error_logs() {
+        let stderr = "2026-07-10T13:08:04Z ERROR codex_rollout::list: stale state path\n";
+
+        assert_eq!(codex_stderr_root_cause(stderr), None);
+    }
+
+    #[tokio::test]
+    async fn automation_failure_highlights_captured_codex_stderr() {
+        let temp = TempDir::new().unwrap();
+        let stderr_path = temp.path().join("codex.stderr.log");
+        tokio::fs::write(
+            &stderr_path,
+            "Error: No such file or directory (os error 2)\n",
+        )
+        .await
+        .unwrap();
+        let err = report!(ClientError::Rpc {
+            error: codex_app_server_sdk::RpcError {
+                code: -32_098,
+                message: "transport error: transport closed".to_owned(),
+                data: None,
+            },
+        })
+        .context("failed to start Codex app-server turn")
+        .into_dynamic();
+
+        let err = attach_codex_stderr(err, &stderr_path).await;
+        let (message, root_cause) = automation_failure_message(&err);
+
+        assert_eq!(root_cause, "No such file or directory (os error 2)");
+        assert!(message.starts_with(
+            "Codex automation failed. Root cause: No such file or directory (os error 2)"
+        ));
+        assert!(message.contains("transport error: transport closed"));
+        assert!(message.contains("Codex app-server reported on stderr"));
     }
 
     #[tokio::test]

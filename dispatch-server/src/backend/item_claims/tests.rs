@@ -18,7 +18,7 @@ use crate::backend::{
 };
 use crate::shared::view_models::{
     AUTOMATION_BLOCKED_LABEL_KEY, AuthorType, CLAIMED_FROM_STATE_LABEL_KEY, CLAIMED_STATE_LABEL,
-    FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL, STATE_LABEL_KEY,
+    FEEDBACK_REQUESTED_LABEL_KEY, FINISHED_STATE_LABEL, STATE_LABEL_KEY, WorkItemEventType,
 };
 
 async fn test_store() -> (TempDir, Store) {
@@ -118,7 +118,7 @@ async fn claiming_item_records_agent_identity() {
     assert!(
         events
             .iter()
-            .any(|event| event.event_type == "item_claimed")
+            .any(|event| event.event_type == WorkItemEventType::ItemClaimed)
     );
 }
 
@@ -157,11 +157,9 @@ async fn progress_records_agent_comment_and_touches_item() {
     assert_eq!(comment.body, "Working");
     assert_eq!(updated.version, claimed.version + 1);
     assert_eq!(updated.comment_count, 2);
-    assert!(
-        events
-            .iter()
-            .any(|event| event.event_type == "progress_added" && event.body == "Working")
-    );
+    assert!(events.iter().any(|event| {
+        event.event_type == WorkItemEventType::ProgressAdded && event.body == "Working"
+    }));
 }
 
 #[tokio::test]
@@ -1232,7 +1230,7 @@ async fn request_feedback_restores_source_state_and_blocks_automation() {
     assert!(
         events
             .iter()
-            .any(|event| event.event_type == "feedback_requested")
+            .any(|event| event.event_type == WorkItemEventType::FeedbackRequested)
     );
 
     let claimed_again = claim_item(&store, "demo", "agent-b", "ready")
@@ -1588,7 +1586,7 @@ async fn finish_moves_done_and_records_report() {
     assert!(
         events
             .iter()
-            .any(|event| event.event_type == "item_finished")
+            .any(|event| event.event_type == WorkItemEventType::ItemFinished)
     );
 }
 

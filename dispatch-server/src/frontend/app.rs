@@ -31,8 +31,8 @@ use crate::{
         FEEDBACK_REQUESTED_LABEL_KEY, PersonalityView, ProjectGitStatusView, ProjectLabelView,
         ProjectMemoryEventRefView, ProjectMemoryEventView, ProjectSettingsView,
         ProjectSystemPromptEventView, ProjectView, RevertStrategy, RunLogView, STATE_LABEL_KEY,
-        SwimLaneView, WorkItemClaimSourceView, WorkItemRelationshipListEntry, WorkItemStateView,
-        WorkItemView, WorkspaceEditorView, WorkspaceMode,
+        SwimLaneItemOrder, SwimLaneView, WorkItemClaimSourceView, WorkItemRelationshipListEntry,
+        WorkItemStateView, WorkItemView, WorkspaceEditorView, WorkspaceMode,
     },
 };
 use crudkit_leptos::crud_instance::CrudInstanceContext;
@@ -2129,7 +2129,7 @@ fn run_log_content(page: RunLogPage) -> AnyView {
                         <dt>"working dir"</dt>
                         <dd>{working_dir}</dd>
                         <dt>"cleanup"</dt>
-                        <dd>{run_log.run.cleanup_status}</dd>
+                        <dd>{run_log.run.cleanup_status.to_string()}</dd>
                         <dt>"tokens"</dt>
                         <dd>{token_usage}</dd>
                         <dt>"commit"</dt>
@@ -3353,7 +3353,7 @@ fn run_session_detail(
                         {session.run.status.to_string()}
                         " · "
                         "cleanup "
-                        {session.run.cleanup_status}
+                        {session.run.cleanup_status.to_string()}
                     </p>
                 </div>
                 <a class="button-link secondary-link" href=href>"Open"</a>
@@ -4011,7 +4011,7 @@ fn board_view(
                 .filter(|item| item_matches_condition(item, &lane.filter))
                 .cloned()
                 .collect::<Vec<_>>();
-            sort_lane_items(&mut lane_items, &lane.item_order);
+            sort_lane_items(&mut lane_items, lane.item_order);
             let cards = lane_items
                 .into_iter()
                 .map(|item| item_card(project.clone(), item))
@@ -4152,40 +4152,40 @@ fn item_matches_clause(item: &WorkItemView, clause: &ConditionClause) -> bool {
     }
 }
 
-fn sort_lane_items(items: &mut [WorkItemView], item_order: &str) {
+fn sort_lane_items(items: &mut [WorkItemView], item_order: SwimLaneItemOrder) {
     match item_order {
-        "updated_asc" => items.sort_by(|left, right| {
+        SwimLaneItemOrder::UpdatedAsc => items.sort_by(|left, right| {
             left.updated_at
                 .cmp(&right.updated_at)
                 .then_with(|| left.id.cmp(&right.id))
         }),
-        "created_desc" => items.sort_by(|left, right| {
+        SwimLaneItemOrder::CreatedDesc => items.sort_by(|left, right| {
             right
                 .created_at
                 .cmp(&left.created_at)
                 .then_with(|| right.id.cmp(&left.id))
         }),
-        "created_asc" => items.sort_by(|left, right| {
+        SwimLaneItemOrder::CreatedAsc => items.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         }),
-        "id_desc" => items.sort_by_key(|item| std::cmp::Reverse(item.id)),
-        "id_asc" => items.sort_by_key(|item| item.id),
-        "title_asc" => items.sort_by(|left, right| {
+        SwimLaneItemOrder::IdDesc => items.sort_by_key(|item| std::cmp::Reverse(item.id)),
+        SwimLaneItemOrder::IdAsc => items.sort_by_key(|item| item.id),
+        SwimLaneItemOrder::TitleAsc => items.sort_by(|left, right| {
             left.title
                 .to_lowercase()
                 .cmp(&right.title.to_lowercase())
                 .then_with(|| left.id.cmp(&right.id))
         }),
-        "title_desc" => items.sort_by(|left, right| {
+        SwimLaneItemOrder::TitleDesc => items.sort_by(|left, right| {
             right
                 .title
                 .to_lowercase()
                 .cmp(&left.title.to_lowercase())
                 .then_with(|| right.id.cmp(&left.id))
         }),
-        _ => items.sort_by(|left, right| {
+        SwimLaneItemOrder::UpdatedDesc => items.sort_by(|left, right| {
             right
                 .updated_at
                 .cmp(&left.updated_at)

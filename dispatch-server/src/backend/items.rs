@@ -17,7 +17,7 @@ use crate::{
         work_item_updates::{self, WorkItemUpdatePlan},
         work_item_views, work_items, workflow_labels,
     },
-    shared::view_models::{STATE_LABEL_KEY, WorkItemEventView, WorkItemView},
+    shared::view_models::{STATE_LABEL_KEY, WorkItemEventType, WorkItemEventView, WorkItemView},
 };
 
 pub use work_item_creation::CreateWorkItem;
@@ -149,7 +149,7 @@ pub async fn update_item(
             &txn,
             project_id,
             Some(item_id),
-            "item_updated",
+            WorkItemEventType::ItemUpdated,
             "Updated item",
         )
         .await?;
@@ -167,7 +167,7 @@ pub async fn update_item(
             &txn,
             project_id,
             Some(item_id),
-            "item_moved",
+            WorkItemEventType::ItemMoved,
             &event_body,
         )
         .await?;
@@ -232,7 +232,7 @@ async fn delete_item_in_project(
         &txn,
         project_id,
         Some(item_id),
-        "item_deleted",
+        WorkItemEventType::ItemDeleted,
         "Deleted item",
     )
     .await?;
@@ -241,7 +241,7 @@ async fn delete_item_in_project(
             &txn,
             project_id,
             Some(*related_item_id),
-            "relationship_deleted",
+            WorkItemEventType::RelationshipDeleted,
             &format!("Deleted relationships touching removed item #{item_id}"),
         )
         .await?;
@@ -286,20 +286,42 @@ pub async fn list_events(
         .await
         .context("failed to list work item events")?;
 
-    Ok(events
+    events
         .into_iter()
-        .map(|event| WorkItemEventView {
-            id: event.id,
-            project_id: event.project_id,
-            work_item_id: event.work_item_id,
-            event_type: event.event_type,
-            body: event.body,
-            actor_type: event.actor_type,
-            actor_id: event.actor_id,
-            agent_run_id: event.agent_run_id,
-            created_at: event.created_at,
+        .map(|event| {
+            let event_type = event
+                .event_type
+                .parse::<WorkItemEventType>()
+                .context_with(|| {
+                    format!(
+                        "work item event {} has invalid type '{}'",
+                        event.id, event.event_type
+                    )
+                })?;
+            let actor_type = event
+                .actor_type
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .context_with(|| {
+                    format!(
+                        "work item event {} has invalid actor type {:?}",
+                        event.id, event.actor_type
+                    )
+                })?;
+            Ok(WorkItemEventView {
+                id: event.id,
+                project_id: event.project_id,
+                work_item_id: event.work_item_id,
+                event_type,
+                body: event.body,
+                actor_type,
+                actor_id: event.actor_id,
+                agent_run_id: event.agent_run_id,
+                created_at: event.created_at,
+            })
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -421,7 +443,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].project_id, project_id);
         assert_eq!(events[0].work_item_id, Some(item.id));
-        assert_eq!(events[0].event_type, "item_created");
+        assert_eq!(events[0].event_type, WorkItemEventType::ItemCreated);
         assert_eq!(events[0].body, "Created item");
         assert!(events[0].actor_type.is_none());
         assert!(events[0].actor_id.is_none());
@@ -892,14 +914,14 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .filter(|event| event.event_type == "item_updated")
+                .filter(|event| event.event_type == WorkItemEventType::ItemUpdated)
                 .count(),
             1
         );
         assert_eq!(
             events
                 .iter()
-                .filter(|event| event.event_type == "item_moved")
+                .filter(|event| event.event_type == WorkItemEventType::ItemMoved)
                 .count(),
             1
         );

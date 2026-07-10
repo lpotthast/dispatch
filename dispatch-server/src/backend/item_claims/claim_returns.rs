@@ -8,7 +8,7 @@ use crate::{
         work_item_comments, work_item_events, work_item_labels, work_item_views, work_items,
         workflow_labels,
     },
-    shared::view_models::WorkItemView,
+    shared::view_models::{WorkItemEventType, WorkItemView},
 };
 
 use super::active_claims;
@@ -87,10 +87,10 @@ impl ClaimReturnMode<'_> {
         }
     }
 
-    fn event_type(&self) -> &'static str {
+    fn event_type(&self) -> WorkItemEventType {
         match self {
-            Self::Release { .. } => "item_released",
-            Self::FeedbackRequest { .. } => "feedback_requested",
+            Self::Release { .. } => WorkItemEventType::ItemReleased,
+            Self::FeedbackRequest { .. } => WorkItemEventType::FeedbackRequested,
         }
     }
 

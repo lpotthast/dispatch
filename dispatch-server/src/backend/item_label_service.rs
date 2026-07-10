@@ -197,7 +197,7 @@ mod tests {
         items::{CreateWorkItem, create_item, list_events},
         projects::{CreateProject, create_project},
     };
-    use crate::shared::view_models::STATE_LABEL_KEY;
+    use crate::shared::view_models::{STATE_LABEL_KEY, WorkItemEventType};
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
@@ -290,15 +290,28 @@ mod tests {
             .unwrap();
         let label_events: Vec<_> = events
             .iter()
-            .filter(|event| event.event_type.starts_with("label_"))
-            .map(|event| (event.event_type.as_str(), event.body.as_str()))
+            .filter(|event| {
+                matches!(
+                    event.event_type,
+                    WorkItemEventType::LabelAdded
+                        | WorkItemEventType::LabelUpdated
+                        | WorkItemEventType::LabelDeleted
+                )
+            })
+            .map(|event| (event.event_type, event.body.as_str()))
             .collect();
         assert_eq!(
             label_events,
             vec![
-                ("label_added", "Added label priority=high"),
-                ("label_updated", "Updated label priority=low"),
-                ("label_deleted", "Deleted label priority=low"),
+                (WorkItemEventType::LabelAdded, "Added label priority=high"),
+                (
+                    WorkItemEventType::LabelUpdated,
+                    "Updated label priority=low"
+                ),
+                (
+                    WorkItemEventType::LabelDeleted,
+                    "Deleted label priority=low"
+                ),
             ]
         );
     }

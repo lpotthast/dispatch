@@ -26,7 +26,7 @@ use crate::{
     shared::view_models::{
         AgentReasoningEffort, AgentSandboxMode, AgentToolName, AutomationActivation,
         AutomationEffect, AutomationRunMutability, CodexAgentModel, DEFAULT_STATE_LABEL,
-        RevertStrategy, WorkspaceMode, WorktreeCleanupPolicy,
+        RevertStrategy, WorkItemEventType, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -693,7 +693,7 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
                 &txn,
                 project_id,
                 Some(item_id),
-                "item_updated",
+                WorkItemEventType::ItemUpdated,
                 "Updated item",
             )
             .await
@@ -2051,8 +2051,10 @@ impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
         create_model.filter = swim_lanes::normalize_filter_json(create_model.filter.clone())
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
-        create_model.item_order = swim_lanes::normalize_item_order(create_model.item_order.clone())
-            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        create_model.item_order = swim_lanes::parse_item_order(&create_model.item_order)
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?
+            .as_storage()
+            .to_owned();
         Ok(data)
     }
 
@@ -2081,8 +2083,10 @@ impl CrudLifetime<CrudSwimLaneResource> for SwimLaneLifetime {
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
         update_model.filter = swim_lanes::normalize_filter_json(update_model.filter.clone())
             .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
-        update_model.item_order = swim_lanes::normalize_item_order(update_model.item_order.clone())
-            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?;
+        update_model.item_order = swim_lanes::parse_item_order(&update_model.item_order)
+            .map_err(|err| swim_lane_unprocessable_error(err.to_string()))?
+            .as_storage()
+            .to_owned();
         Ok(data)
     }
 
@@ -2414,7 +2418,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| event.event_type == "item_created")
+                .any(|event| event.event_type == WorkItemEventType::ItemCreated)
         );
     }
 
@@ -2462,7 +2466,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| event.event_type == "item_updated")
+                .any(|event| event.event_type == WorkItemEventType::ItemUpdated)
         );
     }
 
@@ -2510,16 +2514,14 @@ mod tests {
         );
 
         let project_events = list_events(&store, "demo", None, None).await.unwrap();
-        assert!(
-            project_events
-                .iter()
-                .any(|event| event.event_type == "item_deleted" && event.body == "Deleted item")
-        );
+        assert!(project_events.iter().any(|event| {
+            event.event_type == WorkItemEventType::ItemDeleted && event.body == "Deleted item"
+        }));
         let target_events = list_events(&store, "demo", Some(target.id), None)
             .await
             .unwrap();
         assert!(target_events.iter().any(|event| {
-            event.event_type == "relationship_deleted"
+            event.event_type == WorkItemEventType::RelationshipDeleted
                 && event.body
                     == format!("Deleted relationships touching removed item #{}", source.id)
         }));

@@ -42,7 +42,7 @@ use crate::{
     },
     shared::view_models::{
         AgentReasoningEffort, CodexAgentModel, DEFAULT_STATE_LABEL, PersonalityView,
-        ProjectLabelView, STATE_LABEL_KEY, UiEvent,
+        ProjectLabelView, STATE_LABEL_KEY, SwimLaneItemOrder, UiEvent,
     },
 };
 use crudkit_leptos::crud_instance::CrudInstanceContext;
@@ -596,20 +596,31 @@ fn value_to_optional_i64(value: &Value) -> Option<i64> {
     }
 }
 
+const SWIM_LANE_ORDER_OPTIONS: [(&str, &str); 8] = [
+    (
+        SwimLaneItemOrder::UpdatedDesc.as_storage(),
+        "Updated newest first",
+    ),
+    (
+        SwimLaneItemOrder::UpdatedAsc.as_storage(),
+        "Updated oldest first",
+    ),
+    (
+        SwimLaneItemOrder::CreatedDesc.as_storage(),
+        "Created newest first",
+    ),
+    (
+        SwimLaneItemOrder::CreatedAsc.as_storage(),
+        "Created oldest first",
+    ),
+    (SwimLaneItemOrder::IdDesc.as_storage(), "ID descending"),
+    (SwimLaneItemOrder::IdAsc.as_storage(), "ID ascending"),
+    (SwimLaneItemOrder::TitleAsc.as_storage(), "Title A-Z"),
+    (SwimLaneItemOrder::TitleDesc.as_storage(), "Title Z-A"),
+];
+
 fn swim_lane_order_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
-    select_field_renderer(
-        &[
-            ("updated_desc", "Updated newest first"),
-            ("updated_asc", "Updated oldest first"),
-            ("created_desc", "Created newest first"),
-            ("created_asc", "Created oldest first"),
-            ("id_desc", "ID descending"),
-            ("id_asc", "ID ascending"),
-            ("title_asc", "Title A-Z"),
-            ("title_desc", "Title Z-A"),
-        ],
-        false,
-    )
+    select_field_renderer(&SWIM_LANE_ORDER_OPTIONS, false)
 }
 
 pub(crate) fn crudkit_i64_id(id: i64) -> SerializableId {

@@ -313,8 +313,8 @@ fn metadata_value_text(metadata: &serde_json::Value, key: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use dispatch_types::{
-        AgentRunOutputKind, AgentRunStatus, AgentToolName, AuthorType, AutomationRunMutability,
-        WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
+        AgentRunCleanupStatus, AgentRunOutputKind, AgentRunStatus, AgentToolName, AuthorType,
+        AutomationRunMutability, WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
         WorkItemRelationshipListEntry, WorkItemRelationshipView,
     };
     use serde_json::json;
@@ -416,7 +416,7 @@ mod tests {
             commit_shas: vec!["abc123".to_owned()],
             pr_requested: false,
             pr_url: None,
-            cleanup_status: "not_needed".to_owned(),
+            cleanup_status: AgentRunCleanupStatus::NotApplicable,
             worktree_cleaned_at: None,
             result_summary: "Done".to_owned(),
             started_at: None,

@@ -73,8 +73,12 @@ pub struct UpdateProjectSettings {
     pub agent_git_command_policy: Option<AgentGitCommandPolicy>,
 }
 
+/// Fully decoded project settings used after crossing the text-based SeaORM boundary.
+///
+/// Keeping this representation separate from `ProjectModel` makes invalid persisted enum and JSON
+/// values ordinary service errors. They never reach workflow code and never panic view creation.
 #[derive(Clone, Debug)]
-struct ProjectSettingsPlan {
+struct ValidatedProjectSettings {
     workspace_mode: WorkspaceMode,
     max_code_edit_agents: i64,
     max_read_only_agents: i64,
@@ -112,8 +116,52 @@ impl UpdateProjectSettings {
     }
 }
 
-impl ProjectSettingsPlan {
-    fn new(
+impl ValidatedProjectSettings {
+    fn from_model(project: &ProjectModel) -> Result<Self> {
+        let settings = Self::decode_model(project)?;
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    fn decode_model(project: &ProjectModel) -> Result<Self> {
+        Ok(Self {
+            workspace_mode: WorkspaceMode::from_str(&project.workspace_mode)
+                .context("project has invalid workspace mode")?,
+            max_code_edit_agents: project.max_code_edit_agents,
+            max_read_only_agents: project.max_read_only_agents,
+            create_pr: project.create_pr,
+            auto_commit: project.auto_commit,
+            commit_standard: project.commit_standard.clone(),
+            revert_strategy: RevertStrategy::from_str(&project.revert_strategy)
+                .context("project has invalid revert strategy")?,
+            stale_claim_minutes: project.stale_claim_minutes,
+            worktree_cleanup_policy: WorktreeCleanupPolicy::from_str(
+                &project.worktree_cleanup_policy,
+            )
+            .context("project has invalid worktree cleanup policy")?,
+            default_agent_tool: AgentToolName::from_str(&project.default_agent_tool)
+                .context("project has invalid default agent tool")?,
+            default_agent_model: normalize_optional(project.default_agent_model.clone()),
+            default_agent_reasoning_effort: project
+                .default_agent_reasoning_effort
+                .as_deref()
+                .map(str::parse::<AgentReasoningEffort>)
+                .transpose()
+                .context("project has invalid default agent reasoning effort")?,
+            agent_sandbox_mode: AgentSandboxMode::from_str(&project.agent_sandbox_mode)
+                .context("project has invalid agent sandbox mode")?,
+            agent_extra_writable_roots: parse_agent_extra_writable_roots_storage(
+                &project.agent_extra_writable_roots,
+            )
+            .context("project has invalid extra writable roots")?,
+            agent_git_command_policy: parse_agent_git_command_policy_storage(
+                &project.agent_git_command_policy,
+            )
+            .context("project has invalid agent Git command policy")?,
+        })
+    }
+
+    fn with_update(
         update: UpdateProjectSettings,
         existing: &ProjectModel,
         database_path: &Path,
@@ -122,92 +170,74 @@ impl ProjectSettingsPlan {
             bail!("project settings update requires at least one field");
         }
 
-        let workspace_mode = update
-            .workspace_mode
-            .unwrap_or(WorkspaceMode::from_str(&existing.workspace_mode)?);
-        let max_code_edit_agents = update
-            .max_code_edit_agents
-            .unwrap_or(existing.max_code_edit_agents);
-        let max_read_only_agents = update
-            .max_read_only_agents
-            .unwrap_or(existing.max_read_only_agents);
-        let create_pr = update.create_pr.unwrap_or(existing.create_pr);
-        let auto_commit = update.auto_commit.unwrap_or(existing.auto_commit);
-        let commit_standard = update
-            .commit_standard
-            .map(|value| value.trim().to_owned())
-            .unwrap_or_else(|| existing.commit_standard.clone());
-        let revert_strategy = update
-            .revert_strategy
-            .unwrap_or(RevertStrategy::from_str(&existing.revert_strategy)?);
-        let stale_claim_minutes = update
-            .stale_claim_minutes
-            .unwrap_or(existing.stale_claim_minutes);
-        let worktree_cleanup_policy =
-            update
-                .worktree_cleanup_policy
-                .unwrap_or(WorktreeCleanupPolicy::from_str(
-                    &existing.worktree_cleanup_policy,
-                )?);
-        let default_agent_tool = update
-            .default_agent_tool
-            .unwrap_or(AgentToolName::from_str(&existing.default_agent_tool)?);
-        let default_agent_model = update
-            .default_agent_model
-            .map(normalize_optional)
-            .unwrap_or_else(|| normalize_optional(existing.default_agent_model.clone()));
-        let default_agent_reasoning_effort = match update.default_agent_reasoning_effort {
-            Some(value) => value,
-            None => existing
-                .default_agent_reasoning_effort
-                .as_deref()
-                .map(str::parse::<AgentReasoningEffort>)
-                .transpose()?,
-        };
-        let agent_sandbox_mode = update
-            .agent_sandbox_mode
-            .unwrap_or(AgentSandboxMode::from_str(&existing.agent_sandbox_mode)?);
-        let agent_extra_writable_roots = match update.agent_extra_writable_roots {
-            Some(value) => normalize_agent_extra_writable_roots(value)?,
-            None => parse_agent_extra_writable_roots_storage(&existing.agent_extra_writable_roots)?,
-        };
-        let agent_git_command_policy =
-            update
-                .agent_git_command_policy
-                .unwrap_or(parse_agent_git_command_policy_storage(
-                    &existing.agent_git_command_policy,
-                )?);
+        let mut settings = Self::decode_model(existing)
+            .context_with(|| format!("project '{}' has invalid settings", existing.name))?;
+
+        if let Some(workspace_mode) = update.workspace_mode {
+            settings.workspace_mode = workspace_mode;
+        }
+        if let Some(max_code_edit_agents) = update.max_code_edit_agents {
+            settings.max_code_edit_agents = max_code_edit_agents;
+        }
+        if let Some(max_read_only_agents) = update.max_read_only_agents {
+            settings.max_read_only_agents = max_read_only_agents;
+        }
+        if let Some(create_pr) = update.create_pr {
+            settings.create_pr = create_pr;
+        }
+        if let Some(auto_commit) = update.auto_commit {
+            settings.auto_commit = auto_commit;
+        }
+        if let Some(commit_standard) = update.commit_standard {
+            settings.commit_standard = commit_standard.trim().to_owned();
+        }
+        if let Some(revert_strategy) = update.revert_strategy {
+            settings.revert_strategy = revert_strategy;
+        }
+        if let Some(stale_claim_minutes) = update.stale_claim_minutes {
+            settings.stale_claim_minutes = stale_claim_minutes;
+        }
+        if let Some(worktree_cleanup_policy) = update.worktree_cleanup_policy {
+            settings.worktree_cleanup_policy = worktree_cleanup_policy;
+        }
+        if let Some(default_agent_tool) = update.default_agent_tool {
+            settings.default_agent_tool = default_agent_tool;
+        }
+        if let Some(default_agent_model) = update.default_agent_model {
+            settings.default_agent_model = normalize_optional(default_agent_model);
+        }
+        if let Some(default_agent_reasoning_effort) = update.default_agent_reasoning_effort {
+            settings.default_agent_reasoning_effort = default_agent_reasoning_effort;
+        }
+        if let Some(agent_sandbox_mode) = update.agent_sandbox_mode {
+            settings.agent_sandbox_mode = agent_sandbox_mode;
+        }
+        if let Some(agent_extra_writable_roots) = update.agent_extra_writable_roots {
+            settings.agent_extra_writable_roots =
+                normalize_agent_extra_writable_roots(agent_extra_writable_roots)?;
+        }
+        if let Some(agent_git_command_policy) = update.agent_git_command_policy {
+            settings.agent_git_command_policy = agent_git_command_policy;
+        }
 
         validate_agent_extra_writable_roots_do_not_include_database(
-            &agent_extra_writable_roots,
+            &settings.agent_extra_writable_roots,
             database_path,
         )?;
-        validate_settings(
-            workspace_mode,
-            max_code_edit_agents,
-            max_read_only_agents,
-            create_pr,
-            stale_claim_minutes,
-            default_agent_model.as_deref(),
-        )?;
+        settings.validate()?;
 
-        Ok(Self {
-            workspace_mode,
-            max_code_edit_agents,
-            max_read_only_agents,
-            create_pr,
-            auto_commit,
-            commit_standard,
-            revert_strategy,
-            stale_claim_minutes,
-            worktree_cleanup_policy,
-            default_agent_tool,
-            default_agent_model,
-            default_agent_reasoning_effort,
-            agent_sandbox_mode,
-            agent_extra_writable_roots,
-            agent_git_command_policy,
-        })
+        Ok(settings)
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_settings(
+            self.workspace_mode,
+            self.max_code_edit_agents,
+            self.max_read_only_agents,
+            self.create_pr,
+            self.stale_claim_minutes,
+            self.default_agent_model.as_deref(),
+        )
     }
 
     fn apply_to(self, project: ProjectModel) -> ProjectActiveModel {
@@ -238,64 +268,38 @@ impl ProjectSettingsPlan {
     }
 }
 
-impl From<ProjectModel> for ProjectView {
-    fn from(project: ProjectModel) -> Self {
-        let git_status = inspect_project_git_status(project.path.as_deref(), project.path_exists);
-        Self {
-            id: project.id,
-            name: project.name,
-            display_name: project.display_name,
-            path: project.path,
-            path_exists: project.path_exists,
-            path_checked_at: project.path_checked_at,
-            git_status,
-            system_prompt: project.system_prompt,
-            memory: project.memory,
-            workspace_mode: project
-                .workspace_mode
-                .parse::<WorkspaceMode>()
-                .expect("project workspace mode must be valid"),
-            max_code_edit_agents: project.max_code_edit_agents,
-            max_read_only_agents: project.max_read_only_agents,
-            create_pr: project.create_pr,
-            auto_commit: project.auto_commit,
-            commit_standard: project.commit_standard,
-            revert_strategy: project
-                .revert_strategy
-                .parse::<RevertStrategy>()
-                .expect("project revert strategy must be valid"),
-            stale_claim_minutes: project.stale_claim_minutes,
-            worktree_cleanup_policy: project
-                .worktree_cleanup_policy
-                .parse::<WorktreeCleanupPolicy>()
-                .expect("project worktree cleanup policy must be valid"),
-            default_agent_tool: project
-                .default_agent_tool
-                .parse::<AgentToolName>()
-                .expect("project default agent tool must be valid"),
-            default_agent_model: normalize_optional(project.default_agent_model),
-            default_agent_reasoning_effort: project
-                .default_agent_reasoning_effort
-                .as_deref()
-                .map(str::parse::<AgentReasoningEffort>)
-                .transpose()
-                .expect("project default agent reasoning effort must be valid"),
-            agent_sandbox_mode: project
-                .agent_sandbox_mode
-                .parse::<AgentSandboxMode>()
-                .expect("project agent sandbox mode must be valid"),
-            agent_extra_writable_roots: parse_agent_extra_writable_roots_storage(
-                &project.agent_extra_writable_roots,
-            )
-            .expect("project agent extra writable roots must be valid"),
-            agent_git_command_policy: parse_agent_git_command_policy_storage(
-                &project.agent_git_command_policy,
-            )
-            .expect("project agent git command policy must be valid"),
-            created_at: project.created_at,
-            updated_at: project.updated_at,
-        }
-    }
+fn project_to_view(project: ProjectModel) -> Result<ProjectView> {
+    let settings = ValidatedProjectSettings::from_model(&project)
+        .context_with(|| format!("project '{}' has invalid settings", project.name))?;
+    let git_status = inspect_project_git_status(project.path.as_deref(), project.path_exists);
+    Ok(ProjectView {
+        id: project.id,
+        name: project.name,
+        display_name: project.display_name,
+        path: project.path,
+        path_exists: project.path_exists,
+        path_checked_at: project.path_checked_at,
+        git_status,
+        system_prompt: project.system_prompt,
+        memory: project.memory,
+        workspace_mode: settings.workspace_mode,
+        max_code_edit_agents: settings.max_code_edit_agents,
+        max_read_only_agents: settings.max_read_only_agents,
+        create_pr: settings.create_pr,
+        auto_commit: settings.auto_commit,
+        commit_standard: settings.commit_standard,
+        revert_strategy: settings.revert_strategy,
+        stale_claim_minutes: settings.stale_claim_minutes,
+        worktree_cleanup_policy: settings.worktree_cleanup_policy,
+        default_agent_tool: settings.default_agent_tool,
+        default_agent_model: settings.default_agent_model,
+        default_agent_reasoning_effort: settings.default_agent_reasoning_effort,
+        agent_sandbox_mode: settings.agent_sandbox_mode,
+        agent_extra_writable_roots: settings.agent_extra_writable_roots,
+        agent_git_command_policy: settings.agent_git_command_policy,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+    })
 }
 
 pub async fn list_projects(store: &Store) -> Result<Vec<ProjectView>> {
@@ -305,7 +309,7 @@ pub async fn list_projects(store: &Store) -> Result<Vec<ProjectView>> {
         .await
         .context("failed to list projects")?;
 
-    Ok(projects.into_iter().map(Into::into).collect())
+    projects.into_iter().map(project_to_view).collect()
 }
 
 pub async fn create_project(store: &Store, create: CreateProject) -> Result<ProjectView> {
@@ -401,7 +405,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         .await
         .context("failed to commit project create")?;
 
-    let view = ProjectView::from(project);
+    let view = project_to_view(project)?;
     events::publish_project_list_changed();
     events::publish_project_changed(&view.name);
     Ok(view)
@@ -409,7 +413,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
 
 pub async fn get_project(store: &Store, name: &str) -> Result<ProjectView> {
     let project = find_project_by_name(store, name).await?;
-    Ok(project.into())
+    project_to_view(project)
 }
 
 pub async fn update_project(
@@ -452,7 +456,7 @@ pub async fn update_project(
         .update(store.db().as_ref())
         .await
         .context_with(|| format!("failed to update project '{name}'"))?;
-    let view = ProjectView::from(updated);
+    let view = project_to_view(updated)?;
     events::publish_project_list_changed();
     events::publish_project_changed(&view.name);
     Ok(view)
@@ -496,7 +500,7 @@ pub async fn update_system_prompt_with_source(
     events::publish_system_prompt_changed(name);
 
     Ok(ProjectSystemPromptUpdateView {
-        project: updated.clone().into(),
+        project: project_to_view(updated.clone())?,
         event: change_events::system_prompt_event_to_view(name, event),
     })
 }
@@ -649,7 +653,7 @@ async fn change_memory(
     events::publish_memory_changed(name);
 
     Ok(ProjectMemoryUpdateView {
-        project: updated.clone().into(),
+        project: project_to_view(updated.clone())?,
         event: change_events::memory_event_to_view(name, event),
     })
 }
@@ -665,7 +669,8 @@ pub async fn update_settings(
     update: UpdateProjectSettings,
 ) -> Result<ProjectSettingsView> {
     let existing = find_project_by_name(store, project_name).await?;
-    let active = ProjectSettingsPlan::new(update, &existing, store.path())?.apply_to(existing);
+    let active =
+        ValidatedProjectSettings::with_update(update, &existing, store.path())?.apply_to(existing);
 
     let updated = active
         .update(store.db().as_ref())
@@ -913,7 +918,7 @@ async fn update_project_path_status(
         .update(store.db().as_ref())
         .await
         .context("failed to update project path status")?;
-    Ok(updated.into())
+    project_to_view(updated)
 }
 
 pub(crate) fn validate_settings(
@@ -959,32 +964,26 @@ pub(crate) fn validate_agent_model(default_agent_model: Option<&str>) -> Result<
 }
 
 fn project_settings_to_view(project: ProjectModel) -> Result<ProjectSettingsView> {
+    let settings = ValidatedProjectSettings::from_model(&project)
+        .context_with(|| format!("project '{}' has invalid settings", project.name))?;
     Ok(ProjectSettingsView {
         id: project.id,
         project_id: project.id,
-        workspace_mode: WorkspaceMode::from_str(&project.workspace_mode)?,
-        max_code_edit_agents: project.max_code_edit_agents,
-        max_read_only_agents: project.max_read_only_agents,
-        create_pr: project.create_pr,
-        auto_commit: project.auto_commit,
-        commit_standard: project.commit_standard,
-        revert_strategy: RevertStrategy::from_str(&project.revert_strategy)?,
-        stale_claim_minutes: project.stale_claim_minutes,
-        worktree_cleanup_policy: WorktreeCleanupPolicy::from_str(&project.worktree_cleanup_policy)?,
-        default_agent_tool: AgentToolName::from_str(&project.default_agent_tool)?,
-        default_agent_model: normalize_optional(project.default_agent_model),
-        default_agent_reasoning_effort: project
-            .default_agent_reasoning_effort
-            .as_deref()
-            .map(str::parse::<AgentReasoningEffort>)
-            .transpose()?,
-        agent_sandbox_mode: AgentSandboxMode::from_str(&project.agent_sandbox_mode)?,
-        agent_extra_writable_roots: parse_agent_extra_writable_roots_storage(
-            &project.agent_extra_writable_roots,
-        )?,
-        agent_git_command_policy: parse_agent_git_command_policy_storage(
-            &project.agent_git_command_policy,
-        )?,
+        workspace_mode: settings.workspace_mode,
+        max_code_edit_agents: settings.max_code_edit_agents,
+        max_read_only_agents: settings.max_read_only_agents,
+        create_pr: settings.create_pr,
+        auto_commit: settings.auto_commit,
+        commit_standard: settings.commit_standard,
+        revert_strategy: settings.revert_strategy,
+        stale_claim_minutes: settings.stale_claim_minutes,
+        worktree_cleanup_policy: settings.worktree_cleanup_policy,
+        default_agent_tool: settings.default_agent_tool,
+        default_agent_model: settings.default_agent_model,
+        default_agent_reasoning_effort: settings.default_agent_reasoning_effort,
+        agent_sandbox_mode: settings.agent_sandbox_mode,
+        agent_extra_writable_roots: settings.agent_extra_writable_roots,
+        agent_git_command_policy: settings.agent_git_command_policy,
         created_at: project.created_at,
         updated_at: project.updated_at,
     })
@@ -1168,7 +1167,7 @@ mod tests {
         let project = project_model(project_path(&temp, "demo"));
         let database_path = temp.path().join("dispatch.sqlite3");
 
-        let plan = ProjectSettingsPlan::new(
+        let plan = ValidatedProjectSettings::with_update(
             UpdateProjectSettings {
                 workspace_mode: Some(WorkspaceMode::GitBranch),
                 max_read_only_agents: Some(0),
@@ -1229,14 +1228,39 @@ mod tests {
         let project = project_model(project_path(&temp, "demo"));
         let database_path = temp.path().join("dispatch.sqlite3");
 
-        let err =
-            ProjectSettingsPlan::new(UpdateProjectSettings::default(), &project, &database_path)
-                .unwrap_err();
+        let err = ValidatedProjectSettings::with_update(
+            UpdateProjectSettings::default(),
+            &project,
+            &database_path,
+        )
+        .unwrap_err();
 
         assert!(
             err.to_string()
                 .contains("project settings update requires at least one field")
         );
+    }
+
+    #[test]
+    fn project_view_reports_invalid_persisted_settings_instead_of_panicking() {
+        let temp = TempDir::new().unwrap();
+        let mut project = project_model(project_path(&temp, "demo"));
+        project.workspace_mode = "parallel_everywhere".to_owned();
+
+        let err = project_to_view(project).unwrap_err();
+
+        assert!(format!("{err:#}").contains("project has invalid workspace mode"));
+    }
+
+    #[test]
+    fn project_settings_reject_invalid_persisted_json_at_the_storage_boundary() {
+        let temp = TempDir::new().unwrap();
+        let mut project = project_model(project_path(&temp, "demo"));
+        project.agent_git_command_policy = "{ definitely not json }".to_owned();
+
+        let err = ValidatedProjectSettings::from_model(&project).unwrap_err();
+
+        assert!(format!("{err:#}").contains("project has invalid agent Git command policy"));
     }
 
     #[tokio::test]
@@ -1508,7 +1532,7 @@ mod tests {
         assert_eq!(prompt_row.work_item_id, None);
         assert_eq!(
             prompt_row.event_type,
-            change_events::SYSTEM_PROMPT_CHANGED_EVENT_TYPE
+            change_events::SYSTEM_PROMPT_CHANGED_EVENT_TYPE.as_storage()
         );
         assert_eq!(prompt_row.actor_type.as_deref(), Some("agent"));
         assert_eq!(prompt_row.actor_id.as_deref(), Some("dispatch-run-42"));
@@ -1542,7 +1566,7 @@ mod tests {
         assert_eq!(memory_row.work_item_id, None);
         assert_eq!(
             memory_row.event_type,
-            change_events::MEMORY_CHANGED_EVENT_TYPE
+            change_events::MEMORY_CHANGED_EVENT_TYPE.as_storage()
         );
         assert_eq!(memory_row.actor_type.as_deref(), Some("agent"));
         assert_eq!(memory_row.actor_id.as_deref(), Some("codex-worker"));

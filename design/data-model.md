@@ -55,6 +55,8 @@ Work item states are project-scoped records with an identifier, display name, an
 
 Swim-lanes are project-scoped records with an identifier, display name, position, item order, item creation flag, and a CrudKit `Condition`-shaped filter stored as JSON. Lane filters use work item label keys as `column_name` values, so a lane can show `state=open`, `severity=high`, or nested label combinations. New projects start with lanes that mirror the default states by filtering on `state=<state-identifier>`, but users can add, rename, reorder, remove, or redefine lanes independently from authored states. New projects also get editable work-consuming automations for ordinary open work, needs-refinement routing, and needs-verification routing. The ordinary open-work default targets `state=open` while excluding the refinement and verification routing labels.
 
+Swim-lane item order is a closed, typed choice: `updated_desc`, `updated_asc`, `created_desc`, `created_asc`, `id_desc`, `id_asc`, `title_asc`, or `title_desc`. Persisted values are validated before lane views reach the board; the UI does not silently treat an unknown value as a default.
+
 The version field supports optimistic safety for updates and workflow transitions. Claim ownership is enforced server-side.
 
 ## Comments
@@ -68,6 +70,8 @@ Comment authors include user, agent, and system author types. The server records
 Dispatch records workflow and automation events for live UI updates and auditability. Event streams are project-scoped and can also be filtered to a work item.
 
 Events are used by item watch commands, live board updates, and automation visibility. They are not a substitute for the current state stored on projects, work item labels, comments, and runs.
+
+Event kinds form a closed audit vocabulary. Item workflow events cover item create, update, move, delete, claim, progress, finish, and release; feedback requests; comments; label create, update, and delete; and relationship create, update, and delete. Project snapshot events use the historical `SystemPromptChanged` and `MemoryChanged` names. Producers use the typed event kind and actor type rather than constructing storage strings, while the API and server-sent-event names retain their existing wire spellings.
 
 System prompt history is reconstructable from `SystemPromptChanged` event snapshots until a user compacts system prompt history. Compaction removes old system prompt events but does not change the current `projects.system_prompt` value.
 
@@ -100,6 +104,8 @@ Run data includes:
 - pull request request and URL fields;
 - cleanup status;
 - timestamps.
+
+Run cleanup status is a closed lifecycle: `not_applicable` when no isolated worktree was created, `pending` while a created worktree still requires cleanup, and `cleaned` after successful removal. Invalid stored values are rejected when constructing run views rather than passed through as arbitrary UI text.
 
 Run logs are read through server endpoints. The log file path is an implementation detail and should not be handed to agents as the primary interface.
 

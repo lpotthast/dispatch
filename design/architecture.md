@@ -48,6 +48,8 @@ Dispatch persists data in SQLite through the server crate. The default database 
 
 Database writes must flow through server services. This keeps workflow checks in one process and prevents launched agents from bypassing ownership, state, project, or version rules.
 
+SeaORM and CrudKit persistence records mirror SQLite and may represent enums or structured configuration as text. These records are storage types, not workflow-domain types. Server services decode and validate them at the persistence boundary before applying policy, starting automation, rendering UI data, or returning API views. Invalid persisted values produce contextual service errors rather than panics or implicit fallback behavior.
+
 Codex runtime state is Dispatch-owned local state under the user's Dispatch data directory. The shared managed Codex home stores login/status state. Each project gets a project Codex home under that shared tree for generated `config.toml`, `rules/*.rules`, sessions, logs, and SQLite state. Project homes may symlink shared auth and skill assets so projects can have independent runtime policy without requiring a new login for every project.
 
 ## Server Routes

@@ -1,3 +1,9 @@
+//! Typed JSON contracts shared by the Dispatch server, API client, CLI, and hydrated frontend.
+//!
+//! Persistence-specific strings are converted at the server boundary. Enums in this crate retain
+//! the canonical JSON and SQLite spelling so callers can use exhaustive Rust matches without
+//! changing the wire protocol.
+
 use std::{error::Error, fmt, str::FromStr};
 
 use crudkit_core::condition::{
@@ -221,7 +227,7 @@ pub enum AgentToolName {
 }
 
 impl AgentToolName {
-    pub fn as_storage(self) -> &'static str {
+    pub const fn as_storage(self) -> &'static str {
         match self {
             Self::Codex => "codex",
         }
@@ -258,7 +264,7 @@ pub enum CodexAgentModel {
 }
 
 impl CodexAgentModel {
-    pub fn as_storage(self) -> &'static str {
+    pub const fn as_storage(self) -> &'static str {
         match self {
             Self::Gpt55 => "gpt-5.5",
             Self::Gpt54 => "gpt-5.4",
@@ -402,7 +408,7 @@ pub enum WorkspaceMode {
 }
 
 impl WorkspaceMode {
-    pub fn as_storage(self) -> &'static str {
+    pub const fn as_storage(self) -> &'static str {
         match self {
             Self::CurrentBranch => "current_branch",
             Self::GitWorktree => "git_worktree",
@@ -851,6 +857,66 @@ pub struct ProjectLabelView {
     pub last_used_at: String,
 }
 
+/// Supported ordering strategies for work items inside a swim-lane.
+///
+/// The enum is shared by the server and hydrated frontend so persisted lane configuration is
+/// validated once and board rendering remains exhaustive when a new ordering mode is added.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwimLaneItemOrder {
+    #[default]
+    UpdatedDesc,
+    UpdatedAsc,
+    CreatedDesc,
+    CreatedAsc,
+    IdDesc,
+    IdAsc,
+    TitleAsc,
+    TitleDesc,
+}
+
+impl SwimLaneItemOrder {
+    /// Returns the canonical SQLite and JSON representation.
+    pub const fn as_storage(self) -> &'static str {
+        match self {
+            Self::UpdatedDesc => "updated_desc",
+            Self::UpdatedAsc => "updated_asc",
+            Self::CreatedDesc => "created_desc",
+            Self::CreatedAsc => "created_asc",
+            Self::IdDesc => "id_desc",
+            Self::IdAsc => "id_asc",
+            Self::TitleAsc => "title_asc",
+            Self::TitleDesc => "title_desc",
+        }
+    }
+}
+
+impl fmt::Display for SwimLaneItemOrder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_storage())
+    }
+}
+
+impl FromStr for SwimLaneItemOrder {
+    type Err = ParseEnumError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().replace('-', "_").as_str() {
+            "updated_desc" => Ok(Self::UpdatedDesc),
+            "updated_asc" => Ok(Self::UpdatedAsc),
+            "created_desc" => Ok(Self::CreatedDesc),
+            "created_asc" => Ok(Self::CreatedAsc),
+            "id_desc" => Ok(Self::IdDesc),
+            "id_asc" => Ok(Self::IdAsc),
+            "title_asc" => Ok(Self::TitleAsc),
+            "title_desc" => Ok(Self::TitleDesc),
+            _ => Err(ParseEnumError(
+                "swim-lane item order must be one of: updated_desc, updated_asc, created_desc, created_asc, id_desc, id_asc, title_asc, title_desc",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SwimLaneView {
     pub id: i64,
@@ -859,7 +925,7 @@ pub struct SwimLaneView {
     pub name: String,
     pub position: i64,
     pub filter: Condition,
-    pub item_order: String,
+    pub item_order: SwimLaneItemOrder,
     pub can_create_items: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -876,14 +942,104 @@ pub struct WorkItemStateView {
     pub updated_at: String,
 }
 
+/// A durable event kind in Dispatch's project-scoped workflow audit stream.
+///
+/// Storage uses historical spellings for the two project snapshot events and snake case for item
+/// workflow events. Keeping those spellings behind this enum prevents producers from inventing
+/// event names while preserving the existing API and database representation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemEventType {
+    #[serde(rename = "SystemPromptChanged")]
+    SystemPromptChanged,
+    #[serde(rename = "MemoryChanged")]
+    MemoryChanged,
+    ItemCreated,
+    ItemUpdated,
+    ItemMoved,
+    ItemDeleted,
+    ItemClaimed,
+    ProgressAdded,
+    ItemFinished,
+    ItemReleased,
+    FeedbackRequested,
+    CommentAdded,
+    LabelAdded,
+    LabelUpdated,
+    LabelDeleted,
+    RelationshipCreated,
+    RelationshipUpdated,
+    RelationshipDeleted,
+}
+
+impl WorkItemEventType {
+    /// Returns the canonical SQLite and server-sent-event representation.
+    pub const fn as_storage(self) -> &'static str {
+        match self {
+            Self::SystemPromptChanged => "SystemPromptChanged",
+            Self::MemoryChanged => "MemoryChanged",
+            Self::ItemCreated => "item_created",
+            Self::ItemUpdated => "item_updated",
+            Self::ItemMoved => "item_moved",
+            Self::ItemDeleted => "item_deleted",
+            Self::ItemClaimed => "item_claimed",
+            Self::ProgressAdded => "progress_added",
+            Self::ItemFinished => "item_finished",
+            Self::ItemReleased => "item_released",
+            Self::FeedbackRequested => "feedback_requested",
+            Self::CommentAdded => "comment_added",
+            Self::LabelAdded => "label_added",
+            Self::LabelUpdated => "label_updated",
+            Self::LabelDeleted => "label_deleted",
+            Self::RelationshipCreated => "relationship_created",
+            Self::RelationshipUpdated => "relationship_updated",
+            Self::RelationshipDeleted => "relationship_deleted",
+        }
+    }
+}
+
+impl fmt::Display for WorkItemEventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_storage())
+    }
+}
+
+impl FromStr for WorkItemEventType {
+    type Err = ParseEnumError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim() {
+            "SystemPromptChanged" => Ok(Self::SystemPromptChanged),
+            "MemoryChanged" => Ok(Self::MemoryChanged),
+            "item_created" => Ok(Self::ItemCreated),
+            "item_updated" => Ok(Self::ItemUpdated),
+            "item_moved" => Ok(Self::ItemMoved),
+            "item_deleted" => Ok(Self::ItemDeleted),
+            "item_claimed" => Ok(Self::ItemClaimed),
+            "progress_added" => Ok(Self::ProgressAdded),
+            "item_finished" => Ok(Self::ItemFinished),
+            "item_released" => Ok(Self::ItemReleased),
+            "feedback_requested" => Ok(Self::FeedbackRequested),
+            "comment_added" => Ok(Self::CommentAdded),
+            "label_added" => Ok(Self::LabelAdded),
+            "label_updated" => Ok(Self::LabelUpdated),
+            "label_deleted" => Ok(Self::LabelDeleted),
+            "relationship_created" => Ok(Self::RelationshipCreated),
+            "relationship_updated" => Ok(Self::RelationshipUpdated),
+            "relationship_deleted" => Ok(Self::RelationshipDeleted),
+            _ => Err(ParseEnumError("unknown work item event type")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkItemEventView {
     pub id: i64,
     pub project_id: i64,
     pub work_item_id: Option<i64>,
-    pub event_type: String,
+    pub event_type: WorkItemEventType,
     pub body: String,
-    pub actor_type: Option<String>,
+    pub actor_type: Option<AuthorType>,
     pub actor_id: Option<String>,
     pub agent_run_id: Option<i64>,
     pub created_at: String,
@@ -1078,6 +1234,50 @@ impl FromStr for AgentCommitOutcome {
     }
 }
 
+/// Lifecycle of an isolated Git worktree after its agent run has ended.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunCleanupStatus {
+    /// The run never created an isolated worktree.
+    NotApplicable,
+    /// Cleanup is required but has not completed yet.
+    Pending,
+    /// Dispatch removed the worktree successfully.
+    Cleaned,
+}
+
+impl AgentRunCleanupStatus {
+    /// Returns the canonical SQLite and JSON representation.
+    pub const fn as_storage(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::Pending => "pending",
+            Self::Cleaned => "cleaned",
+        }
+    }
+}
+
+impl fmt::Display for AgentRunCleanupStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_storage())
+    }
+}
+
+impl FromStr for AgentRunCleanupStatus {
+    type Err = ParseEnumError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_lowercase().replace('-', "_").as_str() {
+            "not_applicable" => Ok(Self::NotApplicable),
+            "pending" => Ok(Self::Pending),
+            "cleaned" => Ok(Self::Cleaned),
+            _ => Err(ParseEnumError(
+                "agent run cleanup status must be one of: not_applicable, pending, cleaned",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentRunView {
     pub id: i64,
@@ -1105,7 +1305,7 @@ pub struct AgentRunView {
     pub commit_shas: Vec<String>,
     pub pr_requested: bool,
     pub pr_url: Option<String>,
-    pub cleanup_status: String,
+    pub cleanup_status: AgentRunCleanupStatus,
     pub worktree_cleaned_at: Option<String>,
     pub result_summary: String,
     pub started_at: Option<String>,
@@ -1467,6 +1667,53 @@ mod tests {
             r#""read_only""#
         );
         assert!("readonly-ish".parse::<AutomationRunMutability>().is_err());
+    }
+
+    #[test]
+    fn swim_lane_item_order_has_one_canonical_wire_value() {
+        assert_eq!(
+            "title-desc".parse::<SwimLaneItemOrder>().unwrap(),
+            SwimLaneItemOrder::TitleDesc
+        );
+        assert_eq!(
+            serde_json::to_string(&SwimLaneItemOrder::UpdatedDesc).unwrap(),
+            r#""updated_desc""#
+        );
+        assert!("newest-ish".parse::<SwimLaneItemOrder>().is_err());
+    }
+
+    #[test]
+    fn work_item_event_type_preserves_historical_storage_names() {
+        for (storage, event_type) in [
+            (
+                "SystemPromptChanged",
+                WorkItemEventType::SystemPromptChanged,
+            ),
+            ("MemoryChanged", WorkItemEventType::MemoryChanged),
+            ("item_claimed", WorkItemEventType::ItemClaimed),
+            (
+                "relationship_deleted",
+                WorkItemEventType::RelationshipDeleted,
+            ),
+        ] {
+            assert_eq!(storage.parse::<WorkItemEventType>().unwrap(), event_type);
+            assert_eq!(event_type.as_storage(), storage);
+            assert_eq!(
+                serde_json::to_string(&event_type).unwrap(),
+                format!(r#""{storage}""#)
+            );
+        }
+        assert!("item_claimedd".parse::<WorkItemEventType>().is_err());
+    }
+
+    #[test]
+    fn agent_run_cleanup_status_rejects_unknown_states() {
+        assert_eq!(
+            "not-applicable".parse::<AgentRunCleanupStatus>().unwrap(),
+            AgentRunCleanupStatus::NotApplicable
+        );
+        assert_eq!(AgentRunCleanupStatus::Cleaned.to_string(), "cleaned");
+        assert!("cleanup_failed".parse::<AgentRunCleanupStatus>().is_err());
     }
 
     #[test]

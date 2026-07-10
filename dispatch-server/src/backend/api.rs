@@ -488,7 +488,7 @@ fn event_stream(
                         last_id = Some(event.id);
                         let response = Event::default()
                             .id(event.id.to_string())
-                            .event(event.event_type.clone())
+                            .event(event.event_type.as_storage())
                             .json_data(&event)
                             .unwrap_or_else(|err| {
                                 Event::default()

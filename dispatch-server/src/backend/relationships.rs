@@ -18,7 +18,7 @@ use crate::{
         work_item_events, work_item_labels, work_item_relationships, work_items, workflow_labels,
     },
     shared::view_models::{
-        DeleteWorkItemRelationshipResponse, WorkItemRelationshipDirection,
+        DeleteWorkItemRelationshipResponse, WorkItemEventType, WorkItemRelationshipDirection,
         WorkItemRelationshipItemSummary, WorkItemRelationshipListEntry, WorkItemRelationshipView,
     },
 };
@@ -411,7 +411,7 @@ async fn record_relationship_event<C>(
     conn: &C,
     project_id: i64,
     item_id: i64,
-    event_type: &str,
+    event_type: WorkItemEventType,
     body: String,
 ) -> Result<()>
 where
@@ -647,9 +647,9 @@ mod tests {
             .await
             .unwrap();
         for event_type in [
-            "relationship_created",
-            "relationship_updated",
-            "relationship_deleted",
+            WorkItemEventType::RelationshipCreated,
+            WorkItemEventType::RelationshipUpdated,
+            WorkItemEventType::RelationshipDeleted,
         ] {
             assert!(
                 source_events

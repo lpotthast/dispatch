@@ -1,6 +1,9 @@
 use rootcause::{Result, prelude::*};
 
-use crate::backend::{entities::work_item_label::WorkItemLabelModel, item_labels, workflow_labels};
+use crate::{
+    backend::{entities::work_item_label::WorkItemLabelModel, item_labels, workflow_labels},
+    shared::view_models::WorkItemEventType,
+};
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct AddLabelMutation {
@@ -29,7 +32,7 @@ pub(crate) struct DeleteLabelMutation {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct LabelMutationEvent {
-    pub(crate) event_type: &'static str,
+    pub(crate) event_type: WorkItemEventType,
     pub(crate) body: String,
 }
 
@@ -45,7 +48,7 @@ impl AddLabelMutation {
 
     pub(crate) fn added_event(&self) -> LabelMutationEvent {
         LabelMutationEvent {
-            event_type: "label_added",
+            event_type: WorkItemEventType::LabelAdded,
             body: format!(
                 "Added label {}",
                 item_labels::format_label(&self.key, self.value.as_deref())
@@ -85,7 +88,7 @@ impl UpdateLabelMutation {
 impl AppliedLabelMutation {
     pub(crate) fn updated_event(&self) -> LabelMutationEvent {
         LabelMutationEvent {
-            event_type: "label_updated",
+            event_type: WorkItemEventType::LabelUpdated,
             body: format!(
                 "Updated label {}",
                 item_labels::format_label(&self.key, self.value.as_deref())
@@ -110,7 +113,7 @@ impl DeleteLabelMutation {
 
     pub(crate) fn deleted_event(&self) -> LabelMutationEvent {
         LabelMutationEvent {
-            event_type: "label_deleted",
+            event_type: WorkItemEventType::LabelDeleted,
             body: format!(
                 "Deleted label {}",
                 item_labels::format_label(&self.key, self.value.as_deref())
@@ -152,7 +155,7 @@ mod tests {
         assert_eq!(
             mutation.added_event(),
             LabelMutationEvent {
-                event_type: "label_added",
+                event_type: WorkItemEventType::LabelAdded,
                 body: "Added label priority=high".to_owned(),
             }
         );
@@ -174,7 +177,7 @@ mod tests {
         assert_eq!(
             applied.updated_event(),
             LabelMutationEvent {
-                event_type: "label_updated",
+                event_type: WorkItemEventType::LabelUpdated,
                 body: "Updated label priority=low".to_owned(),
             }
         );
@@ -188,7 +191,7 @@ mod tests {
         assert_eq!(
             mutation.deleted_event(),
             LabelMutationEvent {
-                event_type: "label_deleted",
+                event_type: WorkItemEventType::LabelDeleted,
                 body: "Deleted label priority=high".to_owned(),
             }
         );

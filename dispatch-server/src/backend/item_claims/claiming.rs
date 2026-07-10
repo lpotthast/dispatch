@@ -11,7 +11,7 @@ use crate::{
         work_item_comments, work_item_events, work_item_labels, work_item_views, work_items,
         workflow_labels,
     },
-    shared::view_models::WorkItemView,
+    shared::view_models::{WorkItemEventType, WorkItemView},
 };
 
 use super::claim_candidates::{
@@ -321,7 +321,7 @@ where
         conn,
         project_id,
         Some(item_id),
-        "item_claimed",
+        WorkItemEventType::ItemClaimed,
         comment_body.as_str(),
     )
     .await?;

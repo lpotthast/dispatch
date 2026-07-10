@@ -3,7 +3,7 @@ use sea_orm::TransactionTrait;
 
 use crate::{
     backend::{events, projects, storage::Store, work_item_comments, work_item_events, work_items},
-    shared::view_models::{AuthorType, CommentView},
+    shared::view_models::{AuthorType, CommentView, WorkItemEventType},
 };
 
 #[derive(Clone, Debug)]
@@ -45,7 +45,7 @@ pub async fn add_comment(
         &txn,
         project_id,
         Some(item_id),
-        "comment_added",
+        WorkItemEventType::CommentAdded,
         "Added comment",
     )
     .await?;
@@ -159,7 +159,7 @@ mod tests {
             .unwrap();
         let comment_events = events
             .iter()
-            .filter(|event| event.event_type == "comment_added")
+            .filter(|event| event.event_type == WorkItemEventType::CommentAdded)
             .collect::<Vec<_>>();
 
         assert_eq!(comment_events.len(), 2);

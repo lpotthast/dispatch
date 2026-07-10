@@ -12,7 +12,7 @@ use crate::{
         label_conditions, projects,
         storage::{Store, utc_now},
     },
-    shared::view_models::{STATE_LABEL_KEY, SwimLaneView},
+    shared::view_models::{STATE_LABEL_KEY, SwimLaneItemOrder, SwimLaneView},
 };
 
 const DEFAULT_SWIM_LANES: [(&str, &str, i64, bool); 4] = [
@@ -21,7 +21,7 @@ const DEFAULT_SWIM_LANES: [(&str, &str, i64, bool); 4] = [
     ("in_progress", "In progress", 30, false),
     ("done", "Done", 40, false),
 ];
-pub const DEFAULT_SWIM_LANE_ITEM_ORDER: &str = "updated_desc";
+pub const DEFAULT_SWIM_LANE_ITEM_ORDER: SwimLaneItemOrder = SwimLaneItemOrder::UpdatedDesc;
 
 pub async fn list_swim_lanes(store: &Store, project_name: &str) -> Result<Vec<SwimLaneView>> {
     let project_id = projects::project_id(store, project_name).await?;
@@ -73,7 +73,7 @@ where
             name: Set(name.to_owned()),
             position: Set(position),
             filter: Set(condition_to_filter_json(&state_filter(identifier))?),
-            item_order: Set(DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()),
+            item_order: Set(DEFAULT_SWIM_LANE_ITEM_ORDER.as_storage().to_owned()),
             can_create_items: Set(can_create_items),
             created_at: Set(now.clone()),
             updated_at: Set(now),
@@ -118,15 +118,8 @@ pub fn normalize_filter_json(filter: impl Into<String>) -> Result<String> {
     condition_to_filter_json(&condition)
 }
 
-pub fn normalize_item_order(item_order: impl Into<String>) -> Result<String> {
-    let item_order = item_order.into().trim().to_owned();
-    match item_order.as_str() {
-        "updated_desc" | "updated_asc" | "created_desc" | "created_asc" | "id_desc" | "id_asc"
-        | "title_asc" | "title_desc" => Ok(item_order),
-        _ => bail!(
-            "swim-lane item order must be one of: updated_desc, updated_asc, created_desc, created_asc, id_desc, id_asc, title_asc, title_desc"
-        ),
-    }
+pub fn parse_item_order(item_order: &str) -> Result<SwimLaneItemOrder> {
+    item_order.parse().map_err(Into::into)
 }
 
 pub fn state_filter(state: &str) -> Condition {
@@ -144,6 +137,12 @@ fn condition_to_filter_json(condition: &Condition) -> Result<String> {
 fn model_to_view(model: SwimLaneModel) -> Result<SwimLaneView> {
     let filter = serde_json::from_str::<Condition>(&model.filter)
         .context_with(|| format!("failed to parse swim-lane '{}' filter", model.identifier))?;
+    let item_order = parse_item_order(&model.item_order).context_with(|| {
+        format!(
+            "failed to parse swim-lane '{}' item order",
+            model.identifier
+        )
+    })?;
     Ok(SwimLaneView {
         id: model.id,
         project_id: model.project_id,
@@ -151,7 +150,7 @@ fn model_to_view(model: SwimLaneModel) -> Result<SwimLaneView> {
         name: model.name,
         position: model.position,
         filter,
-        item_order: model.item_order,
+        item_order,
         can_create_items: model.can_create_items,
         created_at: model.created_at,
         updated_at: model.updated_at,
@@ -238,22 +237,22 @@ mod tests {
                 (
                     "idea".to_owned(),
                     state_filter("idea"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                    DEFAULT_SWIM_LANE_ITEM_ORDER
                 ),
                 (
                     "open".to_owned(),
                     state_filter("open"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                    DEFAULT_SWIM_LANE_ITEM_ORDER
                 ),
                 (
                     "in_progress".to_owned(),
                     state_filter("in_progress"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                    DEFAULT_SWIM_LANE_ITEM_ORDER
                 ),
                 (
                     "done".to_owned(),
                     state_filter("done"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER.to_owned()
+                    DEFAULT_SWIM_LANE_ITEM_ORDER
                 ),
             ]
         );

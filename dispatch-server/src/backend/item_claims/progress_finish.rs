@@ -7,7 +7,7 @@ use crate::{
         storage::{Store, utc_now},
         work_item_comments, work_item_events, work_item_views, workflow_labels,
     },
-    shared::view_models::{CommentView, WorkItemView},
+    shared::view_models::{CommentView, WorkItemEventType, WorkItemView},
 };
 
 use super::active_claims;
@@ -39,8 +39,14 @@ pub(crate) async fn progress_item(
         .update(&txn)
         .await
         .context("failed to update item after progress")?;
-    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "progress_added", body)
-        .await?;
+    work_item_events::record_event_in_tx(
+        &txn,
+        project_id,
+        Some(item_id),
+        WorkItemEventType::ProgressAdded,
+        body,
+    )
+    .await?;
     txn.commit()
         .await
         .context("failed to commit item progress")?;
@@ -85,8 +91,14 @@ pub(crate) async fn finish_item(
         workflow_labels::finish_workflow_label_plan(),
     )
     .await?;
-    work_item_events::record_event_in_tx(&txn, project_id, Some(item_id), "item_finished", report)
-        .await?;
+    work_item_events::record_event_in_tx(
+        &txn,
+        project_id,
+        Some(item_id),
+        WorkItemEventType::ItemFinished,
+        report,
+    )
+    .await?;
     txn.commit().await.context("failed to commit item finish")?;
     events::publish_work_item_changed(project_name, item_id);
 

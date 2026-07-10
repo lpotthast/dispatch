@@ -239,7 +239,7 @@ fn swim_lane_model_handler(project_id: i64) -> ModelHandler {
             project_id,
             position: 50,
             filter: "{\"All\":[]}".to_owned(),
-            item_order: "updated_desc".to_owned(),
+            item_order: SwimLaneItemOrder::default().as_storage().to_owned(),
             ..Default::default()
         })
     });

@@ -2,7 +2,7 @@ use rootcause::{Result, prelude::*};
 
 use crate::{
     backend::entities::work_item_relationship::WorkItemRelationshipModel,
-    shared::view_models::WorkItemRelationshipDirection,
+    shared::view_models::{WorkItemEventType, WorkItemRelationshipDirection},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,13 +58,13 @@ impl RelationshipEndpoints {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RelationshipEvent {
-    pub(crate) event_type: &'static str,
+    pub(crate) event_type: WorkItemEventType,
     pub(crate) source_body: String,
     pub(crate) target_body: String,
 }
 
 impl RelationshipEvent {
-    fn same(event_type: &'static str, body: String) -> Self {
+    fn same(event_type: WorkItemEventType, body: String) -> Self {
         Self {
             event_type,
             source_body: body.clone(),
@@ -102,7 +102,7 @@ impl CreateRelationshipMutation {
 
     pub(crate) fn created_event(&self) -> RelationshipEvent {
         RelationshipEvent {
-            event_type: "relationship_created",
+            event_type: WorkItemEventType::RelationshipCreated,
             source_body: format!(
                 "Created relationship #{} {} #{}",
                 self.endpoints.source_work_item_id,
@@ -155,7 +155,7 @@ impl UpdateRelationshipMutation {
 
     pub(crate) fn updated_event(&self) -> RelationshipEvent {
         RelationshipEvent::same(
-            "relationship_updated",
+            WorkItemEventType::RelationshipUpdated,
             format!(
                 "Updated relationship #{} kind to {}",
                 self.relationship_id,
@@ -192,7 +192,7 @@ impl DeleteRelationshipMutation {
 
     pub(crate) fn deleted_event(&self) -> RelationshipEvent {
         RelationshipEvent::same(
-            "relationship_deleted",
+            WorkItemEventType::RelationshipDeleted,
             format!(
                 "Deleted relationship #{}: #{} {} #{}",
                 self.relationship_id,
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(
             mutation.created_event(),
             RelationshipEvent {
-                event_type: "relationship_created",
+                event_type: WorkItemEventType::RelationshipCreated,
                 source_body: "Created relationship #42 follows #18".to_owned(),
                 target_body: "Created incoming relationship from #42: follows".to_owned(),
             }
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(
             mutation.updated_event(),
             RelationshipEvent::same(
-                "relationship_updated",
+                WorkItemEventType::RelationshipUpdated,
                 "Updated relationship #9 kind to unblocks".to_owned(),
             )
         );
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(
             mutation.deleted_event(),
             RelationshipEvent::same(
-                "relationship_deleted",
+                WorkItemEventType::RelationshipDeleted,
                 "Deleted relationship #9: #42 blocks #18".to_owned(),
             )
         );

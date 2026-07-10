@@ -1,3 +1,9 @@
+//! SeaORM models for Dispatch-owned SQLite tables and CrudKit read views.
+//!
+//! These structs are persistence records rather than domain models. Text fields that encode enums
+//! or structured settings are validated by their owning service when they cross out of this
+//! module.
+
 pub mod agent_run;
 pub mod agent_tool;
 pub mod automation_trigger;

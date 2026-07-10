@@ -1,6 +1,18 @@
+//! Codex app-server readiness checks and Dispatch-managed runtime configuration.
+//!
+//! Dispatch distinguishes an app-server that can be started (`available`) from one whose account
+//! and usage state permit automation (`usable`). This module owns that readiness probe, the shared
+//! and per-project Codex homes, and the stdio launch configuration used by automation runs.
+//!
+//! The SDK currently exposes the account-related responses as opaque JSON objects. The private
+//! wire types below mirror the app-server schema so incompatible shape or field-type changes fail
+//! at one documented deserialization boundary instead of leaking stringly typed JSON traversal
+//! through the module. Unknown enum values remain intact for forward-compatible status output.
+
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -11,9 +23,13 @@ use codex_app_server_sdk::{
     requests::{ClientInfo, GetAccountParams, InitializeParams},
 };
 use rootcause::{Result, prelude::*};
-use serde_json::Value;
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use tokio::{sync::watch, time::timeout};
+use tokio::{
+    sync::{RwLock, watch},
+    time::{MissedTickBehavior, timeout},
+};
 
 use crate::{
     backend::{
@@ -28,6 +44,10 @@ use crate::{
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(14);
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const USAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+// The SDK has no typed account-usage method, so raw protocol access is isolated to
+// `read_usage_response` below.
+const ACCOUNT_USAGE_READ_METHOD: &str = "account/usage/read";
 const CLIENT_NAME: &str = "dispatch";
 const CLIENT_TITLE: &str = "Dispatch";
 const CODEX_HOME_DIR: &str = "codex";
@@ -45,9 +65,449 @@ disable_on_external_context = true
 "#;
 const PROJECT_RULES_FILE_NAME: &str = "dispatch-git.rules";
 
+/// Operator-facing guidance shown when the Codex executable cannot be discovered or started.
 pub const CODEX_INSTALL_PROMPT: &str =
     "Install Codex and make sure `codex app-server` is available on PATH.";
 
+/// Typed representation of the opaque `account/read` SDK response.
+///
+/// Fields remain optional where older app-server versions omitted them. Missing authentication
+/// state is handled conservatively by the readiness check.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountReadResponse {
+    #[serde(default)]
+    account: Option<CodexAccount>,
+    #[serde(default)]
+    requires_openai_auth: Option<bool>,
+}
+
+/// Account details returned by the Codex app-server protocol.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexAccount {
+    #[serde(rename = "type")]
+    auth_method: CodexAuthMethod,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    plan_type: Option<CodexPlanType>,
+}
+
+impl CodexAccount {
+    fn auth_method(&self) -> &str {
+        self.auth_method.as_str()
+    }
+
+    fn label(&self) -> Option<String> {
+        match &self.auth_method {
+            CodexAuthMethod::ApiKey => Some("API key".to_owned()),
+            CodexAuthMethod::ChatGpt => self.email.clone(),
+            CodexAuthMethod::AmazonBedrock => Some("Amazon Bedrock".to_owned()),
+            CodexAuthMethod::Other(method) => Some(method.clone()),
+        }
+    }
+
+    fn plan_type(&self) -> Option<CodexPlanType> {
+        if matches!(&self.auth_method, CodexAuthMethod::ChatGpt) {
+            self.plan_type.clone()
+        } else {
+            None
+        }
+    }
+}
+
+/// Authentication methods currently defined by the app-server schema.
+///
+/// Unknown methods retain their wire value so Dispatch can surface a new provider without first
+/// requiring a release that knows its name.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+enum CodexAuthMethod {
+    ApiKey,
+    ChatGpt,
+    AmazonBedrock,
+    Other(String),
+}
+
+impl CodexAuthMethod {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::ApiKey => "apiKey",
+            Self::ChatGpt => "chatgpt",
+            Self::AmazonBedrock => "amazonBedrock",
+            Self::Other(method) => method,
+        }
+    }
+}
+
+impl From<String> for CodexAuthMethod {
+    fn from(method: String) -> Self {
+        match method.as_str() {
+            "apiKey" => Self::ApiKey,
+            "chatgpt" => Self::ChatGpt,
+            "amazonBedrock" => Self::AmazonBedrock,
+            _ => Self::Other(method),
+        }
+    }
+}
+
+/// Subscription plan values currently defined by the app-server schema.
+///
+/// Unknown plans retain their wire value for forward-compatible status reporting.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+enum CodexPlanType {
+    Free,
+    Go,
+    Plus,
+    Pro,
+    Prolite,
+    Team,
+    SelfServeBusinessUsageBased,
+    Business,
+    EnterpriseCbpUsageBased,
+    Enterprise,
+    Edu,
+    Unknown,
+    Other(String),
+}
+
+impl CodexPlanType {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Free => "free",
+            Self::Go => "go",
+            Self::Plus => "plus",
+            Self::Pro => "pro",
+            Self::Prolite => "prolite",
+            Self::Team => "team",
+            Self::SelfServeBusinessUsageBased => "self_serve_business_usage_based",
+            Self::Business => "business",
+            Self::EnterpriseCbpUsageBased => "enterprise_cbp_usage_based",
+            Self::Enterprise => "enterprise",
+            Self::Edu => "edu",
+            Self::Unknown => "unknown",
+            Self::Other(plan_type) => plan_type,
+        }
+    }
+
+    fn is_usage_based(&self) -> bool {
+        matches!(
+            self,
+            Self::SelfServeBusinessUsageBased | Self::EnterpriseCbpUsageBased
+        )
+    }
+}
+
+impl From<String> for CodexPlanType {
+    fn from(plan_type: String) -> Self {
+        match plan_type.as_str() {
+            "free" => Self::Free,
+            "go" => Self::Go,
+            "plus" => Self::Plus,
+            "pro" => Self::Pro,
+            "prolite" => Self::Prolite,
+            "team" => Self::Team,
+            "self_serve_business_usage_based" => Self::SelfServeBusinessUsageBased,
+            "business" => Self::Business,
+            "enterprise_cbp_usage_based" => Self::EnterpriseCbpUsageBased,
+            "enterprise" => Self::Enterprise,
+            "edu" => Self::Edu,
+            "unknown" => Self::Unknown,
+            _ => Self::Other(plan_type),
+        }
+    }
+}
+
+/// Typed representation of the opaque `account/rateLimits/read` SDK response.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RateLimitsReadResponse {
+    #[serde(default)]
+    rate_limits: Option<RateLimitSnapshot>,
+    #[serde(default)]
+    rate_limits_by_limit_id: Option<BTreeMap<String, RateLimitSnapshot>>,
+}
+
+impl RateLimitsReadResponse {
+    fn plan_type(&self) -> Option<CodexPlanType> {
+        self.rate_limits_by_limit_id
+            .as_ref()
+            .into_iter()
+            .flat_map(|limits| limits.values())
+            .chain(self.rate_limits.iter())
+            .find_map(|limit| limit.plan_type.clone())
+    }
+
+    fn into_views(self) -> Vec<CodexRateLimitView> {
+        if let Some(limits) = self
+            .rate_limits_by_limit_id
+            .filter(|limits| !limits.is_empty())
+        {
+            return limits
+                .into_iter()
+                .map(|(limit_id, snapshot)| snapshot.into_view(Some(limit_id)))
+                .collect();
+        }
+
+        self.rate_limits
+            .map(|snapshot| vec![snapshot.into_view(None)])
+            .unwrap_or_default()
+    }
+}
+
+/// One rate-limit bucket returned by Codex.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RateLimitSnapshot {
+    #[serde(default)]
+    limit_id: Option<String>,
+    #[serde(default)]
+    limit_name: Option<String>,
+    #[serde(default)]
+    plan_type: Option<CodexPlanType>,
+    #[serde(default)]
+    primary: Option<RateLimitWindow>,
+    #[serde(default)]
+    secondary: Option<RateLimitWindow>,
+    #[serde(default)]
+    individual_limit: Option<SpendControlLimit>,
+    #[serde(default)]
+    credits: Option<CreditsSnapshot>,
+    #[serde(default)]
+    rate_limit_reached_type: Option<RateLimitReachedType>,
+}
+
+impl RateLimitSnapshot {
+    fn into_view(self, fallback_label: Option<String>) -> CodexRateLimitView {
+        let primary = self.primary.unwrap_or_default();
+        let secondary = self.secondary.unwrap_or_default();
+        let individual = self.individual_limit.unwrap_or_default();
+        let credits = self.credits.unwrap_or_default();
+
+        CodexRateLimitView {
+            label: self
+                .limit_name
+                .or(self.limit_id)
+                .or(fallback_label)
+                .unwrap_or_else(|| "Codex".to_owned()),
+            plan_type: self
+                .plan_type
+                .map(|plan_type| plan_type.as_str().to_owned()),
+            primary_used_percent: primary.used_percent,
+            primary_window_minutes: primary.window_duration_mins,
+            primary_resets_at: primary.resets_at.and_then(format_unix_timestamp),
+            secondary_used_percent: secondary.used_percent,
+            secondary_window_minutes: secondary.window_duration_mins,
+            secondary_resets_at: secondary.resets_at.and_then(format_unix_timestamp),
+            individual_used: individual.used,
+            individual_limit: individual.limit,
+            individual_remaining_percent: individual.remaining_percent,
+            individual_resets_at: individual.resets_at.and_then(format_unix_timestamp),
+            credits_balance: credits.balance,
+            credits_has_credits: credits.has_credits,
+            credits_unlimited: credits.unlimited,
+            reached_type: self
+                .rate_limit_reached_type
+                .map(|reached| reached.as_str().to_owned()),
+        }
+    }
+}
+
+/// Percentage and reset metadata for one rolling usage window.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RateLimitWindow {
+    #[serde(default)]
+    used_percent: Option<i64>,
+    #[serde(default)]
+    window_duration_mins: Option<i64>,
+    #[serde(default)]
+    resets_at: Option<i64>,
+}
+
+/// Optional workspace spend-control values attached to a rate-limit bucket.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpendControlLimit {
+    #[serde(default)]
+    used: Option<String>,
+    #[serde(default)]
+    limit: Option<String>,
+    #[serde(default)]
+    remaining_percent: Option<i64>,
+    #[serde(default)]
+    resets_at: Option<i64>,
+}
+
+/// Credit-balance metadata attached to a rate-limit bucket.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreditsSnapshot {
+    #[serde(default)]
+    balance: Option<String>,
+    #[serde(default)]
+    has_credits: Option<bool>,
+    #[serde(default)]
+    unlimited: Option<bool>,
+}
+
+/// Reasons the app-server reports a rate-limit bucket as blocked.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+enum RateLimitReachedType {
+    RateLimitReached,
+    WorkspaceOwnerCreditsDepleted,
+    WorkspaceMemberCreditsDepleted,
+    WorkspaceOwnerUsageLimitReached,
+    WorkspaceMemberUsageLimitReached,
+    Other(String),
+}
+
+impl RateLimitReachedType {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::RateLimitReached => "rate_limit_reached",
+            Self::WorkspaceOwnerCreditsDepleted => "workspace_owner_credits_depleted",
+            Self::WorkspaceMemberCreditsDepleted => "workspace_member_credits_depleted",
+            Self::WorkspaceOwnerUsageLimitReached => "workspace_owner_usage_limit_reached",
+            Self::WorkspaceMemberUsageLimitReached => "workspace_member_usage_limit_reached",
+            Self::Other(reached_type) => reached_type,
+        }
+    }
+}
+
+impl From<String> for RateLimitReachedType {
+    fn from(reached_type: String) -> Self {
+        match reached_type.as_str() {
+            "rate_limit_reached" => Self::RateLimitReached,
+            "workspace_owner_credits_depleted" => Self::WorkspaceOwnerCreditsDepleted,
+            "workspace_member_credits_depleted" => Self::WorkspaceMemberCreditsDepleted,
+            "workspace_owner_usage_limit_reached" => Self::WorkspaceOwnerUsageLimitReached,
+            "workspace_member_usage_limit_reached" => Self::WorkspaceMemberUsageLimitReached,
+            _ => Self::Other(reached_type),
+        }
+    }
+}
+
+/// Typed response for the raw `account/usage/read` request.
+#[derive(Debug, Deserialize)]
+struct UsageReadResponse {
+    #[serde(default)]
+    summary: Option<UsageSummary>,
+}
+
+/// Aggregate token-usage values displayed by Dispatch.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageSummary {
+    #[serde(default)]
+    lifetime_tokens: Option<i64>,
+    #[serde(default)]
+    peak_daily_tokens: Option<i64>,
+    #[serde(default)]
+    current_streak_days: Option<i64>,
+    #[serde(default)]
+    longest_streak_days: Option<i64>,
+    #[serde(default)]
+    longest_running_turn_sec: Option<i64>,
+}
+
+impl From<UsageSummary> for CodexUsageSummaryView {
+    fn from(summary: UsageSummary) -> Self {
+        Self {
+            lifetime_tokens: summary.lifetime_tokens,
+            peak_daily_tokens: summary.peak_daily_tokens,
+            current_streak_days: summary.current_streak_days,
+            longest_streak_days: summary.longest_streak_days,
+            longest_running_turn_seconds: summary.longest_running_turn_sec,
+        }
+    }
+}
+
+/// Dispatch-owned entries linked from the shared Codex home into project homes.
+#[derive(Debug, Clone, Copy)]
+enum SharedCodexEntry {
+    Auth,
+    InstallationId,
+    Skills,
+}
+
+impl SharedCodexEntry {
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::Auth => "auth.json",
+            Self::InstallationId => "installation_id",
+            Self::Skills => "skills",
+        }
+    }
+}
+
+/// Decisions supported by Codex prefix rules generated by Dispatch.
+#[derive(Debug, Clone, Copy)]
+enum RuleDecision {
+    Allow,
+    Forbidden,
+}
+
+impl RuleDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Forbidden => "forbidden",
+        }
+    }
+}
+
+/// Readiness conditions presented to operators and enforced before automation starts.
+#[derive(Debug, Clone, Copy)]
+enum ReadinessPrecondition {
+    AppServer,
+    Account,
+    UsageLimits,
+}
+
+impl ReadinessPrecondition {
+    fn view(self, ok: bool, message: impl Into<String>) -> CodexPreconditionView {
+        CodexPreconditionView {
+            name: self.name().to_owned(),
+            ok,
+            message: message.into(),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::AppServer => "Codex app-server",
+            Self::Account => "Codex account",
+            Self::UsageLimits => "Codex usage limits",
+        }
+    }
+}
+
+/// Authenticated account operations that can reveal invalidated credentials.
+#[derive(Debug, Clone, Copy)]
+enum AccountOperation {
+    AccountStatus,
+    RateLimits,
+    TokenUsage,
+}
+
+impl AccountOperation {
+    fn description(self) -> &'static str {
+        match self {
+            Self::AccountStatus => "reading account status",
+            Self::RateLimits => "reading rate limits",
+            Self::TokenUsage => "reading token usage",
+        }
+    }
+}
+
+/// Probes the configured Codex binary and returns its current automation readiness.
+///
+/// Probe failures are represented in the returned view so status pages can render them directly.
+/// This function does not return an error.
 pub async fn app_server_status(store: &Store) -> CodexAppServerStatusView {
     let checked_at = utc_now();
     if let Err(err) = ensure_codex_home() {
@@ -68,21 +528,27 @@ pub async fn app_server_status(store: &Store) -> CodexAppServerStatusView {
     }
 }
 
+/// Spawns the periodic status refresher and stops it when `shutdown` closes or becomes `true`.
+///
+/// Each completed refresh replaces the shared status atomically and publishes a status-changed
+/// event for connected clients.
 pub fn spawn_status_refresher_until(
     store: Store,
-    status: Arc<tokio::sync::RwLock<CodexAppServerStatusView>>,
+    status: Arc<RwLock<CodexAppServerStatusView>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     tokio::spawn(async move {
+        if *shutdown.borrow() {
+            return;
+        }
         let mut interval = tokio::time::interval(STATUS_REFRESH_INTERVAL);
-        let mut skip_initial_tick = true;
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        // Tokio intervals tick immediately. Consume that tick because startup already performs a
+        // synchronous readiness probe before this refresher is spawned.
+        interval.tick().await;
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if skip_initial_tick {
-                        skip_initial_tick = false;
-                        continue;
-                    }
                     let refreshed = app_server_status(&store).await;
                     *status.write().await = refreshed;
                     events::publish_codex_status_changed();
@@ -97,6 +563,12 @@ pub fn spawn_status_refresher_until(
     });
 }
 
+/// Logs out the account in Dispatch's managed Codex home and returns the refreshed status.
+///
+/// # Errors
+///
+/// Returns an error when the managed home or Codex binary is unavailable, the app-server rejects
+/// the logout, or the operation exceeds the status timeout.
 pub async fn logout_current_account(store: &Store) -> Result<CodexAppServerStatusView> {
     ensure_codex_home()?;
     let codex_binary = agent_tools::resolve_tool_path(store, AgentToolName::Codex)
@@ -119,6 +591,12 @@ pub async fn logout_current_account(store: &Store) -> Result<CodexAppServerStatu
     Ok(app_server_status_for_binary(&codex_binary, utc_now()).await)
 }
 
+/// Returns the status when `codex_binary` satisfies every automation precondition.
+///
+/// # Errors
+///
+/// Returns the operator-facing readiness message when Codex is unavailable, unauthenticated, or
+/// blocked by an active usage limit.
 pub async fn ensure_app_server_usable(codex_binary: &Path) -> Result<CodexAppServerStatusView> {
     let status = app_server_status_for_binary(codex_binary, utc_now()).await;
     if status.usable {
@@ -163,32 +641,19 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
         }
     };
 
-    let mut preconditions = vec![CodexPreconditionView {
-        name: "Codex app-server".to_owned(),
-        ok: true,
-        message: format!("Initialized `{}`.", codex_binary.display()),
-    }];
+    let mut preconditions = vec![
+        ReadinessPrecondition::AppServer
+            .view(true, format!("Initialized `{}`.", codex_binary.display())),
+    ];
     let mut warnings = Vec::new();
 
-    let account_value = match client
-        .account_read(GetAccountParams {
-            refresh_token: Some(true),
-            extra: serde_json::Map::new(),
-        })
-        .await
-        .and_then(|account| {
-            serde_json::to_value(account).map_err(codex_app_server_sdk::ClientError::Serialization)
-        }) {
-        Ok(value) => value,
+    let account_response = match read_account_response(&client).await {
+        Ok(response) => response,
         Err(err) => {
-            let message = auth_failure_message("reading account status", &err)
+            let message = auth_failure_message(AccountOperation::AccountStatus, &err)
                 .unwrap_or_else(|| format!("Codex account status could not be read: {err}"));
             let auth_setup = codex_auth_setup(codex_binary);
-            preconditions.push(CodexPreconditionView {
-                name: "Codex account".to_owned(),
-                ok: false,
-                message: message.clone(),
-            });
+            preconditions.push(ReadinessPrecondition::Account.view(false, message.clone()));
             return CodexAppServerStatusView {
                 available: true,
                 usable: false,
@@ -211,41 +676,20 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
         }
     };
 
-    let requires_openai_auth = bool_at(&account_value, &["requiresOpenaiAuth"]);
-    let account = account_value
-        .get("account")
-        .filter(|value| !value.is_null());
-    let auth_method = account.and_then(|account| string_at(account, &["type"]));
-    let account_label = account_label(account, auth_method.as_deref());
+    let requires_openai_auth = account_response.requires_openai_auth;
+    let account = account_response.account.as_ref();
+    let auth_method = account.map(|account| account.auth_method().to_owned());
+    let account_label = account.and_then(CodexAccount::label);
     let signed_in = account.is_some();
     let mut account_ok = signed_in || requires_openai_auth == Some(false);
-    let mut account_message = if signed_in {
-        match (auth_method.as_deref(), account_label.as_deref()) {
-            (Some("chatgpt"), Some(label)) => format!("Signed in with ChatGPT as {label}."),
-            (Some("apiKey"), _) => "Signed in with an API key.".to_owned(),
-            (Some(method), _) => format!("Signed in with {method}."),
-            (None, _) => "Signed in.".to_owned(),
-        }
-    } else if requires_openai_auth == Some(false) {
-        "The active Codex provider does not require OpenAI authentication.".to_owned()
-    } else {
-        format!(
-            "No Codex account is signed in for Dispatch's managed Codex home ({}).",
-            codex_home_dir().display(),
-        )
-    };
+    let mut account_message =
+        account_status_message(account, account_label.as_deref(), requires_openai_auth);
     let mut auth_failure = None::<String>;
 
-    let rate_limit_value = match client
-        .account_rate_limits_read()
-        .await
-        .and_then(|rate_limits| {
-            serde_json::to_value(rate_limits)
-                .map_err(codex_app_server_sdk::ClientError::Serialization)
-        }) {
-        Ok(value) => Some(value),
+    let rate_limit_response = match read_rate_limits_response(&client).await {
+        Ok(response) => Some(response),
         Err(err) => {
-            if let Some(message) = auth_failure_message("reading rate limits", &err) {
+            if let Some(message) = auth_failure_message(AccountOperation::RateLimits, &err) {
                 auth_failure.get_or_insert(message);
             } else {
                 warnings.push(format!("Codex rate limits could not be read: {err}"));
@@ -253,34 +697,31 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
             None
         }
     };
-    let mut rate_limits = rate_limit_value
+    let rate_limit_plan_type = rate_limit_response
         .as_ref()
-        .map(parse_rate_limits)
+        .and_then(RateLimitsReadResponse::plan_type);
+    let mut rate_limits = rate_limit_response
+        .map(RateLimitsReadResponse::into_views)
         .unwrap_or_default();
     rate_limits.sort_by(|left, right| left.label.cmp(&right.label));
     let plan_type = account
-        .and_then(|account| string_at(account, &["planType"]))
-        .or_else(|| {
-            rate_limits
-                .iter()
-                .find_map(|limit| limit.plan_type.as_ref().cloned())
-        });
+        .and_then(CodexAccount::plan_type)
+        .or(rate_limit_plan_type);
     let reached = rate_limits
         .iter()
         .filter_map(|limit| limit.reached_type.as_deref())
         .collect::<Vec<_>>();
 
-    let usage_summary = match client
-        .send_raw_request(
-            "account/usage/read",
-            Value::Null,
-            Some(Duration::from_secs(8)),
-        )
-        .await
-    {
-        Ok(value) => parse_usage_summary(&value),
+    let usage_summary = match read_usage_response(&client).await {
+        Ok(response) => match response.summary {
+            Some(summary) => Some(summary.into()),
+            None => {
+                warnings.push("Codex token usage response did not include a summary.".to_owned());
+                None
+            }
+        },
         Err(err) => {
-            if let Some(message) = auth_failure_message("reading token usage", &err) {
+            if let Some(message) = auth_failure_message(AccountOperation::TokenUsage, &err) {
                 auth_failure.get_or_insert(message);
             } else {
                 warnings.push(format!(
@@ -296,15 +737,10 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
         account_message = message;
     }
     let auth_setup = (!account_ok).then(|| codex_auth_setup(codex_binary));
-    preconditions.push(CodexPreconditionView {
-        name: "Codex account".to_owned(),
-        ok: account_ok,
-        message: account_message.clone(),
-    });
-    preconditions.push(CodexPreconditionView {
-        name: "Codex usage limits".to_owned(),
-        ok: reached.is_empty(),
-        message: if reached.is_empty() {
+    preconditions.push(ReadinessPrecondition::Account.view(account_ok, account_message.clone()));
+    preconditions.push(ReadinessPrecondition::UsageLimits.view(
+        reached.is_empty(),
+        if reached.is_empty() {
             if rate_limits.is_empty() {
                 "No active Codex rate-limit block was reported.".to_owned()
             } else {
@@ -313,10 +749,11 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
         } else {
             format!("Codex reports active limit block: {}.", reached.join(", "))
         },
-    });
+    ));
 
     let usable = preconditions.iter().all(|precondition| precondition.ok);
-    let payment_model = payment_model(auth_method.as_deref(), plan_type.as_deref());
+    let payment_model = payment_model(account, plan_type.as_ref());
+    let plan_type = plan_type.map(|plan_type| plan_type.as_str().to_owned());
     let message = if usable {
         match payment_model.as_deref() {
             Some(payment_model) => format!("Codex SDK is usable for automation ({payment_model})."),
@@ -353,7 +790,7 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
 }
 
 async fn spawn_initialized_client(codex_binary: &Path) -> Result<CodexClient> {
-    let mut config = stdio_config(codex_binary);
+    let mut config = stdio_config(codex_binary)?;
     config.env = codex_environment()?;
     let client = CodexClient::spawn_stdio(config)
         .await
@@ -389,17 +826,14 @@ fn unavailable_status(checked_at: String, message: String) -> CodexAppServerStat
         account_label: None,
         plan_type: None,
         payment_model: None,
-        preconditions: vec![CodexPreconditionView {
-            name: "Codex app-server".to_owned(),
-            ok: false,
-            message,
-        }],
+        preconditions: vec![ReadinessPrecondition::AppServer.view(false, message)],
         rate_limits: Vec::new(),
         usage_summary: None,
         warnings: Vec::new(),
     }
 }
 
+/// Builds the concise server-startup guidance for a non-usable Codex status.
 pub fn operator_guidance(status: &CodexAppServerStatusView) -> Vec<String> {
     let mut lines = vec![status.message.clone()];
     if !status.available {
@@ -414,7 +848,7 @@ pub fn operator_guidance(status: &CodexAppServerStatusView) -> Vec<String> {
     lines
 }
 
-fn auth_failure_message(context: &str, error: &ClientError) -> Option<String> {
+fn auth_failure_message(operation: AccountOperation, error: &ClientError) -> Option<String> {
     let text = match error {
         ClientError::Rpc { error } => {
             let data = error
@@ -427,8 +861,9 @@ fn auth_failure_message(context: &str, error: &ClientError) -> Option<String> {
         _ => error.to_string(),
     };
     is_invalidated_auth_error(&text).then(|| {
+        let operation = operation.description();
         format!(
-            "Codex credentials in Dispatch's managed Codex home ({}) were rejected while {context}. Log out from Dispatch, then sign in again with the managed CODEX_HOME.",
+            "Codex credentials in Dispatch's managed Codex home ({}) were rejected while {operation}. Log out from Dispatch, then sign in again with the managed CODEX_HOME.",
             codex_home_dir().display(),
         )
     })
@@ -443,118 +878,95 @@ fn is_invalidated_auth_error(message: &str) -> bool {
         || message.contains("authentication token has been invalidated")
 }
 
-fn account_label(account: Option<&Value>, auth_method: Option<&str>) -> Option<String> {
-    match auth_method {
-        Some("chatgpt") => account.and_then(|account| string_at(account, &["email"])),
-        Some("apiKey") => Some("API key".to_owned()),
-        Some("amazonBedrock") => Some("Amazon Bedrock".to_owned()),
-        Some(method) => Some(method.to_owned()),
-        None => None,
-    }
+async fn read_account_response(
+    client: &CodexClient,
+) -> std::result::Result<AccountReadResponse, ClientError> {
+    let response = client
+        .account_read(GetAccountParams {
+            refresh_token: Some(true),
+            extra: Map::new(),
+        })
+        .await?;
+    deserialize_opaque_response(response.extra)
 }
 
-fn payment_model(auth_method: Option<&str>, plan_type: Option<&str>) -> Option<String> {
-    match auth_method {
-        Some("apiKey") => Some("per token (API key)".to_owned()),
-        Some("chatgpt") => plan_type.map(|plan| match plan {
-            "self_serve_business_usage_based" | "enterprise_cbp_usage_based" => {
-                format!("usage-based ChatGPT workspace ({plan})")
-            }
-            "unknown" => "ChatGPT subscription (unknown plan)".to_owned(),
-            plan => format!("ChatGPT subscription ({plan})"),
-        }),
-        Some(method) => Some(method.to_owned()),
-        None => plan_type.map(|plan| format!("plan {plan}")),
-    }
+async fn read_rate_limits_response(
+    client: &CodexClient,
+) -> std::result::Result<RateLimitsReadResponse, ClientError> {
+    let response = client.account_rate_limits_read().await?;
+    deserialize_opaque_response(response.extra)
 }
 
-fn parse_rate_limits(value: &Value) -> Vec<CodexRateLimitView> {
-    let mut limits = Vec::new();
-    if let Some(by_id) = value
-        .get("rateLimitsByLimitId")
-        .and_then(Value::as_object)
-        .filter(|by_id| !by_id.is_empty())
-    {
-        for (key, snapshot) in by_id {
-            limits.push(parse_rate_limit_snapshot(snapshot, Some(key.as_str())));
+async fn read_usage_response(
+    client: &CodexClient,
+) -> std::result::Result<UsageReadResponse, ClientError> {
+    let response = client
+        .send_raw_request(
+            ACCOUNT_USAGE_READ_METHOD,
+            Value::Null,
+            Some(USAGE_REQUEST_TIMEOUT),
+        )
+        .await?;
+    deserialize_response(response)
+}
+
+fn deserialize_opaque_response<T>(fields: Map<String, Value>) -> std::result::Result<T, ClientError>
+where
+    T: DeserializeOwned,
+{
+    deserialize_response(Value::Object(fields))
+}
+
+fn deserialize_response<T>(response: Value) -> std::result::Result<T, ClientError>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(response).map_err(ClientError::Serialization)
+}
+
+fn account_status_message(
+    account: Option<&CodexAccount>,
+    account_label: Option<&str>,
+    requires_openai_auth: Option<bool>,
+) -> String {
+    match account.map(|account| &account.auth_method) {
+        Some(CodexAuthMethod::ChatGpt) => account_label.map_or_else(
+            || "Signed in with ChatGPT.".to_owned(),
+            |label| format!("Signed in with ChatGPT as {label}."),
+        ),
+        Some(CodexAuthMethod::ApiKey) => "Signed in with an API key.".to_owned(),
+        Some(CodexAuthMethod::AmazonBedrock) => "Signed in with Amazon Bedrock.".to_owned(),
+        Some(CodexAuthMethod::Other(method)) => format!("Signed in with {method}."),
+        None if requires_openai_auth == Some(false) => {
+            "The active Codex provider does not require OpenAI authentication.".to_owned()
         }
-        return limits;
-    }
-
-    if let Some(snapshot) = value.get("rateLimits") {
-        limits.push(parse_rate_limit_snapshot(snapshot, None));
-    }
-    limits
-}
-
-fn parse_rate_limit_snapshot(value: &Value, fallback_label: Option<&str>) -> CodexRateLimitView {
-    let limit_id = string_at(value, &["limitId"]);
-    let limit_name = string_at(value, &["limitName"]);
-    let label = limit_name
-        .or_else(|| limit_id.clone())
-        .or_else(|| fallback_label.map(ToOwned::to_owned))
-        .unwrap_or_else(|| "Codex".to_owned());
-    let primary = value.get("primary");
-    let secondary = value.get("secondary");
-    let individual = value.get("individualLimit");
-    let credits = value.get("credits");
-
-    CodexRateLimitView {
-        label,
-        plan_type: string_at(value, &["planType"]),
-        primary_used_percent: primary.and_then(|value| i64_at(value, &["usedPercent"])),
-        primary_window_minutes: primary.and_then(|value| i64_at(value, &["windowDurationMins"])),
-        primary_resets_at: primary
-            .and_then(|value| i64_at(value, &["resetsAt"]))
-            .and_then(format_unix_timestamp),
-        secondary_used_percent: secondary.and_then(|value| i64_at(value, &["usedPercent"])),
-        secondary_window_minutes: secondary
-            .and_then(|value| i64_at(value, &["windowDurationMins"])),
-        secondary_resets_at: secondary
-            .and_then(|value| i64_at(value, &["resetsAt"]))
-            .and_then(format_unix_timestamp),
-        individual_used: individual.and_then(|value| string_at(value, &["used"])),
-        individual_limit: individual.and_then(|value| string_at(value, &["limit"])),
-        individual_remaining_percent: individual
-            .and_then(|value| i64_at(value, &["remainingPercent"])),
-        individual_resets_at: individual
-            .and_then(|value| i64_at(value, &["resetsAt"]))
-            .and_then(format_unix_timestamp),
-        credits_balance: credits.and_then(|value| string_at(value, &["balance"])),
-        credits_has_credits: credits.and_then(|value| bool_at(value, &["hasCredits"])),
-        credits_unlimited: credits.and_then(|value| bool_at(value, &["unlimited"])),
-        reached_type: string_at(value, &["rateLimitReachedType"]),
+        None => format!(
+            "No Codex account is signed in for Dispatch's managed Codex home ({}).",
+            codex_home_dir().display(),
+        ),
     }
 }
 
-fn parse_usage_summary(value: &Value) -> Option<CodexUsageSummaryView> {
-    let summary = value.get("summary")?;
-    Some(CodexUsageSummaryView {
-        lifetime_tokens: i64_at(summary, &["lifetimeTokens"]),
-        peak_daily_tokens: i64_at(summary, &["peakDailyTokens"]),
-        current_streak_days: i64_at(summary, &["currentStreakDays"]),
-        longest_streak_days: i64_at(summary, &["longestStreakDays"]),
-        longest_running_turn_seconds: i64_at(summary, &["longestRunningTurnSec"]),
-    })
-}
-
-fn string_at(value: &Value, path: &[&str]) -> Option<String> {
-    path.iter()
-        .try_fold(value, |current, key| current.get(*key))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn bool_at(value: &Value, path: &[&str]) -> Option<bool> {
-    path.iter()
-        .try_fold(value, |current, key| current.get(*key))
-        .and_then(Value::as_bool)
-}
-
-fn i64_at(value: &Value, path: &[&str]) -> Option<i64> {
-    path.iter()
-        .try_fold(value, |current, key| current.get(*key))
-        .and_then(Value::as_i64)
+fn payment_model(
+    account: Option<&CodexAccount>,
+    plan_type: Option<&CodexPlanType>,
+) -> Option<String> {
+    match account.map(|account| &account.auth_method) {
+        Some(CodexAuthMethod::ApiKey) => Some("per token (API key)".to_owned()),
+        Some(CodexAuthMethod::ChatGpt) => plan_type.map(|plan_type| {
+            let plan = plan_type.as_str();
+            if plan_type.is_usage_based() {
+                format!("usage-based ChatGPT workspace ({plan})")
+            } else if matches!(plan_type, CodexPlanType::Unknown) {
+                "ChatGPT subscription (unknown plan)".to_owned()
+            } else {
+                format!("ChatGPT subscription ({plan})")
+            }
+        }),
+        Some(CodexAuthMethod::AmazonBedrock) => Some("amazonBedrock".to_owned()),
+        Some(CodexAuthMethod::Other(method)) => Some(method.clone()),
+        None => plan_type.map(|plan_type| format!("plan {}", plan_type.as_str())),
+    }
 }
 
 fn format_unix_timestamp(timestamp: i64) -> Option<String> {
@@ -563,33 +975,58 @@ fn format_unix_timestamp(timestamp: i64) -> Option<String> {
         .and_then(|time| time.format(&Rfc3339).ok())
 }
 
+/// Spawns the high-level Codex SDK client for an automation run.
+///
+/// The supplied environment is extended with the project-specific `CODEX_HOME` and
+/// `CODEX_SQLITE_HOME`. On Unix, app-server stderr is appended to `stderr_path`; on other
+/// platforms the SDK's inherited-stderr behavior is retained.
+///
+/// # Errors
+///
+/// Returns an error when a path cannot be represented by the SDK's UTF-8 configuration, the
+/// project Codex home is missing, or the app-server process cannot be started.
 pub async fn spawn_codex_with_home_and_env(
     codex_binary: &Path,
     codex_home: &Path,
+    stderr_path: &Path,
     mut env: HashMap<String, String>,
 ) -> Result<Codex> {
-    let mut config = stdio_config(codex_binary);
+    let mut config = stdio_config_with_stderr_capture(codex_binary, stderr_path)?;
     env.extend(codex_environment_for_home(codex_home)?);
     config.env = env;
-    Ok(Codex::spawn_stdio(config)
+    let codex = Codex::spawn_stdio(config)
         .await
-        .context("failed to start Codex app-server")?)
+        .context("failed to start Codex app-server")?;
+    Ok(codex)
 }
 
+/// Returns the shared Dispatch-managed Codex home.
 pub fn codex_home_dir() -> PathBuf {
     codex_home_dir_for_dispatch_home(&dispatch_home_dir())
 }
 
+/// Returns the shared managed Codex configuration path.
 pub fn codex_config_path() -> PathBuf {
     codex_config_path_for_home(&codex_home_dir())
 }
 
+/// Returns the isolated managed Codex home for `project_id`.
 pub fn codex_project_home_dir(project_id: i64) -> PathBuf {
     codex_home_dir()
         .join("projects")
         .join(project_id.to_string())
 }
 
+/// Creates or refreshes a project's managed Codex home from its settings.
+///
+/// Shared authentication and skill assets are linked from the shared home. Generated config and
+/// Git rules are rewritten on every call so runtime behavior reflects the current project policy.
+/// Stale managed links are repaired without replacing user-created regular files or directories.
+///
+/// # Errors
+///
+/// Returns an error when a managed directory, link, config file, or rules file cannot be created
+/// or inspected.
 pub fn ensure_project_codex_home(settings: &ProjectSettingsView) -> Result<PathBuf> {
     let shared_home = ensure_codex_home()?;
     let project_home = codex_project_home_dir(settings.project_id);
@@ -599,9 +1036,13 @@ pub fn ensure_project_codex_home(settings: &ProjectSettingsView) -> Result<PathB
             project_home.display()
         )
     })?;
-    link_shared_codex_entry(&shared_home, &project_home, "auth.json")?;
-    link_shared_codex_entry(&shared_home, &project_home, "installation_id")?;
-    link_shared_codex_entry(&shared_home, &project_home, "skills")?;
+    for entry in [
+        SharedCodexEntry::Auth,
+        SharedCodexEntry::InstallationId,
+        SharedCodexEntry::Skills,
+    ] {
+        link_shared_codex_entry(&shared_home, &project_home, entry)?;
+    }
     write_project_codex_config(&project_home, settings)?;
     write_project_git_rules(&project_home, settings)?;
     Ok(project_home)
@@ -656,7 +1097,7 @@ fn codex_environment_for_home(codex_home: &Path) -> Result<HashMap<String, Strin
             codex_home.display()
         );
     }
-    let codex_home = codex_home.to_string_lossy().into_owned();
+    let codex_home = utf8_path(codex_home, "Codex home")?;
     Ok(HashMap::from([
         ("CODEX_HOME".to_owned(), codex_home.clone()),
         ("CODEX_SQLITE_HOME".to_owned(), codex_home),
@@ -693,23 +1134,55 @@ fn ensure_codex_home_at(codex_home: &Path) -> Result<()> {
 fn link_shared_codex_entry(
     shared_home: &Path,
     project_home: &Path,
-    entry_name: &str,
+    entry: SharedCodexEntry,
 ) -> Result<()> {
+    let entry_name = entry.file_name();
     let source = shared_home.join(entry_name);
+    let destination = project_home.join(entry_name);
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let current_target = fs::read_link(&destination).context_with(|| {
+                format!(
+                    "failed to read project Codex link {}",
+                    destination.display()
+                )
+            })?;
+            let current_target = if current_target.is_absolute() {
+                current_target
+            } else {
+                destination
+                    .parent()
+                    .unwrap_or(project_home)
+                    .join(current_target)
+            };
+            if source.exists() && current_target == source {
+                return Ok(());
+            }
+            fs::remove_file(&destination).context_with(|| {
+                format!(
+                    "failed to remove stale project Codex link {}",
+                    destination.display()
+                )
+            })?;
+        }
+        Ok(_) => return Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err)
+                .context_with(|| format!("failed to inspect {}", destination.display()))?;
+        }
+    }
     if !source.exists() {
         return Ok(());
     }
-    let destination = project_home.join(entry_name);
-    if fs::symlink_metadata(&destination).is_ok() {
-        return Ok(());
-    }
-    Ok(symlink_path(&source, &destination).context_with(|| {
+    symlink_path(&source, &destination).context_with(|| {
         format!(
             "failed to link shared Codex entry {} into {}",
             source.display(),
             destination.display()
         )
-    })?)
+    })?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -754,8 +1227,9 @@ writable_roots = {writable_roots}
 "#,
         sandbox_mode = toml_string(sandbox_mode),
     );
-    Ok(fs::write(&config_path, config)
-        .context_with(|| format!("failed to write Codex config {}", config_path.display()))?)
+    fs::write(&config_path, config)
+        .context_with(|| format!("failed to write Codex config {}", config_path.display()))?;
+    Ok(())
 }
 
 fn write_project_git_rules(codex_home: &Path, settings: &ProjectSettingsView) -> Result<()> {
@@ -763,14 +1237,13 @@ fn write_project_git_rules(codex_home: &Path, settings: &ProjectSettingsView) ->
     fs::create_dir_all(&rules_dir)
         .context_with(|| format!("failed to create Codex rules dir {}", rules_dir.display()))?;
     let rules_path = rules_dir.join(PROJECT_RULES_FILE_NAME);
-    Ok(
-        fs::write(&rules_path, git_rules_for_policy(settings)).context_with(|| {
-            format!(
-                "failed to write Codex git rules file {}",
-                rules_path.display()
-            )
-        })?,
-    )
+    fs::write(&rules_path, git_rules_for_policy(settings)).context_with(|| {
+        format!(
+            "failed to write Codex git rules file {}",
+            rules_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn git_rules_for_policy(settings: &ProjectSettingsView) -> String {
@@ -785,21 +1258,21 @@ fn git_rules_for_policy(settings: &ProjectSettingsView) -> String {
     if policy.add {
         rules.push_str(&prefix_rule(
             &["git", "add"],
-            "allow",
+            RuleDecision::Allow,
             "Dispatch allows staging explicit changes for this project.",
         ));
     }
     if policy.commit {
         rules.push_str(&prefix_rule(
             &["git", "commit"],
-            "allow",
+            RuleDecision::Allow,
             "Dispatch allows commits for this project; the git wrapper enforces --no-verify.",
         ));
     }
     if policy.push {
         rules.push_str(&prefix_rule(
             &["git", "push"],
-            "allow",
+            RuleDecision::Allow,
             "Dispatch allows non-force pushes for this project.",
         ));
         for forbidden in [
@@ -812,7 +1285,7 @@ fn git_rules_for_policy(settings: &ProjectSettingsView) -> String {
         ] {
             rules.push_str(&prefix_rule(
                 &forbidden,
-                "forbidden",
+                RuleDecision::Forbidden,
                 "Dispatch blocks force, mirror, delete, and prune pushes; use a normal git push.",
             ));
         }
@@ -820,13 +1293,13 @@ fn git_rules_for_policy(settings: &ProjectSettingsView) -> String {
     if policy.reset {
         rules.push_str(&prefix_rule(
             &["git", "reset"],
-            "allow",
+            RuleDecision::Allow,
             "Dispatch allows git reset within this project's configured limits.",
         ));
         if !policy.allows_hard_reset(settings.workspace_mode) {
             rules.push_str(&prefix_rule(
                 &["git", "reset", "--hard"],
-                "forbidden",
+                RuleDecision::Forbidden,
                 "Dispatch blocks git reset --hard for the current workspace mode.",
             ));
         }
@@ -834,7 +1307,7 @@ fn git_rules_for_policy(settings: &ProjectSettingsView) -> String {
     rules
 }
 
-fn prefix_rule(pattern: &[&str], decision: &str, justification: &str) -> String {
+fn prefix_rule(pattern: &[&str], decision: RuleDecision, justification: &str) -> String {
     let pattern = pattern
         .iter()
         .map(|value| toml_string(value))
@@ -848,7 +1321,7 @@ fn prefix_rule(pattern: &[&str], decision: &str, justification: &str) -> String 
 )
 
 "#,
-        decision = toml_string(decision),
+        decision = toml_string(decision.as_str()),
         justification = toml_string(justification),
     )
 }
@@ -866,11 +1339,44 @@ fn toml_string(value: &str) -> String {
     serde_json::to_string(value).expect("TOML-compatible string must serialize")
 }
 
-fn stdio_config(codex_binary: &Path) -> StdioConfig {
-    StdioConfig {
-        codex_binary: codex_binary.to_string_lossy().into_owned(),
+fn utf8_path(path: &Path, description: &str) -> Result<String> {
+    let Some(path) = path.to_str() else {
+        bail!("{description} is not valid UTF-8 and cannot be passed to the Codex SDK");
+    };
+    Ok(path.to_owned())
+}
+
+fn stdio_config(codex_binary: &Path) -> Result<StdioConfig> {
+    Ok(StdioConfig {
+        codex_binary: utf8_path(codex_binary, "Codex binary path")?,
         ..Default::default()
-    }
+    })
+}
+
+#[cfg(unix)]
+fn stdio_config_with_stderr_capture(
+    codex_binary: &Path,
+    stderr_path: &Path,
+) -> Result<StdioConfig> {
+    Ok(StdioConfig {
+        codex_binary: "/bin/sh".to_owned(),
+        args: vec![
+            "-c".to_owned(),
+            "exec \"$1\" app-server 2>>\"$2\"".to_owned(),
+            "dispatch-codex-app-server".to_owned(),
+            utf8_path(codex_binary, "Codex binary path")?,
+            utf8_path(stderr_path, "Codex stderr path")?,
+        ],
+        ..Default::default()
+    })
+}
+
+#[cfg(not(unix))]
+fn stdio_config_with_stderr_capture(
+    codex_binary: &Path,
+    _stderr_path: &Path,
+) -> Result<StdioConfig> {
+    stdio_config(codex_binary)
 }
 
 #[cfg(test)]
@@ -967,10 +1473,145 @@ mod tests {
             },
         };
 
-        let message = auth_failure_message("reading rate limits", &error).unwrap();
+        let message = auth_failure_message(AccountOperation::RateLimits, &error).unwrap();
 
         assert!(message.contains("managed Codex home"));
         assert!(message.contains("Log out"));
+    }
+
+    #[test]
+    fn account_response_is_decoded_into_protocol_types() {
+        let response = deserialize_response::<AccountReadResponse>(serde_json::json!({
+            "account": {
+                "type": "chatgpt",
+                "email": "operator@example.com",
+                "planType": "pro"
+            },
+            "requiresOpenaiAuth": true
+        }))
+        .unwrap();
+        let account = response.account.as_ref().unwrap();
+
+        assert_eq!(response.requires_openai_auth, Some(true));
+        assert_eq!(account.auth_method(), "chatgpt");
+        assert_eq!(account.label().as_deref(), Some("operator@example.com"));
+        assert_eq!(
+            account.plan_type().as_ref().map(CodexPlanType::as_str),
+            Some("pro")
+        );
+    }
+
+    #[test]
+    fn rate_limits_prefer_typed_multi_bucket_response() {
+        let response = deserialize_response::<RateLimitsReadResponse>(serde_json::json!({
+            "rateLimits": {
+                "limitName": "legacy",
+                "primary": { "usedPercent": 5 }
+            },
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "planType": "plus",
+                    "primary": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300
+                    },
+                    "rateLimitReachedType": "rate_limit_reached"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response.plan_type().as_ref().map(CodexPlanType::as_str),
+            Some("plus")
+        );
+        let limits = response.into_views();
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].label, "codex");
+        assert_eq!(limits[0].primary_used_percent, Some(42));
+        assert_eq!(limits[0].primary_window_minutes, Some(300));
+        assert_eq!(
+            limits[0].reached_type.as_deref(),
+            Some("rate_limit_reached")
+        );
+    }
+
+    #[test]
+    fn malformed_rate_limit_numbers_fail_at_the_protocol_boundary() {
+        let result = deserialize_response::<RateLimitsReadResponse>(serde_json::json!({
+            "rateLimits": {
+                "primary": { "usedPercent": "forty-two" }
+            }
+        }));
+
+        assert!(matches!(result, Err(ClientError::Serialization(_))));
+    }
+
+    #[test]
+    fn protocol_enum_extensions_remain_visible() {
+        let account = deserialize_response::<AccountReadResponse>(serde_json::json!({
+            "account": { "type": "futureProvider" },
+            "requiresOpenaiAuth": false
+        }))
+        .unwrap()
+        .account
+        .unwrap();
+
+        assert_eq!(account.auth_method(), "futureProvider");
+        assert_eq!(account.label().as_deref(), Some("futureProvider"));
+
+        let response = deserialize_response::<RateLimitsReadResponse>(serde_json::json!({
+            "rateLimits": {
+                "planType": "future_plan",
+                "rateLimitReachedType": "future_limit"
+            }
+        }))
+        .unwrap();
+        let limits = response.into_views();
+
+        assert_eq!(limits[0].plan_type.as_deref(), Some("future_plan"));
+        assert_eq!(limits[0].reached_type.as_deref(), Some("future_limit"));
+    }
+
+    #[test]
+    fn rate_limit_percentages_use_the_protocol_integer_width() {
+        let wide_percentage = i64::from(i32::MAX) + 1;
+        let response = deserialize_response::<RateLimitsReadResponse>(serde_json::json!({
+            "rateLimits": {
+                "primary": { "usedPercent": wide_percentage },
+                "individualLimit": { "remainingPercent": wide_percentage }
+            }
+        }))
+        .unwrap();
+        let limits = response.into_views();
+
+        assert_eq!(limits[0].primary_used_percent, Some(wide_percentage));
+        assert_eq!(
+            limits[0].individual_remaining_percent,
+            Some(wide_percentage)
+        );
+    }
+
+    #[test]
+    fn usage_response_is_decoded_into_status_view() {
+        let response = deserialize_response::<UsageReadResponse>(serde_json::json!({
+            "summary": {
+                "lifetimeTokens": 1200,
+                "peakDailyTokens": 300,
+                "currentStreakDays": 4,
+                "longestStreakDays": 9,
+                "longestRunningTurnSec": 75
+            },
+            "dailyUsageBuckets": []
+        }))
+        .unwrap();
+        let summary = CodexUsageSummaryView::from(response.summary.unwrap());
+
+        assert_eq!(summary.lifetime_tokens, Some(1200));
+        assert_eq!(summary.peak_daily_tokens, Some(300));
+        assert_eq!(summary.current_streak_days, Some(4));
+        assert_eq!(summary.longest_streak_days, Some(9));
+        assert_eq!(summary.longest_running_turn_seconds, Some(75));
     }
 
     #[test]
@@ -1002,6 +1643,69 @@ mod tests {
         assert!(config.contains("network_access = true"));
         assert!(config.contains("writable_roots = [\"/tmp/dispatch-browser\"]"));
         assert!(config.contains("memories = false"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_codex_home_repairs_stale_shared_links() {
+        let temp = TempDir::new().unwrap();
+        let shared_home = temp.path().join("dispatch/codex");
+        let project_home = shared_home.join("projects/7");
+        let stale_home = temp.path().join("patchbay/codex");
+        fs::create_dir_all(&project_home).unwrap();
+        fs::create_dir_all(&shared_home).unwrap();
+        fs::write(shared_home.join("installation_id"), "current-installation").unwrap();
+        std::os::unix::fs::symlink(
+            stale_home.join("installation_id"),
+            project_home.join("installation_id"),
+        )
+        .unwrap();
+
+        link_shared_codex_entry(
+            &shared_home,
+            &project_home,
+            SharedCodexEntry::InstallationId,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_link(project_home.join("installation_id")).unwrap(),
+            shared_home.join("installation_id")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_codex_home_removes_stale_link_when_shared_entry_is_absent() {
+        let temp = TempDir::new().unwrap();
+        let shared_home = temp.path().join("dispatch/codex");
+        let project_home = shared_home.join("projects/7");
+        fs::create_dir_all(&project_home).unwrap();
+        std::os::unix::fs::symlink(
+            temp.path().join("patchbay/codex/auth.json"),
+            project_home.join("auth.json"),
+        )
+        .unwrap();
+
+        link_shared_codex_entry(&shared_home, &project_home, SharedCodexEntry::Auth).unwrap();
+
+        assert!(fs::symlink_metadata(project_home.join("auth.json")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automation_stdio_config_captures_stderr_without_shell_interpolation() {
+        let config = stdio_config_with_stderr_capture(
+            Path::new("/Applications/Codex CLI/codex"),
+            Path::new("/Users/test/Dispatch Logs/run 7.stderr.log"),
+        )
+        .unwrap();
+
+        assert_eq!(config.codex_binary, "/bin/sh");
+        assert_eq!(config.args[0], "-c");
+        assert_eq!(config.args[1], "exec \"$1\" app-server 2>>\"$2\"");
+        assert_eq!(config.args[3], "/Applications/Codex CLI/codex");
+        assert_eq!(config.args[4], "/Users/test/Dispatch Logs/run 7.stderr.log");
     }
 
     #[test]
