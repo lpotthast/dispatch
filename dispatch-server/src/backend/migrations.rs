@@ -1,3 +1,8 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::Statement;
 
@@ -2712,10 +2717,121 @@ impl MigrationTrait for SeparateAutomationRunInputs {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         drop_read_view(manager, "agent_runs_read_view").await?;
         add_column_if_missing(manager, "agent_runs", "prompt_path", "TEXT").await?;
+        restore_legacy_automation_prompt_paths(manager).await?;
         drop_column_if_present(manager, "agent_runs", "user_prompt_path").await?;
         drop_column_if_present(manager, "agent_runs", "developer_instructions_path").await?;
         create_read_view(manager, "agent_runs", "agent_runs_read_view").await
     }
+}
+
+async fn restore_legacy_automation_prompt_paths(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let runs = manager
+        .get_connection()
+        .query_all(Statement::from_string(
+            manager.get_database_backend(),
+            r#"
+            SELECT "id", "developer_instructions_path", "user_prompt_path"
+            FROM "agent_runs";
+            "#
+            .to_owned(),
+        ))
+        .await?;
+
+    for run in runs {
+        let run_id = run.try_get::<i64>("", "id")?;
+        let developer_instructions_path =
+            run.try_get::<Option<String>>("", "developer_instructions_path")?;
+        let user_prompt_path = run.try_get::<Option<String>>("", "user_prompt_path")?;
+        let Some(prompt_path) = legacy_automation_prompt_path(
+            run_id,
+            developer_instructions_path.as_deref(),
+            user_prompt_path.as_deref(),
+        )?
+        else {
+            continue;
+        };
+
+        manager
+            .get_connection()
+            .execute(Statement::from_sql_and_values(
+                manager.get_database_backend(),
+                r#"
+                UPDATE "agent_runs"
+                SET "prompt_path" = ?1
+                WHERE "id" = ?2;
+                "#,
+                vec![prompt_path.into(), run_id.into()],
+            ))
+            .await?;
+    }
+
+    Ok(())
+}
+
+fn legacy_automation_prompt_path(
+    run_id: i64,
+    developer_instructions_path: Option<&str>,
+    user_prompt_path: Option<&str>,
+) -> Result<Option<String>, DbErr> {
+    match (developer_instructions_path, user_prompt_path) {
+        (None, None) => Ok(None),
+        (Some(path), None) | (None, Some(path)) => Ok(Some(path.to_owned())),
+        (Some(developer_path), Some(user_path)) if developer_path == user_path => {
+            Ok(Some(developer_path.to_owned()))
+        }
+        (Some(developer_path), Some(user_path)) => {
+            let combined_path = legacy_combined_prompt_path(run_id, developer_path);
+            let developer_instructions =
+                read_prompt_artifact(run_id, "developer instructions", Path::new(developer_path))?;
+            let user_prompt = read_prompt_artifact(run_id, "user prompt", Path::new(user_path))?;
+            let combined_prompt = legacy_combined_prompt(&developer_instructions, &user_prompt);
+            fs::write(&combined_path, combined_prompt).map_err(|err| {
+                DbErr::Migration(format!(
+                    "failed to write combined prompt artifact for automation run {run_id} to {}: {err}",
+                    combined_path.display()
+                ))
+            })?;
+            Ok(Some(combined_path.to_string_lossy().into_owned()))
+        }
+    }
+}
+
+fn legacy_combined_prompt(developer_instructions: &str, user_prompt: &str) -> String {
+    let mut prompt = String::from("# Dispatch Automation Prompt\n\n");
+    push_legacy_prompt_section(
+        &mut prompt,
+        "Developer Instructions",
+        developer_instructions,
+    );
+    prompt.push('\n');
+    push_legacy_prompt_section(&mut prompt, "User Prompt", user_prompt);
+    prompt
+}
+
+fn push_legacy_prompt_section(prompt: &mut String, title: &str, body: &str) {
+    prompt.push_str("## ");
+    prompt.push_str(title);
+    prompt.push_str("\n\n");
+    prompt.push_str(body);
+    if !body.ends_with('\n') {
+        prompt.push('\n');
+    }
+}
+
+fn legacy_combined_prompt_path(run_id: i64, developer_instructions_path: &str) -> PathBuf {
+    Path::new(developer_instructions_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(format!("run-{run_id}.prompt.md"))
+}
+
+fn read_prompt_artifact(run_id: i64, role: &str, path: &Path) -> Result<String, DbErr> {
+    fs::read_to_string(path).map_err(|err| {
+        DbErr::Migration(format!(
+            "failed to read {role} artifact for automation run {run_id} from {}: {err}",
+            path.display()
+        ))
+    })
 }
 
 async fn create_personalities(manager: &SchemaManager<'_>) -> Result<(), DbErr> {

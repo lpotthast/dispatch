@@ -195,6 +195,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automation_run_input_down_migration_restores_legacy_prompt_artifacts() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("dispatch.sqlite3");
+        let db = Database::connect(sqlite_url(&path)).await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+
+        let shared_prompt_path = temp.path().join("shared-prompt.md");
+        let developer_instructions_path = temp.path().join("run-42.developer-instructions.md");
+        let user_prompt_path = temp.path().join("run-42.user-prompt.md");
+        fs::write(&shared_prompt_path, "Legacy combined prompt.").unwrap();
+        fs::write(&developer_instructions_path, "Follow Dispatch policy.\n").unwrap();
+        fs::write(&user_prompt_path, "Implement the requested change.\n").unwrap();
+
+        db.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            r#"INSERT INTO "projects" ("id", "name", "display_name") VALUES (1, 'demo', 'Demo');"#
+                .to_owned(),
+        ))
+        .await
+        .unwrap();
+        for (run_id, developer_path, user_path) in [
+            (41, &shared_prompt_path, &shared_prompt_path),
+            (42, &developer_instructions_path, &user_prompt_path),
+        ] {
+            db.execute(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                r#"
+                INSERT INTO "agent_runs" (
+                    "id",
+                    "project_id",
+                    "tool_name",
+                    "status",
+                    "command",
+                    "working_dir",
+                    "developer_instructions_path",
+                    "user_prompt_path"
+                )
+                VALUES (?1, 1, 'codex', 'completed', 'codex app-server', '/tmp/project', ?2, ?3);
+                "#,
+                vec![
+                    run_id.into(),
+                    developer_path.to_string_lossy().into_owned().into(),
+                    user_path.to_string_lossy().into_owned().into(),
+                ],
+            ))
+            .await
+            .unwrap();
+        }
+
+        Migrator::down(&db, Some(1)).await.unwrap();
+
+        let rows = db
+            .query_all(Statement::from_string(
+                DbBackend::Sqlite,
+                r#"
+                SELECT "id", "prompt_path"
+                FROM "agent_runs"
+                ORDER BY "id";
+                "#
+                .to_owned(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].try_get::<i64>("", "id").unwrap(), 41);
+        assert_eq!(
+            rows[0].try_get::<String>("", "prompt_path").unwrap(),
+            shared_prompt_path.to_string_lossy()
+        );
+
+        let combined_prompt_path = temp.path().join("run-42.prompt.md");
+        assert_eq!(rows[1].try_get::<i64>("", "id").unwrap(), 42);
+        assert_eq!(
+            rows[1].try_get::<String>("", "prompt_path").unwrap(),
+            combined_prompt_path.to_string_lossy()
+        );
+        assert_eq!(
+            fs::read_to_string(combined_prompt_path).unwrap(),
+            concat!(
+                "# Dispatch Automation Prompt\n\n",
+                "## Developer Instructions\n\n",
+                "Follow Dispatch policy.\n\n",
+                "## User Prompt\n\n",
+                "Implement the requested change.\n",
+            )
+        );
+
+        let columns = db
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                r#"
+                SELECT
+                    SUM(name = 'developer_instructions_path') AS developer_count,
+                    SUM(name = 'user_prompt_path') AS user_count,
+                    SUM(name = 'prompt_path') AS combined_count
+                FROM pragma_table_info('agent_runs');
+                "#
+                .to_owned(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(columns.try_get::<i64>("", "developer_count").unwrap(), 0);
+        assert_eq!(columns.try_get::<i64>("", "user_count").unwrap(), 0);
+        assert_eq!(columns.try_get::<i64>("", "combined_count").unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn refinement_concurrency_column_is_removed_from_projects() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("dispatch.sqlite3");
