@@ -1,6 +1,6 @@
 # Data Model
 
-Patchbay stores project-scoped work coordination data. The database schema lives in `patchbay-server`; shared API shapes live in `patchbay-types`.
+Dispatch stores project-scoped work coordination data. The database schema lives in `dispatch-server`; shared API shapes live in `dispatch-types`.
 
 ## Projects
 
@@ -21,9 +21,9 @@ Project data includes:
 
 All item and automation API calls are project-scoped. Missing project context is an error for agent-facing operations.
 
-The project system prompt is the project-owned instruction text included in automation prompts. Every project system prompt write creates a project-level `SystemPromptChanged` event with the full prompt snapshot after the write. System prompt events carry optional actor and agent-run attribution so a prompt change can be traced back to the Patchbay user or agent/session that wrote it.
+The project system prompt is the project-owned instruction text included in automation prompts. Every project system prompt write creates a project-level `SystemPromptChanged` event with the full prompt snapshot after the write. System prompt events carry optional actor and agent-run attribution so a prompt change can be traced back to the Dispatch user or agent/session that wrote it.
 
-Project memory is the project-owned shared memory for agents. Every project memory write creates a project-level `MemoryChanged` event with the full memory snapshot after the write. Memory events carry optional actor and agent-run attribution so a memory change can be traced back to the Patchbay agent/session that wrote it.
+Project memory is the project-owned shared memory for agents. Every project memory write creates a project-level `MemoryChanged` event with the full memory snapshot after the write. Memory events carry optional actor and agent-run attribution so a memory change can be traced back to the Dispatch agent/session that wrote it.
 
 Project personalities are reusable, project-scoped prompt fragments for automation-launched agents. Every project has a `Default` personality with an initially empty `personality_description`. Personality names are required after trimming, unique within a project, and suitable for display in automation selectors. The `personality_description` field is free-form text and defaults to empty.
 
@@ -43,13 +43,13 @@ Core fields include:
 - optional agent model and reasoning effort overrides;
 - comment count and timestamps.
 
-Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Non-state labels can be edited by human operators and agents. The `state` label is Patchbay's built-in workflow hook for claim, finish, release, and default automation transitions; it is managed through item create, item state update, and workflow transitions rather than generic label add, update, or delete operations.
+Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Non-state labels can be edited by human operators and agents. The `state` label is Dispatch's built-in workflow hook for claim, finish, release, and default automation transitions; it is managed through item create, item state update, and workflow transitions rather than generic label add, update, or delete operations.
 
-Patchbay also uses hardcoded workflow labels. `patchbay:claimed-from-state=<state-label>` is transient claim bookkeeping so release and feedback requests can restore the state an item came from. `patchbay:automation-blocked` marks released, non-operable work that automation should skip until the label is removed. `patchbay:feedback-requested` marks work where an agent is waiting for a user answer; automation treats it as a blocking label until a user or agent removes it after the feedback has been handled.
+Dispatch also uses hardcoded workflow labels. `dispatch:claimed-from-state=<state-label>` is transient claim bookkeeping so release and feedback requests can restore the state an item came from. `dispatch:automation-blocked` marks released, non-operable work that automation should skip until the label is removed. `dispatch:feedback-requested` marks work where an agent is waiting for a user answer; automation treats it as a blocking label until a user or agent removes it after the feedback has been handled.
 
-Work item relationships are directed, project-scoped links between two different work items. Each relationship stores a source work item, a target work item, a free-form `kind` string, and timestamps. Relationship kinds are trimmed and must not be empty, but Patchbay does not define a fixed vocabulary. Exact duplicates for the same project, source item, target item, and kind are rejected; different kinds between the same pair and separately directed reverse relationships are allowed. Source and target items must both exist in the same project. Deleting either work item cascades to delete touching relationships so API, CLI, and UI readers do not see orphaned links.
+Work item relationships are directed, project-scoped links between two different work items. Each relationship stores a source work item, a target work item, a free-form `kind` string, and timestamps. Relationship kinds are trimmed and must not be empty, but Dispatch does not define a fixed vocabulary. Exact duplicates for the same project, source item, target item, and kind are rejected; different kinds between the same pair and separately directed reverse relationships are allowed. Source and target items must both exist in the same project. Deleting either work item cascades to delete touching relationships so API, CLI, and UI readers do not see orphaned links.
 
-Relationship create, update-kind, and delete operations are Patchbay-owned workflow mutations, not label edits and not CrudKit-only CRUD. Mutations touch both source and target work items by incrementing their versions and updating their `updated_at` values, record item events for both sides, and publish item-change notifications for both item detail views.
+Relationship create, update-kind, and delete operations are Dispatch-owned workflow mutations, not label edits and not CrudKit-only CRUD. Mutations touch both source and target work items by incrementing their versions and updating their `updated_at` values, record item events for both sides, and publish item-change notifications for both item detail views.
 
 Work item states are project-scoped records with an identifier, display name, and position. They define the authored values that operators should use for the `state` label. New projects start with `idea`, `open`, `in_progress`, and `done` states.
 
@@ -65,7 +65,7 @@ Comment authors include user, agent, and system author types. The server records
 
 ## Events
 
-Patchbay records workflow and automation events for live UI updates and auditability. Event streams are project-scoped and can also be filtered to a work item.
+Dispatch records workflow and automation events for live UI updates and auditability. Event streams are project-scoped and can also be filtered to a work item.
 
 Events are used by item watch commands, live board updates, and automation visibility. They are not a substitute for the current state stored on projects, work item labels, comments, and runs.
 
@@ -77,7 +77,7 @@ Memory history is reconstructable from `MemoryChanged` event snapshots until a u
 
 Agent tools describe launchable coding-agent integrations. The current implementation targets Codex. Tool records support discovery and configuration through the admin UI and server services.
 
-Agents launched by Patchbay receive a prepared environment and a CLI on `PATH`; they do not receive database access.
+Agents launched by Dispatch receive a prepared environment and a CLI on `PATH`; they do not receive database access.
 
 ## Agent Runs
 
@@ -103,11 +103,11 @@ Run data includes:
 
 Run logs are read through server endpoints. The log file path is an implementation detail and should not be handed to agents as the primary interface.
 
-Claimed work item views may include the active Patchbay run that owns the claim and the run's automation trigger origin when the claimant is a structurally linked `patchbay-run-*`. Readers must not infer a claim source from an agent id alone when the run is not linked to the same project item.
+Claimed work item views may include the active Dispatch run that owns the claim and the run's automation trigger origin when the claimant is a structurally linked `dispatch-run-*`. Readers must not infer a claim source from an agent id alone when the run is not linked to the same project item.
 
 ## Automation
 
-Automation rules allow Patchbay to evaluate configured activation conditions. Evaluation is cheap. The result is either a new work item or an agent run scheduled against an existing work item.
+Automation rules allow Dispatch to evaluate configured activation conditions. Evaluation is cheap. The result is either a new work item or an agent run scheduled against an existing work item.
 
 Automation records have an `activation` and an `effect`.
 
@@ -123,26 +123,26 @@ Supported effects are:
 - `produce_work`: creates a work item from the automation prompt and does not launch an agent;
 - `consume_work`: schedules an agent run for a matching work item.
 
-Automation records include enabled state, activation, effect, mutability, tool, selected personality, prompt, required schedule, priority, evaluation count, queued evaluation count, last and next evaluation metadata, and the last consumed event id when applicable. Work-consuming automation can include a CrudKit `Condition`-shaped work-item selector. Selector clauses use label keys as `column_name` values, so nested `All` and `Any` groups can model rules such as `state=open AND (bug OR severity=high)`. Patchbay implicitly excludes `patchbay:automation-blocked` from automation claims.
+Automation records include enabled state, activation, effect, mutability, tool, selected personality, prompt, required schedule, priority, evaluation count, queued evaluation count, last and next evaluation metadata, and the last consumed event id when applicable. Work-consuming automation can include a CrudKit `Condition`-shaped work-item selector. Selector clauses use label keys as `column_name` values, so nested `All` and `Any` groups can model rules such as `state=open AND (bug OR severity=high)`. Dispatch implicitly excludes `dispatch:automation-blocked` from automation claims.
 
 Work-consuming automation references a personality in the same project. New consume-work rules default to the project `Default` personality when no personality is explicitly selected. Work-producing automation may store the column as null and does not use personality prompt injection. Server-side create and update paths validate that the selected personality exists in the automation rule's project.
 
 Work-consuming automation has an explicit run mutability:
 
 - `mutating`: the launched agent may edit the project checkout according to the project workspace, sandbox, Git, commit, and pull-request settings.
-- `read_only`: the launched agent may inspect the project checkout and write Patchbay-owned metadata through the API/CLI, but must not edit project files, Git index or refs, commits, pushes, resets, branches, worktrees, or pull requests.
+- `read_only`: the launched agent may inspect the project checkout and write Dispatch-owned metadata through the API/CLI, but must not edit project files, Git index or refs, commits, pushes, resets, branches, worktrees, or pull requests.
 
-Patchbay persists the selected mutability onto `agent_runs` when a run is created so concurrency accounting, logs, run views, and audit history remain stable even if the automation rule changes later. Direct starts without a trigger default to `mutating` unless the caller explicitly supplies a mutability value. Work-producing automation does not launch an agent and has no run mutability or concurrency effect.
+Dispatch persists the selected mutability onto `agent_runs` when a run is created so concurrency accounting, logs, run views, and audit history remain stable even if the automation rule changes later. Direct starts without a trigger default to `mutating` unless the caller explicitly supplies a mutability value. Work-producing automation does not launch an agent and has no run mutability or concurrency effect.
 
-Default project automation rules are ordinary editable records. Patchbay creates and migrates these defaults:
+Default project automation rules are ordinary editable records. Dispatch creates and migrates these defaults:
 
-- `Claim open work`: mutating consume-work, selector `state=open` plus absence of `needs-refinement`, `needs-verification`, and `patchbay:feedback-requested`.
+- `Claim open work`: mutating consume-work, selector `state=open` plus absence of `needs-refinement`, `needs-verification`, and `dispatch:feedback-requested`.
 - `Refine needs-refinement work`: read-only consume-work, selector requiring the `needs-refinement` label.
 - `Verify needs-verification work`: read-only consume-work, selector requiring the `needs-verification` label.
 
 The refiner and verifier prompts instruct agents to update item title, description, comments, and labels, remove the triggering label when complete, and leave the underlying implementation work unfinished for later automation or humans.
 
-Migrations default existing automation triggers and existing agent runs to `mutating`. Patchbay must not infer `read_only` from trigger names, selectors, labels, or prompt text; operators opt existing custom automation into read-only behavior explicitly.
+Migrations default existing automation triggers and existing agent runs to `mutating`. Dispatch must not infer `read_only` from trigger names, selectors, labels, or prompt text; operators opt existing custom automation into read-only behavior explicitly.
 
 Migrations create the `personalities` table for existing databases, seed one empty `Default` personality per project, and backfill existing automation rules to reference their project default. New project seeding creates the default personality before default automation rules so those rules can reference it.
 

@@ -1,13 +1,13 @@
 set dotenv-load := true
 
-database := env_var_or_default("PATCHBAY_DATABASE", env_var_or_default("HOME", ".") / ".patchbay/patchbay.sqlite3")
-bind := env_var_or_default("PATCHBAY_BIND", "127.0.0.1:4000")
-project := env_var_or_default("PATCHBAY_PROJECT", "demo")
-patchbay_cli_path := justfile_directory() / "dev-bin/patchbay"
-server_manifest := "patchbay-server/Cargo.toml"
-cli_manifest := "patchbay-cli/Cargo.toml"
-api_client_manifest := "patchbay-api-client/Cargo.toml"
-types_manifest := "patchbay-types/Cargo.toml"
+database := env_var_or_default("DISPATCH_DATABASE", env_var_or_default("HOME", ".") / ".dispatch/dispatch.sqlite3")
+bind := env_var_or_default("DISPATCH_BIND", "127.0.0.1:4000")
+project := env_var_or_default("DISPATCH_PROJECT", "demo")
+dispatch_cli_path := justfile_directory() / "dev-bin/dispatch"
+server_manifest := "dispatch-server/Cargo.toml"
+cli_manifest := "dispatch-cli/Cargo.toml"
+api_client_manifest := "dispatch-api-client/Cargo.toml"
+types_manifest := "dispatch-types/Cargo.toml"
 
 default:
     @just --list
@@ -71,10 +71,10 @@ cli *args:
     cargo run -q --manifest-path "{{cli_manifest}}" -- {{args}}
 
 serve:
-    PATCHBAY_CLI_PATH="{{patchbay_cli_path}}" cargo leptos --manifest-path "{{server_manifest}}" serve -- --database "{{database}}" --bind "{{bind}}"
+    DISPATCH_CLI_PATH="{{dispatch_cli_path}}" cargo leptos --manifest-path "{{server_manifest}}" serve -- --database "{{database}}" --bind "{{bind}}"
 
 serve-release:
-    PATCHBAY_CLI_PATH="{{patchbay_cli_path}}" cargo leptos --manifest-path "{{server_manifest}}" serve --release -- --database "{{database}}" --bind "{{bind}}"
+    DISPATCH_CLI_PATH="{{dispatch_cli_path}}" cargo leptos --manifest-path "{{server_manifest}}" serve --release -- --database "{{database}}" --bind "{{bind}}"
 
 discover-tools:
     cargo run --manifest-path "{{server_manifest}}" -- --database "{{database}}" agent-tools discover

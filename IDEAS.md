@@ -1,1 +1,1 @@
-- per project .patchbay/codex/config.toml differences (maybe even user-editable in patchbay UI)?
+- per project .dispatch/codex/config.toml differences (maybe even user-editable in dispatch UI)?

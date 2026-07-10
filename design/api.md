@@ -1,13 +1,13 @@
 # API Design
 
-Patchbay exposes a custom JSON API for domain workflows and a separate CrudKit API for ordinary admin resources. The standalone CLI uses the custom JSON API through `patchbay-api-client`.
+Dispatch exposes a custom JSON API for domain workflows and a separate CrudKit API for ordinary admin resources. The standalone CLI uses the custom JSON API through `dispatch-api-client`.
 
 ## API Principles
 
 - All workflow operations are project-scoped.
 - The server enforces ownership, item state, version safety, and automation rules.
 - Custom workflow operations are not CrudKit endpoints.
-- Request and response DTOs are shared through `patchbay-types`.
+- Request and response DTOs are shared through `dispatch-types`.
 - API clients do not know about database paths or storage internals.
 
 ## Custom JSON Endpoints
@@ -93,21 +93,21 @@ GET /api/projects/{project}/items/{item_id}/events
 
 ## Workflow Semantics
 
-`claim` chooses an eligible item in the requested state and assigns it to the requesting agent. It does not use `PATCHBAY_CLAIMED_ITEM_ID` as an implicit input.
+`claim` chooses an eligible item in the requested state and assigns it to the requesting agent. It does not use `DISPATCH_CLAIMED_ITEM_ID` as an implicit input.
 
 `progress` appends an agent progress comment and records a workflow event. The caller must be the claimant unless server policy explicitly allows the update.
 
 `finish` appends a completion report, marks the item done, clears active claim ownership, records finish metadata, and emits events.
 
-`release` appends an optional release comment, clears the claim, restores the claimed-from state, adds `patchbay:automation-blocked` for the agent-facing endpoint, and emits events. Internal automation releases may use a claimable disposition for successful unfinished runs, stale-claim recovery, or cancellation; those releases clear transient workflow blockers so the item can re-enter claim selection.
+`release` appends an optional release comment, clears the claim, restores the claimed-from state, adds `dispatch:automation-blocked` for the agent-facing endpoint, and emits events. Internal automation releases may use a claimable disposition for successful unfinished runs, stale-claim recovery, or cancellation; those releases clear transient workflow blockers so the item can re-enter claim selection.
 
-`request-feedback` appends an agent-authored feedback request comment, clears the claim, restores the claimed-from state, adds `patchbay:feedback-requested` and `patchbay:automation-blocked`, and emits events. The caller must own the active claim. Automation must skip items with `patchbay:feedback-requested` until the label is removed after user feedback has been handled.
+`request-feedback` appends an agent-authored feedback request comment, clears the claim, restores the claimed-from state, adds `dispatch:feedback-requested` and `dispatch:automation-blocked`, and emits events. The caller must own the active claim. Automation must skip items with `dispatch:feedback-requested` until the label is removed after user feedback has been handled.
 
 `PATCH /items/{item_id}` is for item field updates and supports version safety. It is separate from workflow transitions.
 
 Relationship mutations validate that both work items exist in the same project, the source and target differ, the relationship kind is non-empty after trimming, and the exact `(project, source, target, kind)` relationship is not already present. Mutations touch both source and target work items, emit item events for both sides, and publish item-change notifications for both item detail views.
 
-Project memory writes require Patchbay agent attribution in the request body. `PUT /memory` rewrites the complete memory field; `POST /memory/append` appends to the existing memory. Both create `MemoryChanged` events containing the full post-write memory snapshot. Compaction deletes memory history events only; the current project memory remains on the project record.
+Project memory writes require Dispatch agent attribution in the request body. `PUT /memory` rewrites the complete memory field; `POST /memory/append` appends to the existing memory. Both create `MemoryChanged` events containing the full post-write memory snapshot. Compaction deletes memory history events only; the current project memory remains on the project record.
 
 ## CrudKit Endpoints
 
@@ -123,7 +123,7 @@ CrudKit-generated routes are mounted under `/api` for ordinary admin resources:
 - work item states;
 - swim-lanes.
 
-CrudKit is not used for custom workflow authority. Admin CRUD can inspect and maintain records, but workflow transitions should use the custom endpoints so server services apply Patchbay rules consistently.
+CrudKit is not used for custom workflow authority. Admin CRUD can inspect and maintain records, but workflow transitions should use the custom endpoints so server services apply Dispatch rules consistently.
 
 Automation rule CRUD exposes the explicit run mutability and selected personality for work-consuming rules. Create and update requests validate storage values `mutating` and `read_only`; new custom rules default to `mutating` unless the operator chooses read-only. Consume-work create and update requests default a missing personality to the project `Default` personality and reject missing or cross-project personality references. Existing rules migrated from older schemas remain `mutating` until edited.
 

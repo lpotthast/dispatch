@@ -1,6 +1,6 @@
 # UI Design
 
-Patchbay's web UI is an operator surface for project setup, workflow visibility, automation control, and admin maintenance. It is server-rendered and hydrated with Leptos.
+Dispatch's web UI is an operator surface for project setup, workflow visibility, automation control, and admin maintenance. It is server-rendered and hydrated with Leptos.
 
 ## Routes
 
@@ -32,17 +32,17 @@ The main workflow surface should make these states easy to inspect:
 - feedback-requested work that is waiting for a user answer;
 - run logs and run outcomes, including linked operated work items, prompt-before-output detail ordering, live output for active runs, stable selected-run inspection during live refreshes, active-run cancellation, commit outcome, and created commit SHA visibility.
 - per-run Codex token usage when reported by the agent runtime.
-- Patchbay-owned workflow labels such as `state`, `patchbay:claimed-from-state`, `patchbay:automation-blocked`, and `patchbay:feedback-requested`.
+- Dispatch-owned workflow labels such as `state`, `dispatch:claimed-from-state`, `dispatch:automation-blocked`, and `dispatch:feedback-requested`.
 
 Board and item-detail interactions call server actions or custom API endpoints so workflow rules remain centralized.
 Run output renders as a compact timeline rather than a panel per raw stream event. Started and completed tool events with the same item id collapse into one visible entry, internal ids and ordinary turn bookkeeping are hidden by default, long output previews show only a few lines before inline expansion, and diff-like output highlights added and removed lines.
 Hydrated item-detail label and comment forms should save in the background and keep the item page mounted, including current scroll position and nearby form state; non-hydrated form posts may keep the redirect fallback.
 Board swim-lanes cap their height at roughly 80% of the viewport, with overflowing work item cards scrolling inside each lane so large lanes do not lengthen the page indefinitely.
 Human-authored rich prose fields such as work item descriptions and automation prompts should use the Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists, memory history, and commit policy text stay plain text controls.
-Ordinary work item create and edit fields may be embedded CrudKit forms, including the Board new-item modal and item-detail editor, so those flows share field configuration and CrudKit dirty-state leave protection while Patchbay workflow controls remain custom. Item detail pages show the work item id in the top heading as `#{id}` with the title, so the item-detail editor does not repeat the id as a disabled input field.
+Ordinary work item create and edit fields may be embedded CrudKit forms, including the Board new-item modal and item-detail editor, so those flows share field configuration and CrudKit dirty-state leave protection while Dispatch workflow controls remain custom. Item detail pages show the work item id in the top heading as `#{id}` with the title, so the item-detail editor does not repeat the id as a disabled input field.
 The Board new-item modal lets operators add zero or more initial labels before saving. The state selector remains the canonical source for the `state=<value>` label; initial-label rows must not create their own `state` label, and dirty-state leave protection covers edits to those rows.
 
-Item detail pages show a relationships panel for every directed relationship touching the current work item. The panel distinguishes outgoing links where the current item is the source from incoming links where the current item is the target, shows the free-form relationship kind, shows source and target item id/title/state summaries, and links to the related item. Relationship add, update-kind, and delete controls post to Patchbay-owned handlers that use the custom relationship service rather than CrudKit routes.
+Item detail pages show a relationships panel for every directed relationship touching the current work item. The panel distinguishes outgoing links where the current item is the source from incoming links where the current item is the target, shows the free-form relationship kind, shows source and target item id/title/state summaries, and links to the related item. Relationship add, update-kind, and delete controls post to Dispatch-owned handlers that use the custom relationship service rather than CrudKit routes.
 
 ## Admin Surfaces
 
@@ -58,13 +58,13 @@ CrudKit is appropriate for ordinary resource administration:
 - automation rules.
 - personalities.
 
-Patchbay-specific actions such as claim, release, finish, request feedback, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
+Dispatch-specific actions such as claim, release, finish, request feedback, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
 
 Work item state and swim-lane authoring live on project administration surfaces, not the main board. The board shows small lane edit controls that navigate to the selected swim-lane editor. New item state choices come from authored work item states. Lane add controls may preselect a state when a lane filter is state-backed. Swim-lane filter create and edit forms expose structured label-condition controls for nested `All`/`Any` groups, label presence, flag labels, string equality, string inequality, and string-list membership while continuing to store the existing CrudKit `Condition` JSON string; invalid or unsupported existing filters remain editable through a raw JSON escape hatch.
 On item detail pages, the `state` label's value editor should render as a state picker backed by the current project's authored work item states instead of a free-text value field. That picker submits through the item move/update workflow path, while ordinary label rows use generic label add/update/delete handlers.
 
 The Codex app-server status panel should guide setup failures directly. When
-Patchbay's managed Codex home is not signed in, the panel shows the exact
+Dispatch's managed Codex home is not signed in, the panel shows the exact
 `CODEX_HOME` login command, the managed home path, and a refresh action instead
 of relying on users to reconstruct the command from server logs.
 
@@ -90,7 +90,7 @@ Project settings should expose:
 Settings changes should go through server handlers and be reflected in automation launches without requiring agents to know settings internals.
 Selector/prompt-based automations do not expose a project-level refinement concurrency exception in settings. Read-only automation concurrency is a general setting, not a refinement-specific bypass.
 
-Codex configuration generated from project settings should not be exposed as raw TOML in the main UI. Operators configure supported policy fields, and Patchbay generates the per-project Codex config and rules.
+Codex configuration generated from project settings should not be exposed as raw TOML in the main UI. Operators configure supported policy fields, and Dispatch generates the per-project Codex config and rules.
 
 When a selected project uses the current-branch workspace mode, the top bar should include an Auto-Commit toggle next to the automation Start/Stop control so operators can quickly decide whether completed current-branch work should be committed by the agent.
 
@@ -107,7 +107,7 @@ Hydrated route page data is cached by route context. Revisiting a frontend route
 
 ## Browser Coverage
 
-Browser coverage lives in `patchbay-server/tests/browser_test.rs` and is run explicitly with:
+Browser coverage lives in `dispatch-server/tests/browser_test.rs` and is run explicitly with:
 
 ```text
 just browser-test

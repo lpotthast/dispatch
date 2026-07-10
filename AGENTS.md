@@ -2,9 +2,9 @@
 
 ## Design Source of Truth
 
-The `design/` directory is Patchbay's spec-like source of truth for product behavior, functional requirements, and technical architecture. Implementation code contains the fine details, but it should implement the design described there rather than becoming the only place where decisions live.
+The `design/` directory is Dispatch's spec-like source of truth for product behavior, functional requirements, and technical architecture. Implementation code contains the fine details, but it should implement the design described there rather than becoming the only place where decisions live.
 
-Start with `design/patchbay.md` for the system overview, core invariants, and document map. Then consult the focused design docs before changing related behavior:
+Start with `design/dispatch.md` for the system overview, core invariants, and document map. Then consult the focused design docs before changing related behavior:
 
 - `design/architecture.md`: process boundaries, crate responsibilities, storage ownership, and route classes.
 - `design/data-model.md`: projects, work items, comments, events, agent tools, agent runs, automation, and settings.
@@ -17,41 +17,41 @@ Any change that affects user-visible behavior, workflow rules, API or CLI contra
 
 ## Layout
 
-Patchbay uses standalone root-level Rust 2024 crates and intentionally has no root `Cargo.toml` or Cargo workspace.
+Dispatch uses standalone root-level Rust 2024 crates and intentionally has no root `Cargo.toml` or Cargo workspace.
 
-- `patchbay-server/`: Axum server, Leptos UI, domain services, SQLite persistence, automation supervisor, styles, assets, and browser tests.
-- `patchbay-types/`: shared request/response DTOs and enum types.
-- `patchbay-api-client/`: typed HTTP client for Patchbay JSON endpoints.
-- `patchbay-cli/`: standalone agent-facing `patchbay` CLI binary; it relays to a running server and must not open SQLite.
-- `dev-bin/patchbay`: tracked development shim that puts the CLI relay on `PATH` before installation.
-- `crudkit/`: Git submodule used as a local dependency; do not put Patchbay workflow rules there.
-- `design/`: authoritative product, workflow, UI, API, CLI, data-model, and architecture specifications for Patchbay.
+- `dispatch-server/`: Axum server, Leptos UI, domain services, SQLite persistence, automation supervisor, styles, assets, and browser tests.
+- `dispatch-types/`: shared request/response DTOs and enum types.
+- `dispatch-api-client/`: typed HTTP client for Dispatch JSON endpoints.
+- `dispatch-cli/`: standalone agent-facing `dispatch` CLI binary; it relays to a running server and must not open SQLite.
+- `dev-bin/dispatch`: tracked development shim that puts the CLI relay on `PATH` before installation.
+- `crudkit/`: Git submodule used as a local dependency; do not put Dispatch workflow rules there.
+- `design/`: authoritative product, workflow, UI, API, CLI, data-model, and architecture specifications for Dispatch.
 
-Keep Patchbay-specific claim, progress, finish, release, automation, and board behavior in Patchbay-owned server services and custom API endpoints, not CrudKit routes.
+Keep Dispatch-specific claim, progress, finish, release, automation, and board behavior in Dispatch-owned server services and custom API endpoints, not CrudKit routes.
 
 ## Commands
 
 Run commands from the repository root through `just`, which passes explicit `--manifest-path` values because there is no root Cargo workspace.
 
-- `just fmt`: format all Patchbay crates.
+- `just fmt`: format all Dispatch crates.
 - `just check`: check server, CLI, API client, and types crates.
-- `just test`: run standard Rust tests for Patchbay crates.
-- `just clippy`: run clippy with `--all-targets -- -D warnings` for Patchbay crates.
+- `just test`: run standard Rust tests for Dispatch crates.
+- `just clippy`: run clippy with `--all-targets -- -D warnings` for Dispatch crates.
 - `just verify`: run formatting, tests, and clippy.
-- `just serve`: run the server with `.patchbay/patchbay.sqlite3` on `127.0.0.1:4000`.
+- `just serve`: run the server with `.dispatch/dispatch.sqlite3` on `127.0.0.1:4000`.
 - `just cli -- <args>`: run the API-relay CLI.
 - `just browser-test`: run the ignored browser integration test; use `just browser-test-visible` for UI debugging.
 
-Server-local overrides: `PATCHBAY_DATABASE`, `PATCHBAY_BIND`, `PATCHBAY_PROJECT`, and `PATCHBAY_WORKSPACE_IDE`.
-Automation CLI override: `PATCHBAY_CLI_PATH`.
+Server-local overrides: `DISPATCH_DATABASE`, `DISPATCH_BIND`, `DISPATCH_PROJECT`, and `DISPATCH_WORKSPACE_IDE`.
+Automation CLI override: `DISPATCH_CLI_PATH`.
 
 ## Agent-Facing Contract
 
-The Patchbay server is the only process that owns or writes the database. Agents interact with Patchbay through the `patchbay` CLI, and the CLI is an API relay to `PATCHBAY_API_URL`.
+The Dispatch server is the only process that owns or writes the database. Agents interact with Dispatch through the `dispatch` CLI, and the CLI is an API relay to `DISPATCH_API_URL`.
 
-Patchbay-launched agents receive `PATCHBAY_API_URL`, `PATCHBAY_PROJECT`, `PATCHBAY_AGENT_ID`, and `PATCHBAY_CLAIMED_ITEM_ID`. For the claimed item, prompts should use short commands such as `patchbay item show --json`, `patchbay label list --json`, `patchbay label add --key ...`, `patchbay comment list --json`, `patchbay item progress --body ...`, `patchbay item finish --report ...`, and `patchbay item release --comment ...`. Agents may edit item labels themselves when that clarifies routing, status, priority, environment, or follow-up needs.
+Dispatch-launched agents receive `DISPATCH_API_URL`, `DISPATCH_PROJECT`, `DISPATCH_AGENT_ID`, and `DISPATCH_CLAIMED_ITEM_ID`. For the claimed item, prompts should use short commands such as `dispatch item show --json`, `dispatch label list --json`, `dispatch label add --key ...`, `dispatch comment list --json`, `dispatch item progress --body ...`, `dispatch item finish --report ...`, and `dispatch item release --comment ...`. Agents may edit item labels themselves when that clarifies routing, status, priority, environment, or follow-up needs.
 
-Project memory is Patchbay-owned storage, not Codex internal memory. Agents should persist important run discoveries with `patchbay memory append --body ...` and use `patchbay memory set --body ...` only for intentional full rewrites; memory writes must go through the Patchbay CLI/API so they create attributed `MemoryChanged` events.
+Project memory is Dispatch-owned storage, not Codex internal memory. Agents should persist important run discoveries with `dispatch memory append --body ...` and use `dispatch memory set --body ...` only for intentional full rewrites; memory writes must go through the Dispatch CLI/API so they create attributed `MemoryChanged` events.
 
 CLI context resolution must prefer explicit flags, then environment variables. Missing required project, agent, or claimed-item context must fail instead of creating implicit data.
 
@@ -59,11 +59,11 @@ CLI context resolution must prefer explicit flags, then environment variables. M
 
 Use Rustfmt defaults. Keep Rust names idiomatic: `snake_case` for modules, functions, and fields; `PascalCase` for types and Leptos components; `SCREAMING_SNAKE_CASE` for constants. Organize modules by domain behavior rather than generic buckets.
 
-Do not edit generated `style/crudkit` or `style/leptonic` content unless regenerating from the upstream source intentionally. Put Patchbay-owned styling under `patchbay-server/style/app/`.
+Do not edit generated `style/crudkit` or `style/leptonic` content unless regenerating from the upstream source intentionally. Put Dispatch-owned styling under `dispatch-server/style/app/`.
 
 ## Testing
 
-Place focused unit tests near the code they exercise. Browser coverage lives in `patchbay-server/tests/browser_test.rs` and is ignored by default because it starts Patchbay and Chrome.
+Place focused unit tests near the code they exercise. Browser coverage lives in `dispatch-server/tests/browser_test.rs` and is ignored by default because it starts Dispatch and Chrome.
 
 When changing workflow paths, cover project scoping, claim ownership, progress, release, finish, stale-claim recovery, and version-safety behavior. When changing CLI/API behavior, cover context resolution and server-backed endpoint behavior.
 

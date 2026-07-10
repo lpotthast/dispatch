@@ -1,46 +1,46 @@
 # CLI Design
 
-Patchbay has two command surfaces:
+Dispatch has two command surfaces:
 
-- the standalone agent-facing `patchbay` binary from `patchbay-cli`;
-- trusted server/operator commands in `patchbay-server`.
+- the standalone agent-facing `dispatch` binary from `dispatch-cli`;
+- trusted server/operator commands in `dispatch-server`.
 
-Only the standalone `patchbay` binary is part of the agent contract.
+Only the standalone `dispatch` binary is part of the agent contract.
 
 ## Agent-Facing Contract
 
 Launched agents are instructed to use:
 
 ```text
-patchbay item show --json
-patchbay comment list --json
-patchbay item progress --body "..."
-patchbay item finish --report "..."
-patchbay item release --comment "..."
-patchbay item request-feedback --body "..."
-patchbay memory append --body "Important project fact to remember."
+dispatch item show --json
+dispatch comment list --json
+dispatch item progress --body "..."
+dispatch item finish --report "..."
+dispatch item release --comment "..."
+dispatch item request-feedback --body "..."
+dispatch memory append --body "Important project fact to remember."
 ```
 
 For follow-up items or explicit cross-item work, item ids remain available:
 
 ```text
-patchbay item show 124 --json
-patchbay comment list 124 --json
-patchbay item progress 124 --body "Updated follow-up context."
+dispatch item show 124 --json
+dispatch comment list 124 --json
+dispatch item progress 124 --body "Updated follow-up context."
 ```
 
-Agents should omit project, agent, and claimed item arguments for the claimed item because Patchbay sets the environment before launch.
+Agents should omit project, agent, and claimed item arguments for the claimed item because Dispatch sets the environment before launch.
 
-Patchbay may also put a run-specific `git` shim first on `PATH`. That shim calls an internal `patchbay git ...` guard command, which reads `PATCHBAY_GIT_POLICY_PATH` and `PATCHBAY_REAL_GIT`, enforces the project mutable Git command policy, and then delegates to the real Git executable. This internal command is not part of the normal agent workflow; agents should run ordinary `git ...` commands and follow the generated prompt's allow-list.
+Dispatch may also put a run-specific `git` shim first on `PATH`. That shim calls an internal `dispatch git ...` guard command, which reads `DISPATCH_GIT_POLICY_PATH` and `DISPATCH_REAL_GIT`, enforces the project mutable Git command policy, and then delegates to the real Git executable. This internal command is not part of the normal agent workflow; agents should run ordinary `git ...` commands and follow the generated prompt's allow-list.
 
 ## Context Resolution
 
 The standalone CLI resolves context in this order:
 
-- API URL: `--api-url`, `PATCHBAY_API_URL`, `PATCHBAY_URL`, then the default local URL.
-- Project: `--project`, then `PATCHBAY_PROJECT`.
-- Agent: `--agent`, then `PATCHBAY_AGENT_ID`.
-- Claimed item: explicit positional item id, then `PATCHBAY_CLAIMED_ITEM_ID`.
+- API URL: `--api-url`, `DISPATCH_API_URL`, `DISPATCH_URL`, then the default local URL.
+- Project: `--project`, then `DISPATCH_PROJECT`.
+- Agent: `--agent`, then `DISPATCH_AGENT_ID`.
+- Claimed item: explicit positional item id, then `DISPATCH_CLAIMED_ITEM_ID`.
 
 Commands that choose or create work do not default to the claimed item. This includes:
 
@@ -69,73 +69,73 @@ Relationship update and delete commands take a relationship id directly and do n
 Work item commands:
 
 ```text
-patchbay item list [--state <state>] [--json]
-patchbay item show [item-id] [--json]
-patchbay item create --title "..." --description "..." [--state <state>] [--label <key[=value]>] [--json]
-patchbay item update [item-id] [options] [--json]
-patchbay item claim [--state <state-label>] [--json]
-patchbay label list [item-id] [--json]
-patchbay label add [item-id] --key "..." [--value "..."] [--json]
-patchbay label update [item-id] <label-id> [--key "..."] [--value "..."] [--clear-value] [--json]
-patchbay label delete [item-id] <label-id> [--json]
-patchbay label suggestions [--json]
-patchbay item progress [item-id] --body "..." [--json]
-patchbay item finish [item-id] --report "..." [--json]
-patchbay item release [item-id] [--comment "..."] [--json]
-patchbay item request-feedback [item-id] --body "..." [--json]
-patchbay item watch [item-id] [--since-version <n>] [--json]
+dispatch item list [--state <state>] [--json]
+dispatch item show [item-id] [--json]
+dispatch item create --title "..." --description "..." [--state <state>] [--label <key[=value]>] [--json]
+dispatch item update [item-id] [options] [--json]
+dispatch item claim [--state <state-label>] [--json]
+dispatch label list [item-id] [--json]
+dispatch label add [item-id] --key "..." [--value "..."] [--json]
+dispatch label update [item-id] <label-id> [--key "..."] [--value "..."] [--clear-value] [--json]
+dispatch label delete [item-id] <label-id> [--json]
+dispatch label suggestions [--json]
+dispatch item progress [item-id] --body "..." [--json]
+dispatch item finish [item-id] --report "..." [--json]
+dispatch item release [item-id] [--comment "..."] [--json]
+dispatch item request-feedback [item-id] --body "..." [--json]
+dispatch item watch [item-id] [--since-version <n>] [--json]
 ```
 
 Label commands manage ordinary non-state labels. The reserved `state` label is
-changed through `patchbay item create --state ...`, `patchbay item update
+changed through `dispatch item create --state ...`, `dispatch item update
 --state ...`, or workflow commands so state movement uses the item workflow
 path.
 
 Relationship commands:
 
 ```text
-patchbay relationship list [item-id] [--json]
-patchbay relationship add [item-id] --target <item-id> --kind "is follow-up of" [--json]
-patchbay relationship update <relationship-id> --kind "blocks" [--json]
-patchbay relationship delete <relationship-id> [--json]
+dispatch relationship list [item-id] [--json]
+dispatch relationship add [item-id] --target <item-id> --kind "is follow-up of" [--json]
+dispatch relationship update <relationship-id> --kind "blocks" [--json]
+dispatch relationship delete <relationship-id> [--json]
 ```
 
-Relationship commands call the Patchbay JSON API. List output includes incoming and outgoing relationships touching the item, direction relative to that item, the source and target item summaries, and the free-form kind. Add uses the command item as the source and the `--target` item as the target. Update replaces only the kind. Delete removes only the specified relationship; it does not create or remove inverse relationships.
+Relationship commands call the Dispatch JSON API. List output includes incoming and outgoing relationships touching the item, direction relative to that item, the source and target item summaries, and the free-form kind. Add uses the command item as the source and the `--target` item as the target. Update replaces only the kind. Delete removes only the specified relationship; it does not create or remove inverse relationships.
 
 Comment commands:
 
 ```text
-patchbay comment list [item-id] [--json]
-patchbay comment add [item-id] --body "..." [--author "..."] [--author-type user|agent|system] [--json]
+dispatch comment list [item-id] [--json]
+dispatch comment add [item-id] --body "..." [--author "..."] [--author-type user|agent|system] [--json]
 ```
 
 Memory commands:
 
 ```text
-patchbay memory show [--json]
-patchbay memory history [--json]
-patchbay memory append --body "..." [--json]
-patchbay memory set --body "..." [--json]
+dispatch memory show [--json]
+dispatch memory history [--json]
+dispatch memory append --body "..." [--json]
+dispatch memory set --body "..." [--json]
 ```
 
-`memory append` and `memory set` require project and agent context. They write through the Patchbay API, never through Codex internal memory, and create attributed `MemoryChanged` events.
+`memory append` and `memory set` require project and agent context. They write through the Dispatch API, never through Codex internal memory, and create attributed `MemoryChanged` events.
 
 Internal automation command:
 
 ```text
-patchbay git <git-args...>
+dispatch git <git-args...>
 ```
 
-This is used only by Patchbay's run-specific Git shim. It injects `--no-verify` for `git commit`, blocks force/mirror/prune/delete/empty-source delete-refspec/`+ref` pushes, and blocks reset modes outside the project policy.
+This is used only by Dispatch's run-specific Git shim. It injects `--no-verify` for `git commit`, blocks force/mirror/prune/delete/empty-source delete-refspec/`+ref` pushes, and blocks reset modes outside the project policy.
 
 Automation commands:
 
 ```text
-patchbay automation runs [--limit <n>] [--json]
-patchbay automation log <run-id> [--json]
-patchbay automation triggers list [--json]
-patchbay automation triggers create --name "..." --activation manual|work_item|cron|work_item_created --effect produce_work|consume_work --schedule "@every 15s" [--work-item-selector <json>] [--prompt "..."] [--json]
-patchbay automation triggers schedule <trigger-id> [--json]
+dispatch automation runs [--limit <n>] [--json]
+dispatch automation log <run-id> [--json]
+dispatch automation triggers list [--json]
+dispatch automation triggers create --name "..." --activation manual|work_item|cron|work_item_created --effect produce_work|consume_work --schedule "@every 15s" [--work-item-selector <json>] [--prompt "..."] [--json]
+dispatch automation triggers schedule <trigger-id> [--json]
 ```
 
 Global flags:
@@ -151,15 +151,15 @@ Global flags:
 Before the CLI is installed, development uses the tracked shim:
 
 ```text
-dev-bin/patchbay
+dev-bin/dispatch
 ```
 
-The shim runs the root-level `patchbay-cli` crate with Cargo. Patchbay development mode can configure this path as the agent-facing CLI and prepend `dev-bin` to `PATH`.
+The shim runs the root-level `dispatch-cli` crate with Cargo. Dispatch development mode can configure this path as the agent-facing CLI and prepend `dev-bin` to `PATH`.
 
 The shim is tracked in Git so automation prompts and local development do not depend on an ignored file.
 
-When `CARGO_TARGET_DIR` is not already set, the shim builds into a writable temporary target directory. The shim is a Cargo launcher, not the installed CLI binary, so Cargo otherwise writes build outputs and lock files under the Patchbay source checkout. Patchbay-launched Codex agents run with Codex app-server's workspace-write sandbox rooted at the target project workspace; they should not need write access to the Patchbay checkout just to call the API relay. `PATCHBAY_CLI_TARGET_DIR` can override the shim's default temp target directory.
+When `CARGO_TARGET_DIR` is not already set, the shim builds into a writable temporary target directory. The shim is a Cargo launcher, not the installed CLI binary, so Cargo otherwise writes build outputs and lock files under the Dispatch source checkout. Dispatch-launched Codex agents run with Codex app-server's workspace-write sandbox rooted at the target project workspace; they should not need write access to the Dispatch checkout just to call the API relay. `DISPATCH_CLI_TARGET_DIR` can override the shim's default temp target directory.
 
 ## Server Operator CLI
 
-The server crate also contains trusted commands for running the server and operating local state. That surface may accept database paths and perform privileged maintenance. It must not be presented as the normal agent-facing Patchbay interface.
+The server crate also contains trusted commands for running the server and operating local state. That surface may accept database paths and perform privileged maintenance. It must not be presented as the normal agent-facing Dispatch interface.
