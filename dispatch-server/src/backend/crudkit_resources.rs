@@ -1470,8 +1470,7 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
             selector.as_ref(),
             &update_model.prompt,
         )?;
-        update_model.tool_name =
-            default_tool_name_for_project(context, existing.project_id).await?;
+        update_model.tool_name = existing.tool_name.clone();
         trigger_hook_data(
             &context.store,
             existing.project_id,

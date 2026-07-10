@@ -259,9 +259,6 @@ pub async fn update_trigger(
             | AutomationActivation::Cron,
         ) => None,
     };
-    let default_tool = crate::backend::projects::get_settings(store, project_name)
-        .await?
-        .default_agent_tool;
     let mut active: AutomationTriggerActiveModel = existing.into();
     active.name = Set(update.name);
     active.enabled = Set(update.enabled);
@@ -270,7 +267,6 @@ pub async fn update_trigger(
     active.schedule = Set(schedule);
     active.mutability = Set(update.mutability.as_storage().to_owned());
     active.personality_id = Set(personality_id);
-    active.tool_name = Set(default_tool.as_storage().to_owned());
     active.prompt = Set(update.prompt);
     active.work_item_selector = Set(selector_to_storage(work_item_selector.as_ref())?);
     if let Some(priority) = update.priority {
@@ -571,24 +567,43 @@ async fn run_next_work_item_automation_for_project(
             .then_with(|| left.view.id.cmp(&right.view.id))
     });
 
-    let candidate = candidates.remove(0);
-    Ok(Some(
-        evaluate_trigger_once(
-            store,
-            project_name,
-            candidate.trigger,
-            None,
-            sessions,
-            cancellation,
-        )
-        .await
-        .expect("work-item automation candidate should produce an outcome"),
-    ))
+    run_first_available_work_item_automation_candidate(
+        store,
+        project_name,
+        candidates,
+        sessions,
+        cancellation,
+    )
+    .await
 }
 
 struct WorkItemAutomationCandidate {
     trigger: AutomationTriggerModel,
     view: AutomationTriggerView,
+}
+
+async fn run_first_available_work_item_automation_candidate(
+    store: &Store,
+    project_name: &str,
+    candidates: Vec<WorkItemAutomationCandidate>,
+    sessions: Option<ProcessSessionRegistry>,
+    cancellation: Option<watch::Receiver<bool>>,
+) -> Result<Option<TriggerRunOutcome>> {
+    for candidate in candidates {
+        if let Some(outcome) = evaluate_trigger_once(
+            store,
+            project_name,
+            candidate.trigger,
+            None,
+            sessions.clone(),
+            cancellation.clone(),
+        )
+        .await
+        {
+            return Ok(Some(outcome));
+        }
+    }
+    Ok(None)
 }
 
 fn work_item_automation_score(
@@ -800,7 +815,7 @@ async fn run_trigger_once(
         store,
         project_name,
         StartAutomation {
-            tool: None,
+            tool: Some(view.tool_name),
             work_item_id,
             work_item_selector: view.work_item_selector.clone(),
             extra_prompt: Some(view.prompt.clone()),
@@ -1308,6 +1323,21 @@ mod tests {
         })])
     }
 
+    fn routed_open_selector(route: &str) -> Condition {
+        Condition::All(vec![
+            ConditionElement::Clause(ConditionClause {
+                column_name: STATE_LABEL_KEY.to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String("open".to_owned()),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "route".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String(route.to_owned()),
+            }),
+        ])
+    }
+
     fn item_matches_selector(item: &WorkItemView, selector: &Condition) -> bool {
         label_conditions::ValidatedLabelCondition::new(selector)
             .unwrap()
@@ -1599,6 +1629,121 @@ mod tests {
             work_item_automation_score(&recent_high_priority, 10, now)
                 > work_item_automation_score(&recent_lower_evaluation_count, 10, now)
         );
+    }
+
+    #[tokio::test]
+    async fn work_item_automation_skips_stale_candidate_and_tries_next() {
+        let (_temp, store) = test_store().await;
+        let first_trigger = create_trigger(
+            &store,
+            "demo",
+            CreateAutomationTrigger {
+                name: "first-route".to_owned(),
+                enabled: true,
+                activation: AutomationActivation::WorkItem,
+                effect: AutomationEffect::ConsumeWork,
+                schedule: "@every 15s".to_owned(),
+                tool_name: None,
+                mutability: AutomationRunMutability::ReadOnly,
+                personality_id: None,
+                prompt: "Inspect first route.".to_owned(),
+                work_item_selector: Some(routed_open_selector("first")),
+                priority: 10,
+            },
+        )
+        .await
+        .unwrap();
+        let second_trigger = create_trigger(
+            &store,
+            "demo",
+            CreateAutomationTrigger {
+                name: "second-route".to_owned(),
+                enabled: true,
+                activation: AutomationActivation::WorkItem,
+                effect: AutomationEffect::ConsumeWork,
+                schedule: "@every 15s".to_owned(),
+                tool_name: None,
+                mutability: AutomationRunMutability::ReadOnly,
+                personality_id: None,
+                prompt: "Inspect second route.".to_owned(),
+                work_item_selector: Some(routed_open_selector("second")),
+                priority: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let first_item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "First route".to_owned(),
+                description: "This item becomes stale after candidate selection.".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: vec![CreateWorkItemLabelRequest {
+                    key: "route".to_owned(),
+                    value: Some("first".to_owned()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Second route".to_owned(),
+                description: "This item should still be available.".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: vec![CreateWorkItemLabelRequest {
+                    key: "route".to_owned(),
+                    value: Some("second".to_owned()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        let first_model = AutomationTrigger::find_by_id(first_trigger.id)
+            .one(store.db().as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let second_model = AutomationTrigger::find_by_id(second_trigger.id)
+            .one(store.db().as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        item_claims::claim_specific_item(&store, "demo", first_item.id, "agent-other")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let outcome = run_first_available_work_item_automation_candidate(
+            &store,
+            "demo",
+            vec![
+                WorkItemAutomationCandidate {
+                    trigger: first_model,
+                    view: first_trigger.clone(),
+                },
+                WorkItemAutomationCandidate {
+                    trigger: second_model,
+                    view: second_trigger.clone(),
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let first_item = get_item(&store, "demo", first_item.id).await.unwrap();
+
+        assert_eq!(outcome.trigger_id, second_trigger.id);
+        assert_eq!(first_item.claimed_by.as_deref(), Some("agent-other"));
     }
 
     fn automation_view_for_score(
