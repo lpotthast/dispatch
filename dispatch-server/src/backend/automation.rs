@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fmt, fs,
-    io::ErrorKind,
+    io::{ErrorKind, SeekFrom},
     path::{Path, PathBuf},
     process::Command as StdCommand,
     str::FromStr,
@@ -18,7 +18,11 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
     QuerySelect,
 };
-use tokio::{sync::watch, time::timeout};
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt},
+    sync::watch,
+    time::timeout,
+};
 
 use crate::{
     backend::{
@@ -225,8 +229,8 @@ fn is_automation_cancelled(err: &Report) -> bool {
 }
 
 async fn attach_codex_stderr(err: Report, stderr_path: &Path) -> Report {
-    let bytes = match tokio::fs::read(stderr_path).await {
-        Ok(bytes) => bytes,
+    let stderr_tail = match read_codex_stderr_tail(stderr_path, CODEX_STDERR_TAIL_MAX_CHARS).await {
+        Ok(stderr_tail) => stderr_tail,
         Err(read_err) if read_err.kind() == ErrorKind::NotFound => return err,
         Err(read_err) => {
             tracing::warn!(
@@ -237,15 +241,30 @@ async fn attach_codex_stderr(err: Report, stderr_path: &Path) -> Report {
             return err;
         }
     };
-    let stderr = String::from_utf8_lossy(&bytes);
-    let Some(root_cause) = codex_stderr_root_cause(&stderr) else {
+    let Some(root_cause) = codex_stderr_root_cause(&stderr_tail) else {
         return err;
     };
     let diagnostic = CodexAppServerStderr {
         root_cause,
-        tail: bounded_text_tail(&stderr, CODEX_STDERR_TAIL_MAX_CHARS),
+        tail: stderr_tail,
     };
     err.context(diagnostic).into_dynamic()
+}
+
+async fn read_codex_stderr_tail(stderr_path: &Path, max_chars: usize) -> std::io::Result<String> {
+    let mut file = tokio::fs::File::open(stderr_path).await?;
+    let len = file.metadata().await?.len();
+    let max_bytes = (max_chars as u64).saturating_mul(4);
+    if len > max_bytes {
+        file.seek(SeekFrom::Start(len - max_bytes)).await?;
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await?;
+    Ok(bounded_text_tail(
+        &String::from_utf8_lossy(&bytes),
+        max_chars,
+    ))
 }
 
 fn automation_failure_message(err: &Report) -> (String, String) {
@@ -2623,6 +2642,27 @@ mod tests {
         let stderr = "2026-07-10T13:08:04Z ERROR codex_rollout::list: stale state path\n";
 
         assert_eq!(codex_stderr_root_cause(stderr), None);
+    }
+
+    #[tokio::test]
+    async fn codex_stderr_tail_reader_bounds_large_logs() {
+        let temp = TempDir::new().unwrap();
+        let stderr_path = temp.path().join("codex.stderr.log");
+        let body = format!(
+            "{}Error: Permission denied (os error 13)\n",
+            "background diagnostic line\n".repeat(256)
+        );
+        tokio::fs::write(&stderr_path, &body).await.unwrap();
+
+        let tail = read_codex_stderr_tail(&stderr_path, 96).await.unwrap();
+
+        assert!(tail.starts_with("[earlier stderr omitted]"));
+        assert!(tail.len() < body.len());
+        assert!(tail.contains("Error: Permission denied (os error 13)"));
+        assert_eq!(
+            codex_stderr_root_cause(&tail).as_deref(),
+            Some("Permission denied (os error 13)")
+        );
     }
 
     #[tokio::test]
