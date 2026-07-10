@@ -106,7 +106,7 @@ a {
   grid-template-columns: auto minmax(220px, 1fr) auto minmax(195px, 240px);
   gap: 18px;
   align-items: center;
-  padding: 12px 24px;
+  padding: 8px 18px;
   background: rgba(255, 255, 255, 0.94);
   border-bottom: 1px solid $border;
   box-shadow: 0 1px 10px rgba(16, 24, 32, 0.04);
@@ -123,8 +123,8 @@ a {
   font-weight: 800;
 
   .brand-icon {
-    width: 18px;
-    height: 18px;
+    width: 32px;
+    height: 32px;
     flex: 0 0 auto;
     border-radius: 4px;
   }
@@ -1054,6 +1054,26 @@ select {
 textarea {
   min-height: 88px;
   resize: vertical;
+}
+
+.crud-field leptonic-input input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid $border-strong;
+  border-radius: 6px;
+  background: $surface;
+  color: $ink;
+
+  &:focus {
+    @include control-focus;
+  }
+
+  &:disabled {
+    background: $surface-raised;
+    color: $muted;
+    cursor: not-allowed;
+  }
 }
 
 .rich-text-field {
