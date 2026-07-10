@@ -300,7 +300,10 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             )
             .register(
                 ReadProjectField::DefaultAgentModel,
-                agent_model_field_renderer::<DynReadField>(Some("Codex default")),
+                agent_model_field_renderer::<DynReadField>(
+                    Some("Codex default"),
+                    Some("default_agent_reasoning_effort"),
+                ),
             )
             .build(),
         create_field_renderer: FieldRendererRegistry::builder()
@@ -310,11 +313,14 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             )
             .register(
                 CreateProjectField::DefaultAgentModel,
-                agent_model_field_renderer::<DynCreateField>(None),
+                agent_model_field_renderer::<DynCreateField>(
+                    None,
+                    Some("default_agent_reasoning_effort"),
+                ),
             )
             .register(
                 CreateProjectField::DefaultAgentReasoningEffort,
-                agent_reasoning_field_renderer::<DynCreateField>(None),
+                agent_reasoning_field_renderer::<DynCreateField>(None, Some("default_agent_model")),
             )
             .build(),
         update_field_renderer: FieldRendererRegistry::builder()
@@ -353,11 +359,17 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
             )
             .register(
                 ProjectField::DefaultAgentModel,
-                agent_model_field_renderer::<DynUpdateField>(Some("Codex default")),
+                agent_model_field_renderer::<DynUpdateField>(
+                    Some("Codex default"),
+                    Some("default_agent_reasoning_effort"),
+                ),
             )
             .register(
                 ProjectField::DefaultAgentReasoningEffort,
-                agent_reasoning_field_renderer::<DynUpdateField>(Some("Codex default")),
+                agent_reasoning_field_renderer::<DynUpdateField>(
+                    Some("Codex default"),
+                    Some("default_agent_model"),
+                ),
             )
             .register(
                 ProjectField::AgentSandboxMode,

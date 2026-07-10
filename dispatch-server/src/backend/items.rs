@@ -107,6 +107,12 @@ pub async fn create_item(
     let create = CreateWorkItemPlan::new(create)?;
 
     let project_id = projects::project_id(store, project_name).await?;
+    let settings = projects::get_settings_by_id(store, project_id).await?;
+    validate_effective_agent_selection(
+        &settings,
+        create.agent_model_override(),
+        create.agent_reasoning_effort_override(),
+    )?;
     let now = utc_now();
     let txn = store
         .db()
@@ -130,6 +136,7 @@ pub async fn update_item(
     let update = WorkItemUpdatePlan::new(update)?;
 
     let project_id = projects::project_id(store, project_name).await?;
+    let settings = projects::get_settings_by_id(store, project_id).await?;
     let txn = store
         .db()
         .begin()
@@ -138,6 +145,11 @@ pub async fn update_item(
     let existing = work_items::get(&txn, project_id, item_id).await?;
     work_items::check_expected_version(update.expect_version(), existing.version)?;
     let applied = update.apply_to(existing)?;
+    validate_effective_agent_selection(
+        &settings,
+        applied.agent_model_override.as_deref(),
+        applied.agent_reasoning_effort_override,
+    )?;
 
     let updated = applied
         .active
@@ -256,6 +268,21 @@ async fn delete_item_in_project(
         events::publish_work_item_changed(project_name, related_item_id);
     }
     Ok(delete_result.rows_affected)
+}
+
+pub(crate) fn validate_effective_agent_selection(
+    settings: &crate::shared::view_models::ProjectSettingsView,
+    agent_model_override: Option<&str>,
+    agent_reasoning_effort_override: Option<crate::shared::view_models::AgentReasoningEffort>,
+) -> Result<()> {
+    let model = agent_model_override.or(settings.default_agent_model.as_deref());
+    let effort = agent_reasoning_effort_override.or(settings.default_agent_reasoning_effort);
+    projects::validate_agent_model_reasoning_effort(
+        "effective agent model",
+        model,
+        "effective agent reasoning effort",
+        effort,
+    )
 }
 
 pub async fn list_events(
@@ -896,7 +923,7 @@ mod tests {
                 title: Some("Updated title".to_owned()),
                 description: None,
                 state: Some("review".to_owned()),
-                agent_model_override: Some(Some("gpt-5.4".to_owned())),
+                agent_model_override: Some(Some("gpt-5.6-terra".to_owned())),
                 agent_reasoning_effort_override: None,
                 expect_version: Some(item.version),
             },
@@ -909,7 +936,10 @@ mod tests {
 
         assert_eq!(updated.title, "Updated title");
         assert_eq!(updated.state.as_deref(), Some("review"));
-        assert_eq!(updated.agent_model_override.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            updated.agent_model_override.as_deref(),
+            Some("gpt-5.6-terra")
+        );
         assert_eq!(updated.version, item.version + 1);
         assert_eq!(
             events
@@ -925,6 +955,65 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn create_item_rejects_incompatible_effective_agent_reasoning() {
+        let (_temp, store) = test_store().await;
+        let err = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Configured item".to_owned(),
+                description: "Exercise incompatible reasoning".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: Some(
+                    crate::shared::view_models::AgentReasoningEffort::Minimal,
+                ),
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("effective agent model"));
+        assert!(err.to_string().contains("incompatible"));
+    }
+
+    #[tokio::test]
+    async fn update_item_rejects_model_override_incompatible_with_inherited_reasoning() {
+        let (_temp, store) = test_store().await;
+        let item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Configured item".to_owned(),
+                description: "Exercise inherited max reasoning".to_owned(),
+                state: "open".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = update_item(
+            &store,
+            "demo",
+            item.id,
+            UpdateWorkItem {
+                agent_model_override: Some(Some("gpt-5.5".to_owned())),
+                expect_version: Some(item.version),
+                ..UpdateWorkItem::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("effective agent model"));
+        assert!(err.to_string().contains("max"));
     }
 
     #[tokio::test]

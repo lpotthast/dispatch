@@ -147,7 +147,27 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
                     .map_err(|err| project_unprocessable_error(err.to_string()))
             })
             .transpose()?
-            .or_else(|| Some(AgentReasoningEffort::highest().as_storage().to_owned()));
+            .or_else(|| {
+                Some(
+                    projects::default_reasoning_effort_for_model(
+                        create_model.default_agent_model.as_deref(),
+                    )
+                    .as_storage()
+                    .to_owned(),
+                )
+            });
+        projects::validate_agent_model_reasoning_effort(
+            "default agent model",
+            create_model.default_agent_model.as_deref(),
+            "default agent reasoning effort",
+            create_model
+                .default_agent_reasoning_effort
+                .as_deref()
+                .map(str::parse::<AgentReasoningEffort>)
+                .transpose()
+                .map_err(|err| project_unprocessable_error(err.to_string()))?,
+        )
+        .map_err(|err| project_unprocessable_error(err.to_string()))?;
         Ok(data)
     }
 
@@ -268,6 +288,12 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
             update_model.create_pr,
             update_model.stale_claim_minutes,
             update_model.default_agent_model.as_deref(),
+            update_model
+                .default_agent_reasoning_effort
+                .as_deref()
+                .map(str::parse::<AgentReasoningEffort>)
+                .transpose()
+                .map_err(|err| project_unprocessable_error(err.to_string()))?,
         )
         .map_err(|err| project_unprocessable_error(err.to_string()))?;
         Ok(data)
@@ -560,6 +586,15 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
     ) -> Result<work_item::Model, Self::Error> {
         let create =
             crud_create_work_item_plan(create_model).map_err(WorkItemRepositoryError::Internal)?;
+        let settings = projects::get_settings_by_id(&self.store, create.project_id)
+            .await
+            .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        items::validate_effective_agent_selection(
+            &settings,
+            create.plan.agent_model_override(),
+            create.plan.agent_reasoning_effort_override(),
+        )
+        .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
         let now = utc_now();
         let txn = self
             .store
@@ -677,6 +712,15 @@ impl Repository<CrudWorkItemResource> for WorkItemRepository {
         let applied = update
             .apply_to(existing)
             .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        let settings = projects::get_settings_by_id(&self.store, project_id)
+            .await
+            .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
+        items::validate_effective_agent_selection(
+            &settings,
+            applied.agent_model_override.as_deref(),
+            applied.agent_reasoning_effort_override,
+        )
+        .map_err(|err| WorkItemRepositoryError::Internal(err.to_string()))?;
         let txn = self
             .store
             .db()

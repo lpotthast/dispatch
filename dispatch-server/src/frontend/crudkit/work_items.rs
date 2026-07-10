@@ -71,11 +71,17 @@ pub(crate) fn work_items_crudkit_config_for_view(
             )
             .register(
                 CreateWorkItemField::AgentModelOverride,
-                agent_model_field_renderer::<DynCreateField>(Some("Project default")),
+                agent_model_field_renderer::<DynCreateField>(
+                    Some("Project default"),
+                    Some("agent_reasoning_effort_override"),
+                ),
             )
             .register(
                 CreateWorkItemField::AgentReasoningEffortOverride,
-                agent_reasoning_field_renderer::<DynCreateField>(Some("Project default")),
+                agent_reasoning_field_renderer::<DynCreateField>(
+                    Some("Project default"),
+                    Some("agent_model_override"),
+                ),
             )
             .register(
                 CreateWorkItemField::InitialLabels,
@@ -202,7 +208,10 @@ pub(crate) fn work_items_crudkit_config_for_view(
         read_field_renderer: FieldRendererRegistry::builder()
             .register(
                 ReadWorkItemField::AgentModelOverride,
-                agent_model_field_renderer::<DynReadField>(Some("Project default")),
+                agent_model_field_renderer::<DynReadField>(
+                    Some("Project default"),
+                    Some("agent_reasoning_effort_override"),
+                ),
             )
             .build(),
         create_field_renderer,
@@ -213,11 +222,17 @@ pub(crate) fn work_items_crudkit_config_for_view(
             )
             .register(
                 WorkItemField::AgentModelOverride,
-                agent_model_field_renderer::<DynUpdateField>(Some("Project default")),
+                agent_model_field_renderer::<DynUpdateField>(
+                    Some("Project default"),
+                    Some("agent_reasoning_effort_override"),
+                ),
             )
             .register(
                 WorkItemField::AgentReasoningEffortOverride,
-                agent_reasoning_field_renderer::<DynUpdateField>(Some("Project default")),
+                agent_reasoning_field_renderer::<DynUpdateField>(
+                    Some("Project default"),
+                    Some("agent_model_override"),
+                ),
             )
             .build(),
     }

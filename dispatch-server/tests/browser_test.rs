@@ -205,12 +205,12 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         .await?;
         find(
             driver,
-            By::Css("[data-crudkit-leptos='projects'] option[value='gpt-5.5']"),
+            By::Css("[data-crudkit-leptos='projects'] option[value='gpt-5.6-sol']"),
         )
         .await?;
         find(
             driver,
-            By::Css("[data-crudkit-leptos='projects'] option[value='xhigh']"),
+            By::Css("[data-crudkit-leptos='projects'] option[value='max']"),
         )
         .await?;
         driver

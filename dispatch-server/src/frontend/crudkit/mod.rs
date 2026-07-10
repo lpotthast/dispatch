@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     frontend::{
@@ -53,6 +53,7 @@ use crudkit_leptos::crudkit_core::{
 };
 use crudkit_leptos::fields::{FieldRenderer, render_label};
 use crudkit_leptos::{
+    ReactiveField,
     crud_instance_config::{
         CrudInstanceConfig, CrudNavigationConfig, FieldRendererRegistry, Header, ItemsPerPage,
         ModelHandler, PageNr,
@@ -298,11 +299,13 @@ fn project_path_status_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
 
 fn agent_model_field_renderer<F: TypeErasedField>(
     empty_label: Option<&'static str>,
+    reasoning_field_name: Option<&'static str>,
 ) -> FieldRenderer<F> {
     FieldRenderer::new(
-        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+        move |signals, _field: F, field_mode, field_options, value, value_changed| {
             let current =
                 Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
+            let selected_effort = sibling_field_string_signal(signals, reasoning_field_name);
 
             match field_mode {
                 FieldMode::Display => view! {
@@ -313,15 +316,28 @@ fn agent_model_field_renderer<F: TypeErasedField>(
                 .into_any(),
                 FieldMode::Readable | FieldMode::Editable => {
                     let disabled = field_mode != FieldMode::Editable || field_options.disabled;
-                    let options = CodexAgentModel::all()
-                        .iter()
-                        .map(|model| {
-                            let value = model.as_storage();
-                            view! {
-                                <option value=value>{value}</option>
-                            }
-                        })
-                        .collect::<Vec<_>>();
+                    let options = move || {
+                        let selected_effort = selected_effort
+                            .get()
+                            .parse::<AgentReasoningEffort>()
+                            .ok();
+                        CodexAgentModel::all()
+                            .iter()
+                            .map(|model| {
+                                let value = model.as_storage();
+                                let incompatible = selected_effort
+                                    .is_some_and(|effort| !model.supports_reasoning_effort(effort));
+                                let label = if incompatible {
+                                    format!("{value} (incompatible)")
+                                } else {
+                                    value.to_owned()
+                                };
+                                view! {
+                                    <option value=value disabled=incompatible>{label}</option>
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    };
                     let stale_option = move || {
                         let current = current.get();
                         (!current.is_empty() && !CodexAgentModel::is_available_model(&current))
@@ -394,11 +410,13 @@ fn agent_model_class(value: &str) -> &'static str {
 
 fn agent_reasoning_field_renderer<F: TypeErasedField>(
     empty_label: Option<&'static str>,
+    model_field_name: Option<&'static str>,
 ) -> FieldRenderer<F> {
     FieldRenderer::new(
-        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+        move |signals, _field: F, field_mode, field_options, value, value_changed| {
             let current =
                 Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
+            let selected_model = sibling_field_string_signal(signals, model_field_name);
 
             match field_mode {
                 FieldMode::Display => view! {
@@ -414,15 +432,25 @@ fn agent_reasoning_field_renderer<F: TypeErasedField>(
                 .into_any(),
                 FieldMode::Readable | FieldMode::Editable => {
                     let disabled = field_mode != FieldMode::Editable || field_options.disabled;
-                    let options = AgentReasoningEffort::all()
-                        .into_iter()
-                        .map(|effort| {
-                            let value = effort.as_storage();
-                            view! {
-                                <option value=value>{effort.to_string()}</option>
-                            }
-                        })
-                        .collect::<Vec<_>>();
+                    let options = move || {
+                        let selected_model = selected_model.get().parse::<CodexAgentModel>().ok();
+                        AgentReasoningEffort::all()
+                            .into_iter()
+                            .map(|effort| {
+                                let value = effort.as_storage();
+                                let incompatible = selected_model
+                                    .is_some_and(|model| !model.supports_reasoning_effort(effort));
+                                let label = if incompatible {
+                                    format!("{value} (incompatible)")
+                                } else {
+                                    value.to_owned()
+                                };
+                                view! {
+                                    <option value=value disabled=incompatible>{label}</option>
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    };
                     let empty_option = empty_label.map(|empty_label| {
                         view! { <option value="">{empty_label}</option> }
                     });
@@ -450,6 +478,23 @@ fn agent_reasoning_field_renderer<F: TypeErasedField>(
             }
         },
     )
+}
+
+fn sibling_field_string_signal<F: TypeErasedField>(
+    signals: StoredValue<HashMap<F, ReactiveField>>,
+    field_name: Option<&'static str>,
+) -> Signal<String> {
+    Signal::derive(move || {
+        field_name
+            .and_then(|field_name| {
+                signals.with_value(|map| {
+                    map.iter()
+                        .find(|(field, _)| field.name().as_ref() == field_name)
+                        .and_then(|(_, field)| field.value.get().as_string().cloned())
+                })
+            })
+            .unwrap_or_default()
+    })
 }
 
 fn activation_field_renderer<F: TypeErasedField>(

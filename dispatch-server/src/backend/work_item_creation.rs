@@ -41,6 +41,10 @@ impl CreateWorkItemPlan {
         work_item_updates::validate_item_text(&create.title, &create.description)?;
         let state_label = workflow_labels::normalize_state_value(create.state)?;
         let agent_model_override = projects::normalize_optional(create.agent_model_override);
+        projects::validate_agent_model_field(
+            "agent model override",
+            agent_model_override.as_deref(),
+        )?;
         let initial_labels = item_labels::normalize_initial_labels(
             create
                 .initial_labels
@@ -57,6 +61,14 @@ impl CreateWorkItemPlan {
             agent_reasoning_effort_override: create.agent_reasoning_effort_override,
             initial_labels,
         })
+    }
+
+    pub(crate) fn agent_model_override(&self) -> Option<&str> {
+        self.agent_model_override.as_deref()
+    }
+
+    pub(crate) fn agent_reasoning_effort_override(&self) -> Option<AgentReasoningEffort> {
+        self.agent_reasoning_effort_override
     }
 
     pub(crate) fn into_insert(self, project_id: i64, created_at: String) -> PlannedWorkItemInsert {
@@ -212,5 +224,19 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("invalid initial labels"));
         assert!(err.to_string().contains("use the state selector"));
+    }
+
+    #[test]
+    fn create_plan_rejects_unknown_model_override() {
+        let err = CreateWorkItemPlan::new(CreateWorkItem {
+            agent_model_override: Some("gpt-4.1-codex".to_owned()),
+            ..create_work_item()
+        })
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("agent model override must be one of")
+        );
     }
 }

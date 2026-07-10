@@ -88,6 +88,7 @@ Project settings should expose:
 - default agent tool, model, and reasoning effort.
 
 Settings changes should go through server handlers and be reflected in automation launches without requiring agents to know settings internals.
+The model and reasoning effort controls should prevent known-incompatible Codex combinations, while server handlers remain authoritative for all API, CLI, and form submissions.
 Selector/prompt-based automations do not expose a project-level refinement concurrency exception in settings. Read-only automation concurrency is a general setting, not a refinement-specific bypass.
 
 Codex configuration generated from project settings should not be exposed as raw TOML in the main UI. Operators configure supported policy fields, and Dispatch generates the per-project Codex config and rules.

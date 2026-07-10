@@ -162,14 +162,15 @@ pub(crate) fn codex_memory_config_overrides() -> serde_json::Map<String, serde_j
     ])
 }
 
-pub(crate) fn to_codex_reasoning(effort: AgentReasoningEffort) -> CodexReasoningEffort {
+pub(crate) fn to_codex_reasoning(effort: AgentReasoningEffort) -> Option<CodexReasoningEffort> {
     match effort {
-        AgentReasoningEffort::None => CodexReasoningEffort::None,
-        AgentReasoningEffort::Minimal => CodexReasoningEffort::Minimal,
-        AgentReasoningEffort::Low => CodexReasoningEffort::Low,
-        AgentReasoningEffort::Medium => CodexReasoningEffort::Medium,
-        AgentReasoningEffort::High => CodexReasoningEffort::High,
-        AgentReasoningEffort::XHigh => CodexReasoningEffort::XHigh,
+        AgentReasoningEffort::None => Some(CodexReasoningEffort::None),
+        AgentReasoningEffort::Minimal => Some(CodexReasoningEffort::Minimal),
+        AgentReasoningEffort::Low => Some(CodexReasoningEffort::Low),
+        AgentReasoningEffort::Medium => Some(CodexReasoningEffort::Medium),
+        AgentReasoningEffort::High => Some(CodexReasoningEffort::High),
+        AgentReasoningEffort::XHigh => Some(CodexReasoningEffort::XHigh),
+        AgentReasoningEffort::Max => None,
     }
 }
 

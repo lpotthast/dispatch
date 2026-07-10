@@ -237,6 +237,7 @@ impl ValidatedProjectSettings {
             self.create_pr,
             self.stale_claim_minutes,
             self.default_agent_model.as_deref(),
+            self.default_agent_reasoning_effort,
         )
     }
 
@@ -330,7 +331,13 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
     validate_agent_model(default_agent_model.as_deref())?;
     let default_agent_reasoning_effort = create
         .default_agent_reasoning_effort
-        .unwrap_or_else(AgentReasoningEffort::highest);
+        .unwrap_or_else(|| default_reasoning_effort_for_model(default_agent_model.as_deref()));
+    validate_agent_model_reasoning_effort(
+        "default agent model",
+        default_agent_model.as_deref(),
+        "default agent reasoning effort",
+        Some(default_agent_reasoning_effort),
+    )?;
     let system_prompt = create.system_prompt.unwrap_or_default();
     let memory = create.memory.unwrap_or_default();
 
@@ -663,6 +670,18 @@ pub async fn get_settings(store: &Store, project_name: &str) -> Result<ProjectSe
     project_settings_to_view(project)
 }
 
+pub(crate) async fn get_settings_by_id(
+    store: &Store,
+    project_id: i64,
+) -> Result<ProjectSettingsView> {
+    let project = Project::find_by_id(project_id)
+        .one(store.db().as_ref())
+        .await
+        .context_with(|| format!("failed to load project {project_id}"))?
+        .ok_or_else(|| report!("project {project_id} does not exist"))?;
+    project_settings_to_view(project)
+}
+
 pub async fn update_settings(
     store: &Store,
     project_name: &str,
@@ -928,6 +947,7 @@ pub(crate) fn validate_settings(
     create_pr: bool,
     stale_claim_minutes: i64,
     default_agent_model: Option<&str>,
+    default_agent_reasoning_effort: Option<AgentReasoningEffort>,
 ) -> Result<()> {
     if max_code_edit_agents < 1 {
         bail!("max code-editing agents must be at least 1");
@@ -945,22 +965,65 @@ pub(crate) fn validate_settings(
         bail!("stale claim minutes cannot be negative");
     }
     validate_agent_model(default_agent_model)?;
+    validate_agent_model_reasoning_effort(
+        "default agent model",
+        default_agent_model,
+        "default agent reasoning effort",
+        default_agent_reasoning_effort,
+    )?;
     Ok(())
 }
 
 pub(crate) fn validate_agent_model(default_agent_model: Option<&str>) -> Result<()> {
-    if let Some(default_agent_model) = default_agent_model {
-        if default_agent_model.trim().is_empty() {
-            bail!("default agent model cannot be empty");
+    validate_agent_model_field("default agent model", default_agent_model)
+}
+
+pub(crate) fn validate_agent_model_field(label: &str, model: Option<&str>) -> Result<()> {
+    if let Some(model) = model {
+        if model.trim().is_empty() {
+            bail!("{label} cannot be empty");
         }
-        if !CodexAgentModel::is_available_model(default_agent_model) {
+        if !CodexAgentModel::is_available_model(model) {
             bail!(
-                "default agent model must be one of: {}",
+                "{label} must be one of: {}",
                 CodexAgentModel::allowed_values()
             );
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_agent_model_reasoning_effort(
+    model_label: &str,
+    model: Option<&str>,
+    effort_label: &str,
+    effort: Option<AgentReasoningEffort>,
+) -> Result<()> {
+    let (Some(model), Some(effort)) = (model, effort) else {
+        return Ok(());
+    };
+    let model = model.parse::<CodexAgentModel>().context_with(|| {
+        format!(
+            "{model_label} must be one of: {}",
+            CodexAgentModel::allowed_values()
+        )
+    })?;
+    if !model.supports_reasoning_effort(effort) {
+        bail!(
+            "{model_label} '{}' is incompatible with {effort_label} '{}'; supported efforts are: {}",
+            model.as_storage(),
+            effort.as_storage(),
+            model.allowed_reasoning_effort_values()
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn default_reasoning_effort_for_model(model: Option<&str>) -> AgentReasoningEffort {
+    model
+        .and_then(|model| model.parse::<CodexAgentModel>().ok())
+        .map(CodexAgentModel::highest_reasoning_effort)
+        .unwrap_or_else(AgentReasoningEffort::highest)
 }
 
 fn project_settings_to_view(project: ProjectModel) -> Result<ProjectSettingsView> {
@@ -1634,6 +1697,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(project.default_agent_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(
+            project.default_agent_reasoning_effort,
+            Some(AgentReasoningEffort::XHigh)
+        );
     }
 
     #[tokio::test]
@@ -1681,6 +1748,27 @@ mod tests {
             err.to_string()
                 .contains("default agent model must be one of")
         );
+    }
+
+    #[tokio::test]
+    async fn settings_reject_incompatible_model_and_reasoning_effort() {
+        let (temp, store) = test_store().await;
+        create_demo_project(&store, project_path(&temp, "demo")).await;
+
+        let err = update_settings(
+            &store,
+            "demo",
+            UpdateProjectSettings {
+                default_agent_model: Some(Some("gpt-5.6-sol".to_owned())),
+                default_agent_reasoning_effort: Some(Some(AgentReasoningEffort::Minimal)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("default agent model"));
+        assert!(err.to_string().contains("incompatible"));
     }
 
     #[tokio::test]

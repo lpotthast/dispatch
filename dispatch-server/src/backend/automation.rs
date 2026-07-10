@@ -10,7 +10,8 @@ use std::{
 };
 
 use codex_app_server_sdk::{
-    ApprovalMode, ClientError, StreamedTurn, Thread, ThreadEvent, ThreadOptions, TurnOptions,
+    ApprovalMode, ClientError, Codex, SandboxMode as CodexSandboxMode, StreamedTurn, Thread,
+    ThreadEvent, ThreadOptions, TurnOptions, requests,
 };
 use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
@@ -870,6 +871,17 @@ async fn prepare_automation_launch(
     }
     let agent_model = effective_agent_model(settings, claimed_item);
     let agent_reasoning_effort = effective_agent_reasoning_effort(settings, claimed_item);
+    if let Err(err) = projects::validate_agent_model_reasoning_effort(
+        "effective agent model",
+        agent_model.as_deref(),
+        "effective agent reasoning effort",
+        agent_reasoning_effort,
+    ) {
+        return Err(LaunchPreparationFailure::new(
+            run,
+            format!("Invalid automation model configuration: {err:#}"),
+        ));
+    }
     let codex_home = match codex_app_server::ensure_project_codex_home(settings) {
         Ok(codex_home) => codex_home,
         Err(err) => {
@@ -1776,10 +1788,11 @@ async fn run_codex_app_server_turn(
     if let Some(agent_model) = start.agent_model.as_deref() {
         thread_options = thread_options.model(agent_model);
     }
-    if let Some(agent_reasoning_effort) = start.agent_reasoning_effort {
-        thread_options = thread_options.model_reasoning_effort(
-            automation_runtime::to_codex_reasoning(agent_reasoning_effort),
-        );
+    if let Some(agent_reasoning_effort) = start.agent_reasoning_effort
+        && let Some(codex_reasoning_effort) =
+            automation_runtime::to_codex_reasoning(agent_reasoning_effort)
+    {
+        thread_options = thread_options.model_reasoning_effort(codex_reasoning_effort);
     }
     let thread_options = thread_options.build();
     let (mut thread, mut streamed) =
@@ -1892,6 +1905,15 @@ async fn start_codex_streamed_turn(
     .map_err(CodexStreamStartError::Spawn)?;
     let mut thread = if let Some(thread_id) = thread_id {
         codex.resume_thread_by_id(thread_id.to_owned(), thread_options.clone())
+    } else if start.agent_reasoning_effort == Some(AgentReasoningEffort::Max) {
+        let thread_id = start_codex_thread_with_raw_effort(
+            &codex,
+            thread_options,
+            AgentReasoningEffort::Max.as_storage(),
+        )
+        .await
+        .map_err(CodexStreamStartError::Run)?;
+        codex.resume_thread_by_id(thread_id, thread_options.clone())
     } else {
         codex.start_thread(thread_options.clone())
     };
@@ -1900,6 +1922,103 @@ async fn start_codex_streamed_turn(
         .await
         .map_err(CodexStreamStartError::Run)?;
     Ok((thread, streamed))
+}
+
+async fn start_codex_thread_with_raw_effort(
+    codex: &Codex,
+    thread_options: &ThreadOptions,
+    effort: &str,
+) -> std::result::Result<String, ClientError> {
+    let started = codex
+        .thread_start(thread_start_params_with_raw_effort(thread_options, effort))
+        .await?;
+    Ok(started.thread.id)
+}
+
+fn thread_start_params_with_raw_effort(
+    options: &ThreadOptions,
+    effort: &str,
+) -> requests::ThreadStartParams {
+    let mut extra = serde_json::Map::new();
+    if let Some(skip) = options.skip_git_repo_check {
+        extra.insert("skipGitRepoCheck".to_owned(), serde_json::Value::Bool(skip));
+    }
+    if let Some(enabled) = options.web_search_enabled {
+        extra.insert(
+            "webSearchEnabled".to_owned(),
+            serde_json::Value::Bool(enabled),
+        );
+    }
+    if let Some(network) = options.network_access_enabled {
+        extra.insert(
+            "networkAccessEnabled".to_owned(),
+            serde_json::Value::Bool(network),
+        );
+    }
+    if let Some(additional) = &options.additional_directories {
+        extra.insert(
+            "additionalDirectories".to_owned(),
+            serde_json::Value::Array(
+                additional
+                    .iter()
+                    .map(|entry| serde_json::Value::String(entry.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(config) = &options.config {
+        extra.insert(
+            "config".to_owned(),
+            serde_json::Value::Object(config.clone()),
+        );
+    }
+    if let Some(enabled) = options.experimental_raw_events {
+        extra.insert(
+            "experimentalRawEvents".to_owned(),
+            serde_json::Value::Bool(enabled),
+        );
+    }
+    if let Some(enabled) = options.persist_extended_history {
+        extra.insert(
+            "persistExtendedHistory".to_owned(),
+            serde_json::Value::Bool(enabled),
+        );
+    }
+
+    requests::ThreadStartParams {
+        model: options.model.clone(),
+        model_provider: options.model_provider.clone(),
+        cwd: options.working_directory.clone(),
+        approval_policy: options.approval_policy.map(codex_approval_mode_storage),
+        sandbox: options.sandbox_mode.map(codex_sandbox_mode_storage),
+        sandbox_policy: options.sandbox_policy.clone(),
+        effort: Some(effort.to_owned()),
+        summary: None,
+        personality: None,
+        ephemeral: options.ephemeral,
+        base_instructions: options.base_instructions.clone(),
+        developer_instructions: options.developer_instructions.clone(),
+        extra,
+    }
+}
+
+fn codex_approval_mode_storage(mode: ApprovalMode) -> String {
+    match mode {
+        ApprovalMode::Never => "never",
+        ApprovalMode::OnRequest => "on-request",
+        ApprovalMode::OnFailure => "on-failure",
+        ApprovalMode::Untrusted => "untrusted",
+    }
+    .to_owned()
+}
+
+fn codex_sandbox_mode_storage(mode: CodexSandboxMode) -> String {
+    match mode {
+        CodexSandboxMode::ReadOnly => "read-only",
+        CodexSandboxMode::WorkspaceWrite => "workspace-write",
+        CodexSandboxMode::DangerFullAccess => "danger-full-access",
+    }
+    .to_owned()
 }
 
 async fn recover_codex_streamed_turn(
@@ -2338,6 +2457,37 @@ mod tests {
         (temp, store)
     }
 
+    #[test]
+    fn raw_effort_thread_start_params_preserve_launch_options() {
+        let options = ThreadOptions::builder()
+            .working_directory("/tmp/dispatch-work")
+            .approval_policy(ApprovalMode::Never)
+            .sandbox_mode(CodexSandboxMode::WorkspaceWrite)
+            .network_access_enabled(true)
+            .developer_instructions("Use Dispatch policy.")
+            .config(serde_json::Map::from_iter([(
+                "features.memories".to_owned(),
+                serde_json::Value::Bool(false),
+            )]))
+            .build();
+
+        let params = thread_start_params_with_raw_effort(&options, "max");
+
+        assert_eq!(params.cwd.as_deref(), Some("/tmp/dispatch-work"));
+        assert_eq!(params.approval_policy.as_deref(), Some("never"));
+        assert_eq!(params.sandbox.as_deref(), Some("workspace-write"));
+        assert_eq!(params.effort.as_deref(), Some("max"));
+        assert_eq!(
+            params.developer_instructions.as_deref(),
+            Some("Use Dispatch policy.")
+        );
+        assert_eq!(
+            params.extra.get("networkAccessEnabled"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(params.extra.contains_key("config"));
+    }
+
     #[tokio::test]
     async fn run_log_uses_active_session_output_when_available() {
         let (temp, store) = test_store().await;
@@ -2564,7 +2714,7 @@ mod tests {
                 title: "Configured item".to_owned(),
                 description: "Exercise item overrides".to_owned(),
                 state: "open".to_owned(),
-                agent_model_override: Some("gpt-5-codex".to_owned()),
+                agent_model_override: Some("gpt-5.6-terra".to_owned()),
                 agent_reasoning_effort_override: Some(AgentReasoningEffort::Medium),
                 initial_labels: Vec::new(),
             },
@@ -2574,7 +2724,7 @@ mod tests {
 
         assert_eq!(
             effective_agent_model(&settings, Some(&item)).as_deref(),
-            Some("gpt-5-codex")
+            Some("gpt-5.6-terra")
         );
         assert_eq!(
             effective_agent_reasoning_effort(&settings, Some(&item)),

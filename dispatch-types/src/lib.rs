@@ -257,6 +257,10 @@ impl FromStr for AgentToolName {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodexAgentModel {
+    Gpt56Sol,
+    Gpt56Terra,
+    Gpt56Luna,
+    Gpt56,
     Gpt55,
     Gpt54,
     Gpt54Mini,
@@ -266,6 +270,10 @@ pub enum CodexAgentModel {
 impl CodexAgentModel {
     pub const fn as_storage(self) -> &'static str {
         match self {
+            Self::Gpt56Sol => "gpt-5.6-sol",
+            Self::Gpt56Terra => "gpt-5.6-terra",
+            Self::Gpt56Luna => "gpt-5.6-luna",
+            Self::Gpt56 => "gpt-5.6",
             Self::Gpt55 => "gpt-5.5",
             Self::Gpt54 => "gpt-5.4",
             Self::Gpt54Mini => "gpt-5.4-mini",
@@ -273,8 +281,12 @@ impl CodexAgentModel {
         }
     }
 
-    pub fn all() -> [Self; 4] {
+    pub fn all() -> [Self; 8] {
         [
+            Self::Gpt56Sol,
+            Self::Gpt56Terra,
+            Self::Gpt56Luna,
+            Self::Gpt56,
             Self::Gpt55,
             Self::Gpt54,
             Self::Gpt54Mini,
@@ -283,11 +295,51 @@ impl CodexAgentModel {
     }
 
     pub fn newest() -> Self {
-        Self::Gpt55
+        Self::Gpt56Sol
     }
 
     pub fn is_available_model(value: &str) -> bool {
         value.parse::<Self>().is_ok()
+    }
+
+    pub fn supported_reasoning_efforts(self) -> &'static [AgentReasoningEffort] {
+        match self {
+            Self::Gpt56Sol | Self::Gpt56Terra | Self::Gpt56Luna | Self::Gpt56 => &[
+                AgentReasoningEffort::None,
+                AgentReasoningEffort::Low,
+                AgentReasoningEffort::Medium,
+                AgentReasoningEffort::High,
+                AgentReasoningEffort::XHigh,
+                AgentReasoningEffort::Max,
+            ],
+            Self::Gpt55 | Self::Gpt54 | Self::Gpt54Mini | Self::Gpt53CodexSpark => &[
+                AgentReasoningEffort::None,
+                AgentReasoningEffort::Minimal,
+                AgentReasoningEffort::Low,
+                AgentReasoningEffort::Medium,
+                AgentReasoningEffort::High,
+                AgentReasoningEffort::XHigh,
+            ],
+        }
+    }
+
+    pub fn supports_reasoning_effort(self, effort: AgentReasoningEffort) -> bool {
+        self.supported_reasoning_efforts().contains(&effort)
+    }
+
+    pub fn highest_reasoning_effort(self) -> AgentReasoningEffort {
+        *self
+            .supported_reasoning_efforts()
+            .last()
+            .expect("codex agent models must support at least one reasoning effort")
+    }
+
+    pub fn allowed_reasoning_effort_values(self) -> String {
+        self.supported_reasoning_efforts()
+            .iter()
+            .map(|effort| effort.as_storage())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub fn allowed_values() -> String {
@@ -310,13 +362,15 @@ impl FromStr for CodexAgentModel {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_lowercase().as_str() {
+            "gpt-5.6-sol" => Ok(Self::Gpt56Sol),
+            "gpt-5.6-terra" => Ok(Self::Gpt56Terra),
+            "gpt-5.6-luna" => Ok(Self::Gpt56Luna),
+            "gpt-5.6" => Ok(Self::Gpt56),
             "gpt-5.5" => Ok(Self::Gpt55),
             "gpt-5.4" => Ok(Self::Gpt54),
             "gpt-5.4-mini" => Ok(Self::Gpt54Mini),
             "gpt-5.3-codex-spark" => Ok(Self::Gpt53CodexSpark),
-            _ => Err(ParseEnumError(
-                "codex agent model must be one of: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex-spark",
-            )),
+            _ => Err(ParseEnumError("unknown codex agent model")),
         }
     }
 }
@@ -656,6 +710,7 @@ pub enum AgentReasoningEffort {
     Medium,
     High,
     XHigh,
+    Max,
 }
 
 impl AgentReasoningEffort {
@@ -667,10 +722,11 @@ impl AgentReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
-    pub fn all() -> [Self; 6] {
+    pub fn all() -> [Self; 7] {
         [
             Self::None,
             Self::Minimal,
@@ -678,11 +734,20 @@ impl AgentReasoningEffort {
             Self::Medium,
             Self::High,
             Self::XHigh,
+            Self::Max,
         ]
     }
 
     pub fn highest() -> Self {
-        Self::XHigh
+        Self::Max
+    }
+
+    pub fn allowed_values() -> String {
+        Self::all()
+            .iter()
+            .map(|effort| effort.as_storage())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -703,9 +768,8 @@ impl FromStr for AgentReasoningEffort {
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" | "x_high" => Ok(Self::XHigh),
-            _ => Err(ParseEnumError(
-                "agent reasoning effort must be one of: none, minimal, low, medium, high, xhigh",
-            )),
+            "max" => Ok(Self::Max),
+            _ => Err(ParseEnumError("unknown agent reasoning effort")),
         }
     }
 }
@@ -1716,6 +1780,38 @@ mod tests {
         );
         assert_eq!(AgentRunCleanupStatus::Cleaned.to_string(), "cleaned");
         assert!("cleanup_failed".parse::<AgentRunCleanupStatus>().is_err());
+    }
+
+    #[test]
+    fn codex_agent_models_include_gpt_56_matrix() {
+        assert_eq!(CodexAgentModel::newest().as_storage(), "gpt-5.6-sol");
+        assert_eq!(
+            "gpt-5.6-terra".parse::<CodexAgentModel>().unwrap(),
+            CodexAgentModel::Gpt56Terra
+        );
+        assert_eq!(
+            "gpt-5.6".parse::<CodexAgentModel>().unwrap(),
+            CodexAgentModel::Gpt56
+        );
+        assert!(CodexAgentModel::Gpt56Sol.supports_reasoning_effort(AgentReasoningEffort::Max));
+        assert!(
+            !CodexAgentModel::Gpt56Sol.supports_reasoning_effort(AgentReasoningEffort::Minimal)
+        );
+        assert!(CodexAgentModel::Gpt55.supports_reasoning_effort(AgentReasoningEffort::Minimal));
+        assert!(!CodexAgentModel::Gpt55.supports_reasoning_effort(AgentReasoningEffort::Max));
+    }
+
+    #[test]
+    fn agent_reasoning_effort_accepts_max() {
+        assert_eq!(
+            "max".parse::<AgentReasoningEffort>().unwrap(),
+            AgentReasoningEffort::Max
+        );
+        assert_eq!(AgentReasoningEffort::highest(), AgentReasoningEffort::Max);
+        assert!(
+            AgentReasoningEffort::allowed_values()
+                .contains("none, minimal, low, medium, high, xhigh, max")
+        );
     }
 
     #[test]

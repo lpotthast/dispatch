@@ -41,6 +41,8 @@ pub(crate) struct AppliedWorkItemUpdate {
     pub(crate) active: WorkItemActiveModel,
     pub(crate) state: Option<String>,
     pub(crate) record_item_updated_event: bool,
+    pub(crate) agent_model_override: Option<String>,
+    pub(crate) agent_reasoning_effort_override: Option<AgentReasoningEffort>,
 }
 
 impl WorkItemUpdatePlan {
@@ -77,11 +79,19 @@ impl WorkItemUpdatePlan {
         let field_update = self.field_updates.apply_to(existing)?;
 
         Ok(AppliedWorkItemUpdate {
-            active: field_update,
+            active: field_update.active,
             state,
             record_item_updated_event,
+            agent_model_override: field_update.agent_model_override,
+            agent_reasoning_effort_override: field_update.agent_reasoning_effort_override,
         })
     }
+}
+
+struct AppliedWorkItemFieldUpdate {
+    active: WorkItemActiveModel,
+    agent_model_override: Option<String>,
+    agent_reasoning_effort_override: Option<AgentReasoningEffort>,
 }
 
 impl WorkItemFieldUpdates {
@@ -96,7 +106,7 @@ impl WorkItemFieldUpdates {
         self.title.is_some() || self.description.is_some()
     }
 
-    fn apply_to(self, existing: WorkItemModel) -> Result<WorkItemActiveModel> {
+    fn apply_to(self, existing: WorkItemModel) -> Result<AppliedWorkItemFieldUpdate> {
         let has_text_update = self.has_text_update();
         let Self {
             title,
@@ -111,21 +121,39 @@ impl WorkItemFieldUpdates {
             validate_item_text(&title, &description)?;
         }
 
+        let next_agent_model_override = match agent_model_override {
+            Some(agent_model_override) => projects::normalize_optional(agent_model_override),
+            None => projects::normalize_optional(existing.agent_model_override.clone()),
+        };
+        projects::validate_agent_model_field(
+            "agent model override",
+            next_agent_model_override.as_deref(),
+        )?;
+        let next_agent_reasoning_effort_override = match agent_reasoning_effort_override {
+            Some(agent_reasoning_effort_override) => agent_reasoning_effort_override,
+            None => existing
+                .agent_reasoning_effort_override
+                .as_deref()
+                .map(str::parse::<AgentReasoningEffort>)
+                .transpose()
+                .context("item has invalid agent reasoning effort override")?,
+        };
+
         let version = existing.version;
         let mut active: WorkItemActiveModel = existing.into();
         active.title = Set(title);
         active.description = Set(description);
-        if let Some(agent_model_override) = agent_model_override {
-            active.agent_model_override = Set(projects::normalize_optional(agent_model_override));
-        }
-        if let Some(agent_reasoning_effort_override) = agent_reasoning_effort_override {
-            active.agent_reasoning_effort_override =
-                Set(agent_reasoning_effort_override.map(|effort| effort.as_storage().to_owned()));
-        }
+        active.agent_model_override = Set(next_agent_model_override.clone());
+        active.agent_reasoning_effort_override =
+            Set(next_agent_reasoning_effort_override.map(|effort| effort.as_storage().to_owned()));
         active.version = Set(version + 1);
         active.updated_at = Set(utc_now());
 
-        Ok(active)
+        Ok(AppliedWorkItemFieldUpdate {
+            active,
+            agent_model_override: next_agent_model_override,
+            agent_reasoning_effort_override: next_agent_reasoning_effort_override,
+        })
     }
 }
 
@@ -155,7 +183,7 @@ mod tests {
             claimed_at: None,
             claim_expires_at: None,
             finished_at: None,
-            agent_model_override: Some("gpt-5.1".to_owned()),
+            agent_model_override: Some("gpt-5.5".to_owned()),
             agent_reasoning_effort_override: Some("medium".to_owned()),
             version: 4,
             created_at: "2026-06-19T00:00:00Z".to_owned(),
@@ -201,6 +229,22 @@ mod tests {
         assert!(applied.record_item_updated_event);
         assert_eq!(applied.active.agent_model_override, Set(None));
         assert_eq!(applied.active.version, Set(5));
+    }
+
+    #[test]
+    fn unknown_model_override_is_rejected() {
+        let plan = WorkItemUpdatePlan::new(UpdateWorkItem {
+            agent_model_override: Some(Some("gpt-4.1-codex".to_owned())),
+            ..UpdateWorkItem::default()
+        })
+        .unwrap();
+
+        let err = plan.apply_to(work_item()).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("agent model override must be one of")
+        );
     }
 
     #[test]
