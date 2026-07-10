@@ -274,6 +274,13 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <Meta name="description" content="Dispatch project work orchestration"/>
+                <meta name="theme-color" content="#20242a"/>
+                <link rel="icon" type="image/png" sizes="32x32" href="/branding/favicon-32.png"/>
+                <link
+                    rel="apple-touch-icon"
+                    sizes="180x180"
+                    href="/branding/dispatch-icon-180.png"
+                />
                 <Title text="Dispatch"/>
                 <HydrationScripts options=options.clone()/>
                 <Stylesheet id="leptos" href=options.css_path()/>
@@ -4333,7 +4340,15 @@ pub(crate) fn top_bar(
 
     view! {
         <header class="app-topbar">
-            <a class="brand" href=board_href.clone()>"Dispatch"</a>
+            <a class="brand" href=board_href.clone()>
+                <img
+                    class="brand-icon"
+                    src="/branding/dispatch-icon-64.png"
+                    alt=""
+                    aria-hidden="true"
+                />
+                "Dispatch"
+            </a>
             <nav class="top-nav" aria-label="Primary">
                 <a class=board_class href=board_href>"Board"</a>
                 <a class=triggers_class href=triggers_href>"Automation"</a>
