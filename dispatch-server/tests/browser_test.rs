@@ -484,6 +484,7 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         .await?;
         assert_source_does_not_contain(driver, "Start agent").await?;
         assert_source_contains(driver, "Comments").await?;
+        assert_user_comment_create_flow(driver).await?;
         add_agent_comment(driver).await?;
         claim_current_item(driver).await?;
         let item_url = driver
@@ -523,7 +524,8 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         .await?;
         submit_label_add_form(driver).await?;
         find(driver, By::XPath("//*[contains(text(), 'severity=high')]")).await?;
-        assert_label_add_save_preserved_item_page(driver).await?;
+        assert_label_add_preserved_item_page(driver).await?;
+        assert_item_label_update_delete_flow(driver).await?;
 
         driver
             .goto(app.url("/projects?project=demo"))
@@ -1310,6 +1312,54 @@ async fn seed_system_prompt_history(driver: &WebDriver) -> Result<(), Report> {
         .convert::<String>()
         .context("failed to read system prompt seed response")?;
     assert_that!(seeded).is_equal_to("ok".to_owned());
+    Ok(())
+}
+
+async fn assert_user_comment_create_flow(driver: &WebDriver) -> Result<(), Report> {
+    driver
+        .execute(
+            r#"
+            const form = document.querySelector('section.comments form');
+            const author = form?.querySelector('input[name="author_name"]');
+            const body = form?.querySelector('textarea[name="body"]');
+            if (!form || !author || !body) {
+                throw new Error('missing user comment form');
+            }
+            window.__dispatchCommentUrl = window.location.href;
+            author.value = 'Browser user';
+            author.dispatchEvent(new Event('input', { bubbles: true }));
+            body.value = 'Typed browser comment';
+            body.dispatchEvent(new Event('input', { bubbles: true }));
+            form.requestSubmit();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to submit typed user comment")?;
+    find(
+        driver,
+        By::XPath(
+            "//section[contains(@class, 'comments')]//p[normalize-space()='Typed browser comment']",
+        ),
+    )
+    .await?;
+    let summary = driver
+        .execute(
+            r#"
+            const form = document.querySelector('section.comments form');
+            return [
+                `sameUrl=${window.location.href === window.__dispatchCommentUrl}`,
+                `authorReset=${form?.querySelector('input[name="author_name"]')?.value === ''}`,
+                `bodyReset=${form?.querySelector('textarea[name="body"]')?.value === ''}`,
+            ].join(';');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect typed user comment result")?
+        .convert::<String>()
+        .context("failed to read typed user comment summary")?;
+    assert_that!(summary).is_equal_to("sameUrl=true;authorReset=true;bodyReset=true".to_owned());
     Ok(())
 }
 
@@ -2906,8 +2956,12 @@ async fn assert_item_relationship_create_delete_flow(
         window.__dispatchRelationshipMarker = 'created';
         document.body.style.minHeight = '5000px';
         window.scrollTo(0, 1800);
-        form.querySelector('input[name="target_work_item_id"]').value = String(targetId);
-        form.querySelector('input[name="kind"]').value = 'is follow-up of';
+        const targetInput = form.querySelector('input[name="target_work_item_id"]');
+        const kindInput = form.querySelector('input[name="kind"]');
+        targetInput.value = String(targetId);
+        targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+        kindInput.value = 'is follow-up of';
+        kindInput.dispatchEvent(new Event('input', { bubbles: true }));
         form.requestSubmit();
     "#
     .replace("TARGET_ID", &target_id.to_string());
@@ -2953,6 +3007,24 @@ async fn assert_item_relationship_create_delete_flow(
         "marker=created;sameUrl=true;scrollKept=true;hasRow=true;hasRelated=true;hasKind=true;hasDirection=true;hasTitle=true"
             .to_owned(),
     );
+
+    driver
+        .execute(
+            r#"
+            const form = document.querySelector('.relationship-kind-form');
+            const input = form?.querySelector('input[name="kind"]');
+            if (!form || !input) {
+                throw new Error('missing relationship update form');
+            }
+            input.value = 'depends on';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            form.requestSubmit();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to submit relationship update form")?;
+    find(driver, By::XPath("//*[contains(text(), 'depends on')]")).await?;
 
     driver
         .execute(
@@ -3131,7 +3203,7 @@ async fn submit_label_add_form(driver: &WebDriver) -> Result<(), Report> {
     Ok(())
 }
 
-async fn assert_label_add_save_preserved_item_page(driver: &WebDriver) -> Result<(), Report> {
+async fn assert_label_add_preserved_item_page(driver: &WebDriver) -> Result<(), Report> {
     let summary = driver
         .execute(
             r#"
@@ -3146,10 +3218,87 @@ async fn assert_label_add_save_preserved_item_page(driver: &WebDriver) -> Result
             Vec::new(),
         )
         .await
-        .context("failed to inspect item label add background save")?
+        .context("failed to inspect typed item label add")?
         .convert::<String>()
-        .context("failed to read item label add background save summary")?;
+        .context("failed to read typed item label add summary")?;
     assert_that!(summary).is_equal_to("marker=alive;sameUrl=true;scrollKept=true".to_owned());
+    Ok(())
+}
+
+async fn assert_item_label_update_delete_flow(driver: &WebDriver) -> Result<(), Report> {
+    driver
+        .execute(
+            r#"
+            const row = Array.from(document.querySelectorAll('.label-row'))
+                .find(row => row.querySelector('.label-chip')?.textContent?.trim() === 'severity=high');
+            const form = row?.querySelector('form:not([action$="/delete"])');
+            const value = form?.querySelector('input[name="value"]');
+            if (!form || !value) {
+                throw new Error('missing label update form');
+            }
+            window.__dispatchLabelMutationUrl = window.location.href;
+            value.value = 'critical';
+            value.dispatchEvent(new Event('input', { bubbles: true }));
+            form.requestSubmit();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to submit typed label update")?;
+    find(
+        driver,
+        By::XPath("//*[contains(text(), 'severity=critical')]"),
+    )
+    .await?;
+    let same_url = driver
+        .execute(
+            "return window.location.href === window.__dispatchLabelMutationUrl;",
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect typed label update navigation")?
+        .convert::<bool>()
+        .context("failed to read typed label update navigation result")?;
+    assert_that!(same_url).is_true();
+
+    driver
+        .execute(
+            r#"
+            const row = Array.from(document.querySelectorAll('.label-row'))
+                .find(row => row.querySelector('.label-chip')?.textContent?.trim() === 'severity=critical');
+            const form = row?.querySelector('form[action$="/delete"]');
+            if (!form) {
+                throw new Error('missing label delete form');
+            }
+            form.requestSubmit();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to submit typed label delete")?;
+    let deleted = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 5000;
+            const inspect = () => {
+                const labels = Array.from(document.querySelectorAll('.label-chip'))
+                    .map(label => label.textContent?.trim());
+                if (!labels.includes('severity=critical') || Date.now() > deadline) {
+                    done(!labels.includes('severity=critical'));
+                    return;
+                }
+                setTimeout(inspect, 100);
+            };
+            inspect();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to wait for typed label deletion")?
+        .convert::<bool>()
+        .context("failed to read typed label deletion result")?;
+    assert_that!(deleted).is_true();
     Ok(())
 }
 
@@ -3200,6 +3349,7 @@ async fn assert_state_label_dropdown_and_move(driver: &WebDriver) -> Result<(), 
             document.body.style.minHeight = '5000px';
             window.scrollTo(0, 1600);
             valueSelect.value = 'done';
+            valueSelect.dispatchEvent(new Event('change', { bubbles: true }));
             form.requestSubmit();
             "#,
             Vec::new(),
@@ -3221,9 +3371,9 @@ async fn assert_state_label_dropdown_and_move(driver: &WebDriver) -> Result<(), 
             Vec::new(),
         )
         .await
-        .context("failed to inspect item label background save")?
+        .context("failed to inspect typed item state update")?
         .convert::<String>()
-        .context("failed to read item label background save summary")?;
+        .context("failed to read typed item state update summary")?;
     assert_that!(save_summary).is_equal_to("marker=alive;sameUrl=true;scrollKept=true".to_owned());
     Ok(())
 }

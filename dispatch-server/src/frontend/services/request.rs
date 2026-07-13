@@ -1,8 +1,47 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
+#[cfg(not(feature = "ssr"))]
+use leptonic::components::prelude::{Toast, ToastTimeout, ToastVariant, Toasts};
 use leptos::prelude::ServerFnError;
+#[cfg(not(feature = "ssr"))]
+use leptos::prelude::*;
+#[cfg(not(feature = "ssr"))]
+use time::OffsetDateTime;
+#[cfg(not(feature = "ssr"))]
+use uuid::Uuid;
 
-use super::forms::RequestErrorNotifier;
+#[derive(Clone, Default)]
+struct RequestErrorNotifier {
+    #[cfg(not(feature = "ssr"))]
+    toasts: Option<Toasts>,
+}
+
+impl RequestErrorNotifier {
+    fn capture() -> Self {
+        Self {
+            #[cfg(not(feature = "ssr"))]
+            toasts: use_context::<Toasts>(),
+        }
+    }
+
+    fn show(&self, message: String) {
+        #[cfg(not(feature = "ssr"))]
+        if let Some(toasts) = &self.toasts {
+            let body = message;
+            toasts.push(Toast {
+                id: Uuid::new_v4(),
+                created_at: OffsetDateTime::now_utc(),
+                variant: ToastVariant::Error,
+                header: ViewFn::from(|| "Request failed"),
+                body: ViewFn::from(move || body.clone()),
+                timeout: ToastTimeout::DefaultDelay,
+            });
+        }
+
+        #[cfg(feature = "ssr")]
+        let _ = message;
+    }
+}
 
 pub(crate) type ServiceFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, ServerFnError>> + Send + 'static>>;

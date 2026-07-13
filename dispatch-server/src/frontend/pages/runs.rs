@@ -13,7 +13,7 @@ use leptos::prelude::*;
 use leptos_meta::Title;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunsPage {
     pub projects: Vec<ProjectView>,
     pub active_project_names: Vec<String>,
@@ -25,14 +25,14 @@ pub struct RunsPage {
     pub codex_status: CodexAppServerStatusView,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunsSection {
     pub automation_status: AutomationStatusView,
     pub automation_running: bool,
     pub run_sessions: Vec<BoardRunSessionView>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BoardRunSessionView {
     pub run: AgentRunView,
     pub developer_instructions: Option<String>,

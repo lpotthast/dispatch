@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use leptos_use::storage::{UseStorageOptions, use_local_storage_with_options};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 struct LocalStorageEntries<T> {
     values: HashMap<String, T>,
 }
@@ -18,18 +18,22 @@ impl<T> Default for LocalStorageEntries<T> {
     }
 }
 
-impl<T> PartialEq for LocalStorageEntries<T>
+impl<T> LocalStorageEntries<T>
 where
-    T: Serialize,
+    T: PartialEq,
 {
-    fn eq(&self, other: &Self) -> bool {
-        serde_json::to_string(self).ok() == serde_json::to_string(other).ok()
+    fn insert(&mut self, key: String, value: T) -> bool {
+        if self.values.get(&key) == Some(&value) {
+            return false;
+        }
+        self.values.insert(key, value);
+        true
     }
 }
 
 pub(super) struct LocalStorageCache<T>
 where
-    T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+    T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     entries: Signal<LocalStorageEntries<T>>,
     set_entries: WriteSignal<LocalStorageEntries<T>>,
@@ -37,7 +41,7 @@ where
 
 impl<T> Clone for LocalStorageCache<T>
 where
-    T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+    T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         *self
@@ -45,13 +49,13 @@ where
 }
 
 impl<T> Copy for LocalStorageCache<T> where
-    T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static
+    T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static
 {
 }
 
 impl<T> LocalStorageCache<T>
 where
-    T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+    T: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
     pub(super) fn persistent(storage_key: &'static str) -> Self {
         let (entries, set_entries, _) =
@@ -89,16 +93,28 @@ where
         let Ok(key) = serde_json::to_string(key) else {
             return;
         };
-        let unchanged = self.entries.with_untracked(|entries| {
-            entries.values.get(&key).is_some_and(|current| {
-                serde_json::to_string(current).ok() == serde_json::to_string(value).ok()
-            })
-        });
+        let unchanged = self
+            .entries
+            .with_untracked(|entries| entries.values.get(&key) == Some(value));
         if unchanged {
             return;
         }
         self.set_entries.update(|entries| {
-            entries.values.insert(key, value.clone());
+            entries.insert(key, value.clone());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalStorageEntries;
+
+    #[test]
+    fn cache_entries_ignore_unchanged_values() {
+        let mut entries = LocalStorageEntries::default();
+
+        assert!(entries.insert("project".to_owned(), 1));
+        assert!(!entries.insert("project".to_owned(), 1));
+        assert_eq!(entries.values.get("project"), Some(&1));
     }
 }

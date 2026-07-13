@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 const BOARD_ITEMS_REFRESH_INTERVAL_MS: u64 = 30_000;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BoardPage {
     pub projects: Vec<ProjectView>,
     pub active_project_names: Vec<String>,
@@ -63,7 +63,7 @@ pub struct BoardPage {
     pub runtime: RuntimeConfigView,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BoardItemsSection {
     pub items: Vec<WorkItemView>,
     pub swim_lanes: Vec<SwimLaneView>,
@@ -71,7 +71,7 @@ pub struct BoardItemsSection {
     pub misconfigured_item_count: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RuntimeConfigView {
     pub database_path: String,
     pub database_directory: String,

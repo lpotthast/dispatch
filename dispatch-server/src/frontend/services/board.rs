@@ -60,6 +60,11 @@ impl BoardService {
     ) -> Result<BoardPage, ServerFnError> {
         let key = selected_project.clone();
         let page = self.load_page.execute(selected_project).await?;
+        if let (Some(cache), Some((project, section))) =
+            (self.items_cache, board_items_section_from_page(&page))
+        {
+            cache.store(&project, &section);
+        }
         if let Some(cache) = self.page_cache {
             cache.store(&key, &page);
         }
@@ -85,6 +90,18 @@ impl BoardService {
         }
         Ok(items)
     }
+}
+
+fn board_items_section_from_page(page: &BoardPage) -> Option<(String, BoardItemsSection)> {
+    Some((
+        page.selected_project.clone()?,
+        BoardItemsSection {
+            items: page.items.clone(),
+            swim_lanes: page.swim_lanes.clone(),
+            work_item_states: page.work_item_states.clone(),
+            misconfigured_item_count: page.misconfigured_item_count,
+        },
+    ))
 }
 
 #[server(prefix = "/leptos")]

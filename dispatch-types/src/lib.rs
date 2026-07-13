@@ -134,7 +134,7 @@ pub struct ProjectGitStatusView {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct WorkspaceEditorView {
     pub target: String,
     pub label: String,
@@ -149,7 +149,7 @@ pub struct ProjectMemoryView {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProjectMemoryEventView {
     pub id: i64,
     pub project_id: i64,
@@ -184,7 +184,7 @@ pub struct ProjectSystemPromptView {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ProjectSystemPromptEventView {
     pub id: i64,
     pub project_id: i64,
@@ -210,7 +210,7 @@ pub struct ProjectSystemPromptCompactionView {
     pub deleted_events: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct PersonalityView {
     pub id: i64,
     pub project_id: i64,
@@ -220,7 +220,7 @@ pub struct PersonalityView {
     pub updated_at: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentToolName {
     Codex,
@@ -375,7 +375,7 @@ impl FromStr for CodexAgentModel {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AgentToolView {
     pub id: i64,
     pub tool_name: AgentToolName,
@@ -387,7 +387,7 @@ pub struct AgentToolView {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct CodexAppServerStatusView {
     pub available: bool,
     pub usable: bool,
@@ -408,7 +408,7 @@ pub struct CodexAppServerStatusView {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct CodexAuthSetupView {
     pub codex_home_path: String,
     pub codex_config_path: String,
@@ -417,14 +417,14 @@ pub struct CodexAuthSetupView {
     pub api_key_instruction: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct CodexPreconditionView {
     pub name: String,
     pub ok: bool,
     pub message: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct CodexRateLimitView {
     pub label: String,
     pub plan_type: Option<String>,
@@ -444,7 +444,7 @@ pub struct CodexRateLimitView {
     pub reached_type: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct CodexUsageSummaryView {
     pub lifetime_tokens: Option<i64>,
     pub peak_daily_tokens: Option<i64>,
@@ -642,7 +642,7 @@ impl FromStr for RevertStrategy {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ProjectSettingsView {
     pub id: i64,
     pub project_id: i64,
@@ -825,7 +825,7 @@ fn label_presence_selector(label_key: &str) -> Condition {
     })])
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkItemView {
     pub id: i64,
     pub project_id: i64,
@@ -846,14 +846,14 @@ pub struct WorkItemView {
     pub comment_count: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkItemClaimSourceView {
     pub run_id: i64,
     pub trigger_id: Option<i64>,
     pub trigger_name: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkItemLabelView {
     pub id: i64,
     pub project_id: i64,
@@ -886,7 +886,7 @@ impl fmt::Display for WorkItemRelationshipDirection {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkItemRelationshipItemSummary {
     pub id: i64,
     pub title: String,
@@ -894,7 +894,7 @@ pub struct WorkItemRelationshipItemSummary {
     pub version: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkItemRelationshipView {
     pub id: i64,
     pub project_id: i64,
@@ -907,13 +907,13 @@ pub struct WorkItemRelationshipView {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkItemRelationshipListEntry {
     pub relationship: WorkItemRelationshipView,
     pub direction: WorkItemRelationshipDirection,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ProjectLabelView {
     pub key: String,
     pub value: Option<String>,
@@ -981,7 +981,7 @@ impl FromStr for SwimLaneItemOrder {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SwimLaneView {
     pub id: i64,
     pub project_id: i64,
@@ -995,7 +995,7 @@ pub struct SwimLaneView {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkItemStateView {
     pub id: i64,
     pub project_id: i64,
@@ -1155,7 +1155,7 @@ impl FromStr for AuthorType {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CommentView {
     pub id: i64,
     pub work_item_id: i64,
@@ -1342,7 +1342,7 @@ impl FromStr for AgentRunCleanupStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AgentRunView {
     pub id: i64,
     pub project_id: i64,
@@ -1387,7 +1387,7 @@ pub struct AgentRunTokenUsageView {
     pub total_tokens: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunLogView {
     pub run: AgentRunView,
     #[serde(default)]
@@ -1448,14 +1448,14 @@ impl fmt::Display for AgentRunOutputKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ProjectMemoryEventRefView {
     pub event_id: i64,
     pub available: bool,
     pub created_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AutomationStatusView {
     pub project: String,
     pub settings: ProjectSettingsView,

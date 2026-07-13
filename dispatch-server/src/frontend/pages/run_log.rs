@@ -16,7 +16,7 @@ use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunLogPage {
     pub projects: Vec<ProjectView>,
     pub active_project_names: Vec<String>,

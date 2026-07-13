@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 const CODEX_STATUS_PAGE_REFRESH_INTERVAL_MS: u64 = 5 * 60 * 1000;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CodexStatusPage {
     pub projects: Vec<ProjectView>,
     pub active_project_names: Vec<String>,

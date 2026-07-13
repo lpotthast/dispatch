@@ -13,7 +13,7 @@ use leptos::prelude::*;
 use leptos_meta::Title;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ApiDocsPage {
     pub projects: Vec<ProjectView>,
     pub active_project_names: Vec<String>,

@@ -69,6 +69,11 @@ impl RunService {
     ) -> Result<RunsPage, ServerFnError> {
         let key = selected_project.clone();
         let page = self.load_page.execute(selected_project).await?;
+        if let (Some(cache), Some((project, section))) =
+            (self.section_cache, runs_section_from_page(&page))
+        {
+            cache.store(&project, &section);
+        }
         if let Some(cache) = self.page_cache {
             cache.store(&key, &page);
         }
@@ -120,6 +125,17 @@ impl RunService {
         }
         Ok(log)
     }
+}
+
+fn runs_section_from_page(page: &RunsPage) -> Option<(String, RunsSection)> {
+    Some((
+        page.selected_project.clone()?,
+        RunsSection {
+            automation_status: page.automation_status.clone()?,
+            automation_running: page.automation_running,
+            run_sessions: page.run_sessions.clone(),
+        },
+    ))
 }
 
 #[server(prefix = "/leptos")]

@@ -14,7 +14,7 @@ use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ItemPage {
     pub projects: Vec<ProjectView>,
     pub active_project_names: Vec<String>,
@@ -94,7 +94,11 @@ pub fn PageItem() -> impl IntoView {
             {topbar}
             <main class="page-shell item-page">
                 {move || {
-                    result.value.get().map(item_content).unwrap_or_else(|| {
+                    result
+                        .value
+                        .get()
+                        .map(|page| item_content(page, result.refresh))
+                        .unwrap_or_else(|| {
                         view! {
                             <section class="item-header">
                                 <a class="item-board-link" href=board_href.clone()>"Board"</a>
@@ -110,6 +114,8 @@ pub fn PageItem() -> impl IntoView {
 }
 
 mod content {
+    use std::future::Future;
+
     use crate::{
         frontend::{
             ItemPage,
@@ -118,11 +124,13 @@ mod content {
                 provide_work_item_states_context, run_token_usage_label, state_label,
             },
             crudkit::{crudkit_i64_id, work_items_crudkit_config_for_view},
-            services::background_form_submit,
+            services::item_service,
         },
         shared::view_models::{
-            AUTOMATION_BLOCKED_LABEL_KEY, AgentRunView, AuthorType, DEFAULT_STATE_LABEL,
-            FEEDBACK_REQUESTED_LABEL_KEY, ProjectLabelView, STATE_LABEL_KEY, WorkItemLabelView,
+            AUTOMATION_BLOCKED_LABEL_KEY, AddCommentRequest, AgentRunView, AuthorType,
+            CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest, DEFAULT_STATE_LABEL,
+            FEEDBACK_REQUESTED_LABEL_KEY, ProjectLabelView, STATE_LABEL_KEY,
+            UpdateWorkItemLabelRequest, UpdateWorkItemRelationshipRequest, WorkItemLabelView,
             WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
             WorkItemRelationshipListEntry, WorkItemStateView, WorkItemView,
         },
@@ -135,7 +143,7 @@ mod content {
     use leptos::prelude::*;
     use leptos_router::{NavigateOptions, hooks::use_navigate};
 
-    pub(crate) fn item_content(page: ItemPage) -> AnyView {
+    pub(crate) fn item_content(page: ItemPage, refresh: Callback<()>) -> AnyView {
         let ItemPage {
             projects: _,
             active_project_names: _,
@@ -194,7 +202,34 @@ mod content {
                 />
             </div>
         };
-        let comment_submit = background_form_submit(true);
+        let (comment_author, set_comment_author) = signal(String::new());
+        let (comment_body, set_comment_body) = signal(String::new());
+        let service = item_service();
+        let project_for_comment = project.clone();
+        let comment_mutation = mutation_action(
+            refresh,
+            move || {
+                set_comment_author.set(String::new());
+                set_comment_body.set(String::new());
+            },
+            move |request: AddCommentRequest| {
+                let service = service.clone();
+                let project = project_for_comment.clone();
+                async move { service.add_comment(project, item_id, request).await }
+            },
+        );
+        let comment_pending = comment_mutation.pending();
+        let comment_submit = move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if comment_pending.get_untracked() {
+                return;
+            }
+            comment_mutation.dispatch(AddCommentRequest {
+                author_type: AuthorType::User,
+                author_name: Some(comment_author.get_untracked()),
+                body: comment_body.get_untracked(),
+            });
+        };
         let claim = item
             .claimed_by
             .clone()
@@ -219,8 +254,8 @@ mod content {
                 }
             })
             .collect::<Vec<_>>();
-        let labels = item_labels_view(&project, &item, label_suggestions);
-        let relationship_views = item_relationships_view(&project, &item, relationships);
+        let labels = item_labels_view(&project, &item, label_suggestions, refresh);
+        let relationship_views = item_relationships_view(&project, &item, relationships, refresh);
 
         view! {
             <>
@@ -257,14 +292,57 @@ mod content {
                         <h2>"Comments"</h2>
                         {comment_views}
                         <form method="post" action=comment_action on:submit=comment_submit>
-                            <input name="author_name" placeholder="Your name"/>
-                            <textarea name="body" placeholder="Comment" required></textarea>
-                            <button>"Add comment"</button>
+                            <input
+                                name="author_name"
+                                placeholder="Your name"
+                                prop:value=move || comment_author.get()
+                                on:input=move |event| {
+                                    set_comment_author.set(event_target_value(&event));
+                                }
+                            />
+                            <textarea
+                                name="body"
+                                placeholder="Comment"
+                                required
+                                prop:value=move || comment_body.get()
+                                on:input=move |event| {
+                                    set_comment_body.set(event_target_value(&event));
+                                }
+                            ></textarea>
+                            <button disabled=move || comment_pending.get()>"Add comment"</button>
                         </form>
                     </section>
             </>
         }
         .into_any()
+    }
+
+    fn mutation_action<Input, Mutate, MutationFuture, OnSuccess>(
+        refresh: Callback<()>,
+        on_success: OnSuccess,
+        mutate: Mutate,
+    ) -> Action<Input, Result<(), ServerFnError>>
+    where
+        Input: Clone + 'static,
+        Mutate: Fn(Input) -> MutationFuture + Clone + 'static,
+        MutationFuture: Future<Output = Result<(), ServerFnError>> + 'static,
+        OnSuccess: Fn() + 'static,
+    {
+        let action = Action::new_local(move |input: &Input| {
+            let input = input.clone();
+            let mutate = mutate.clone();
+            async move { mutate(input).await }
+        });
+        Effect::new(move |_| {
+            let succeeded = action
+                .value()
+                .with(|result| result.as_ref().is_some_and(Result::is_ok));
+            if succeeded {
+                on_success();
+                refresh.run(());
+            }
+        });
+        action
     }
 
     fn without_crudkit_field<F: TypeErasedField>(
@@ -338,16 +416,47 @@ mod content {
         project: &str,
         item: &WorkItemView,
         relationships: Vec<WorkItemRelationshipListEntry>,
+        refresh: Callback<()>,
     ) -> AnyView {
         let add_action = format!(
             "/projects/{}/items/{}/relationships",
             encode_path(project),
             item.id
         );
-        let add_submit = background_form_submit(true);
+        let (target_item_id, set_target_item_id) = signal(String::new());
+        let (relationship_kind, set_relationship_kind) = signal(String::new());
+        let service = item_service();
+        let project_for_add = project.to_owned();
+        let item_id = item.id;
+        let add_mutation = mutation_action(
+            refresh,
+            move || {
+                set_target_item_id.set(String::new());
+                set_relationship_kind.set(String::new());
+            },
+            move |request: CreateWorkItemRelationshipRequest| {
+                let service = service.clone();
+                let project = project_for_add.clone();
+                async move { service.add_relationship(project, item_id, request).await }
+            },
+        );
+        let add_pending = add_mutation.pending();
+        let add_submit = move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if add_pending.get_untracked() {
+                return;
+            }
+            let Ok(target_work_item_id) = target_item_id.get_untracked().parse() else {
+                return;
+            };
+            add_mutation.dispatch(CreateWorkItemRelationshipRequest {
+                target_work_item_id,
+                kind: relationship_kind.get_untracked(),
+            });
+        };
         let rows = relationships
             .into_iter()
-            .map(|entry| item_relationship_row(project, item.id, entry))
+            .map(|entry| item_relationship_row(project, item.id, entry, refresh))
             .collect::<Vec<_>>();
         let empty = rows.is_empty().then(|| {
             view! { <p class="muted">"No relationships"</p> }
@@ -367,9 +476,21 @@ mod content {
                     name="target_work_item_id"
                     placeholder="target item id"
                     required
+                    prop:value=move || target_item_id.get()
+                    on:input=move |event| {
+                        set_target_item_id.set(event_target_value(&event));
+                    }
                 />
-                <input name="kind" placeholder="kind" required/>
-                <button>"Add relationship"</button>
+                <input
+                    name="kind"
+                    placeholder="kind"
+                    required
+                    prop:value=move || relationship_kind.get()
+                    on:input=move |event| {
+                        set_relationship_kind.set(event_target_value(&event));
+                    }
+                />
+                <button disabled=move || add_pending.get()>"Add relationship"</button>
             </form>
         </section>
     }
@@ -380,26 +501,73 @@ mod content {
         project: &str,
         item_id: i64,
         entry: WorkItemRelationshipListEntry,
+        refresh: Callback<()>,
     ) -> impl IntoView + 'static {
         let relationship = entry.relationship;
         let related = match entry.direction {
             WorkItemRelationshipDirection::Outgoing => relationship.target.clone(),
             WorkItemRelationshipDirection::Incoming => relationship.source.clone(),
         };
-        let update_action = format!(
+        let update_form_action = format!(
             "/projects/{}/items/{}/relationships/{}/update",
             encode_path(project),
             item_id,
             relationship.id
         );
-        let delete_action = format!(
+        let delete_form_action = format!(
             "/projects/{}/items/{}/relationships/{}/delete",
             encode_path(project),
             item_id,
             relationship.id
         );
-        let update_submit = background_form_submit(false);
-        let delete_submit = background_form_submit(false);
+        let (kind, set_kind) = signal(relationship.kind.clone());
+        let service = item_service();
+        let delete_service = service.clone();
+        let relationship_id = relationship.id;
+        let project_for_update = project.to_owned();
+        let project_for_delete = project.to_owned();
+        let update_mutation = mutation_action(
+            refresh,
+            || {},
+            move |request: UpdateWorkItemRelationshipRequest| {
+                let service = service.clone();
+                let project = project_for_update.clone();
+                async move {
+                    service
+                        .update_relationship(project, item_id, relationship_id, request)
+                        .await
+                }
+            },
+        );
+        let update_pending = update_mutation.pending();
+        let update_submit = move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if !update_pending.get_untracked() {
+                update_mutation.dispatch(UpdateWorkItemRelationshipRequest {
+                    kind: kind.get_untracked(),
+                });
+            }
+        };
+        let delete_mutation = mutation_action(
+            refresh,
+            || {},
+            move |(): ()| {
+                let service = delete_service.clone();
+                let project = project_for_delete.clone();
+                async move {
+                    service
+                        .delete_relationship(project, item_id, relationship_id)
+                        .await
+                }
+            },
+        );
+        let delete_pending = delete_mutation.pending();
+        let delete_submit = move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if !delete_pending.get_untracked() {
+                delete_mutation.dispatch(());
+            }
+        };
         let direction = entry.direction.to_string();
         let related_href = item_href(project, related.id);
         let source_link = relationship_endpoint_link(project, &relationship.source);
@@ -420,12 +588,17 @@ mod content {
                         "#"{related.id} " [" {related_state} "] " {related.title}
                     </a>
                 </div>
-                <form method="post" action=update_action class="relationship-kind-form" on:submit=update_submit>
-                    <input name="kind" value=relationship.kind required/>
-                    <button>"Update"</button>
+                <form method="post" action=update_form_action class="relationship-kind-form" on:submit=update_submit>
+                    <input
+                        name="kind"
+                        required
+                        prop:value=move || kind.get()
+                        on:input=move |event| set_kind.set(event_target_value(&event))
+                    />
+                    <button disabled=move || update_pending.get()>"Update"</button>
                 </form>
-                <form method="post" action=delete_action on:submit=delete_submit>
-                    <button class="danger">"Delete"</button>
+                <form method="post" action=delete_form_action on:submit=delete_submit>
+                    <button class="danger" disabled=move || delete_pending.get()>"Delete"</button>
                 </form>
             </article>
         }
@@ -452,6 +625,7 @@ mod content {
         project: &str,
         item: &WorkItemView,
         suggestions: Vec<ProjectLabelView>,
+        refresh: Callback<()>,
     ) -> AnyView {
         let add_action = format!(
             "/projects/{}/items/{}/labels",
@@ -464,12 +638,43 @@ mod content {
             .expect("work item states context should be provided before rendering item labels");
         let state_suggestions = state_options.get_untracked();
         let state_suggestion_options = state_suggestion_options(&state_suggestions);
-        let add_submit = background_form_submit(true);
+        let (label_key, set_label_key) = signal(String::new());
+        let (label_value, set_label_value) = signal(String::new());
+        let service = item_service();
+        let project_for_add = project.to_owned();
+        let item_id = item.id;
+        let item_version = item.version;
+        let add_mutation = mutation_action(
+            refresh,
+            move || {
+                set_label_key.set(String::new());
+                set_label_value.set(String::new());
+            },
+            move |request: CreateWorkItemLabelRequest| {
+                let service = service.clone();
+                let project = project_for_add.clone();
+                async move {
+                    service
+                        .add_label(project, item_id, request, item_version)
+                        .await
+                }
+            },
+        );
+        let add_pending = add_mutation.pending();
+        let add_submit = move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if !add_pending.get_untracked() {
+                add_mutation.dispatch(CreateWorkItemLabelRequest {
+                    key: label_key.get_untracked(),
+                    value: Some(label_value.get_untracked()),
+                });
+            }
+        };
         let rows = item
             .labels
             .iter()
             .cloned()
-            .map(|label| item_label_row(project, item, label, state_options))
+            .map(|label| item_label_row(project, item, label, state_options, refresh))
             .collect::<Vec<_>>();
 
         view! {
@@ -485,13 +690,17 @@ mod content {
                         list="label-key-suggestions"
                         placeholder="key"
                         required
+                        prop:value=move || label_key.get()
+                        on:input=move |event| set_label_key.set(event_target_value(&event))
                     />
                     <input
                         name="value"
                         list="state-value-suggestions"
                         placeholder="value"
+                        prop:value=move || label_value.get()
+                        on:input=move |event| set_label_value.set(event_target_value(&event))
                     />
-                    <button>"Add label"</button>
+                    <button disabled=move || add_pending.get()>"Add label"</button>
                 </form>
             </section>
         }
@@ -503,9 +712,10 @@ mod content {
         item: &WorkItemView,
         label: WorkItemLabelView,
         work_item_states: ReadSignal<Vec<WorkItemStateView>>,
+        refresh: Callback<()>,
     ) -> impl IntoView + 'static {
         let is_state = label.key == STATE_LABEL_KEY;
-        let update_action = if is_state {
+        let update_form_action = if is_state {
             format!("/projects/{}/items/{}/move", encode_path(project), item.id)
         } else {
             format!(
@@ -515,19 +725,81 @@ mod content {
                 label.id
             )
         };
-        let delete_action = format!(
+        let delete_form_action = format!(
             "/projects/{}/items/{}/labels/{}/delete",
             encode_path(project),
             item.id,
             label.id
         );
-        let value = label.value.clone().unwrap_or_default();
+        let initial_value = label.value.clone().unwrap_or_default();
         let rendered = format_label(&label.key, label.value.as_deref());
         let can_delete = label.key != STATE_LABEL_KEY;
         let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
         let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;
-        let update_submit = background_form_submit(false);
-        let delete_submit = background_form_submit(false);
+        let (key, set_key) = signal(label.key.clone());
+        let (value, set_value) = signal(initial_value);
+        let service = item_service();
+        let delete_service = service.clone();
+        let project_for_update = project.to_owned();
+        let project_for_delete = project.to_owned();
+        let item_id = item.id;
+        let item_version = item.version;
+        let label_id = label.id;
+        let update_mutation = mutation_action(
+            refresh,
+            || {},
+            move |(key, value): (String, String)| {
+                let service = service.clone();
+                let project = project_for_update.clone();
+                async move {
+                    if is_state {
+                        service
+                            .move_item(project, item_id, value, item_version)
+                            .await
+                    } else {
+                        service
+                            .update_label(
+                                project,
+                                item_id,
+                                label_id,
+                                UpdateWorkItemLabelRequest {
+                                    key: Some(key),
+                                    value: Some(Some(value)),
+                                    expect_version: Some(item_version),
+                                },
+                            )
+                            .await
+                    }
+                }
+            },
+        );
+        let update_pending = update_mutation.pending();
+        let update_submit = move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if !update_pending.get_untracked() {
+                update_mutation.dispatch((key.get_untracked(), value.get_untracked()));
+            }
+        };
+        let delete_mutation = mutation_action(
+            refresh,
+            || {},
+            move |(): ()| {
+                let service = delete_service.clone();
+                let project = project_for_delete.clone();
+                async move {
+                    service
+                        .delete_label(project, item_id, label_id, item_version)
+                        .await
+                }
+            },
+        );
+        let delete_pending = delete_mutation.pending();
+        let delete_submit = move |event: leptos::ev::SubmitEvent| {
+            event.prevent_default();
+            if !delete_pending.get_untracked() {
+                delete_mutation.dispatch(());
+            }
+        };
 
         view! {
             <article class="label-row">
@@ -540,33 +812,46 @@ mod content {
                 </span>
                 <form
                     method="post"
-                    action=update_action
+                    action=update_form_action
                     class=if is_state { "state-label-form" } else { "" }
                     on:submit=update_submit
                 >
                     <input type="hidden" name="version" value=item.version.to_string()/>
                     {if is_state {
-                        let value = value.clone();
                         view! {
                             <input type="hidden" name="key" value=STATE_LABEL_KEY/>
-                            <select name="value" class="state-label-select" required>
-                                {move || state_label_option_views(work_item_states.get(), value.clone())}
+                            <select
+                                name="value"
+                                class="state-label-select"
+                                required
+                                on:change=move |event| set_value.set(event_target_value(&event))
+                            >
+                                {move || state_label_option_views(work_item_states.get(), value.get())}
                             </select>
                         }
                         .into_any()
                     } else {
                         view! {
-                            <input name="key" value=label.key required/>
-                            <input name="value" value=value/>
+                            <input
+                                name="key"
+                                required
+                                prop:value=move || key.get()
+                                on:input=move |event| set_key.set(event_target_value(&event))
+                            />
+                            <input
+                                name="value"
+                                prop:value=move || value.get()
+                                on:input=move |event| set_value.set(event_target_value(&event))
+                            />
                         }
                         .into_any()
                     }}
-                    <button>"Update"</button>
+                    <button disabled=move || update_pending.get()>"Update"</button>
                 </form>
                 {can_delete.then(|| view! {
-                    <form method="post" action=delete_action on:submit=delete_submit>
+                    <form method="post" action=delete_form_action on:submit=delete_submit>
                         <input type="hidden" name="version" value=item.version.to_string()/>
-                        <button class="danger">"Delete"</button>
+                        <button class="danger" disabled=move || delete_pending.get()>"Delete"</button>
                     </form>
                 })}
             </article>
