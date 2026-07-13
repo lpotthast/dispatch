@@ -39,18 +39,16 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
     }
 }
 
-pub(crate) fn refetch_on_live_event<T>(
-    resource: LocalResource<T>,
+pub(crate) fn refetch_on_live_event(
+    refresh: Callback<()>,
     should_refetch: impl Fn(&UiEvent) -> bool + 'static,
-) where
-    T: 'static,
-{
+) {
     if let Some(context) = use_context::<LiveEventContext>() {
         Effect::new(move |_| {
             if let Some(event) = context.latest_event.get()
                 && should_refetch(&event)
             {
-                resource.refetch();
+                refresh.run(());
             }
         });
     }

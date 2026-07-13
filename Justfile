@@ -3,7 +3,6 @@ set dotenv-load := true
 database := env_var_or_default("DISPATCH_DATABASE", env_var_or_default("HOME", ".") / ".dispatch/dispatch.sqlite3")
 bind := env_var_or_default("DISPATCH_BIND", "127.0.0.1:4000")
 project := env_var_or_default("DISPATCH_PROJECT", "demo")
-dispatch_cli_path := justfile_directory() / "dev-bin/dispatch"
 server_manifest := "dispatch-server/Cargo.toml"
 cli_manifest := "dispatch-cli/Cargo.toml"
 api_client_manifest := "dispatch-api-client/Cargo.toml"
@@ -68,16 +67,16 @@ verify: fmt test clippy
 verify-browser: verify browser-test
 
 run *args:
-    cargo run --manifest-path "{{server_manifest}}" -- {{args}}
+    DISPATCH_DEVELOPMENT=1 cargo run --manifest-path "{{server_manifest}}" -- {{args}}
 
 cli *args:
     cargo run -q --manifest-path "{{cli_manifest}}" -- {{args}}
 
 serve:
-    DISPATCH_CLI_PATH="{{dispatch_cli_path}}" cargo leptos --manifest-path "{{server_manifest}}" serve -- --database "{{database}}" --bind "{{bind}}"
+    DISPATCH_DEVELOPMENT=1 cargo leptos --manifest-path "{{server_manifest}}" serve -- --database "{{database}}" --bind "{{bind}}"
 
 serve-release:
-    DISPATCH_CLI_PATH="{{dispatch_cli_path}}" cargo leptos --manifest-path "{{server_manifest}}" serve --release -- --database "{{database}}" --bind "{{bind}}"
+    DISPATCH_DEVELOPMENT=1 cargo leptos --manifest-path "{{server_manifest}}" serve --release -- --database "{{database}}" --bind "{{bind}}"
 
 discover-tools:
     cargo run --manifest-path "{{server_manifest}}" -- --database "{{database}}" agent-tools discover

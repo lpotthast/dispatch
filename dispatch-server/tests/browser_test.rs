@@ -321,9 +321,10 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         assert_lane_add_button_count(driver, 2).await?;
         assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
             .await?;
-        assert_cached_frontend_route_revisit_avoids_loading(driver).await?;
+        assert_frontend_route_navigation_renders_page(driver).await?;
+        assert_service_get_results_use_local_storage(driver).await?;
         assert_crudkit_create_form_survives_live_event(driver).await?;
-        assert_request_error_toast_preserves_draft(driver).await?;
+        assert_request_error_toast_preserves_page_and_draft(driver).await?;
 
         driver
             .goto(app.url("/projects?project=demo"))
@@ -413,6 +414,7 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
             By::Css("[data-crudkit-leptos='automation-triggers'] .crud-nav"),
         )
         .await?;
+        find(driver, By::XPath("//*[contains(text(), 'refine-new')]")).await?;
         assert_source_contains(driver, "refine-new").await?;
 
         driver
@@ -530,6 +532,11 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         find(
             driver,
             By::Css("[data-crudkit-leptos='projects'] .crud-nav"),
+        )
+        .await?;
+        find(
+            driver,
+            By::XPath("//*[@data-crudkit-leptos='projects']//*[normalize-space()='Demo']"),
         )
         .await?;
         assert_source_contains(driver, "Demo").await?;
@@ -1614,9 +1621,7 @@ async fn assert_system_prompt_history_selector_behaviour(driver: &WebDriver) -> 
     Ok(())
 }
 
-async fn assert_cached_frontend_route_revisit_avoids_loading(
-    driver: &WebDriver,
-) -> Result<(), Report> {
+async fn assert_frontend_route_navigation_renders_page(driver: &WebDriver) -> Result<(), Report> {
     click(driver, By::Css(".top-nav a[href='/projects?project=demo']")).await?;
     find(
         driver,
@@ -1630,38 +1635,36 @@ async fn assert_cached_frontend_route_revisit_avoids_loading(
         .execute_async(
             r#"
             const done = arguments[0];
+            const reactiveWarnings = [];
+            const originalWarn = console.warn;
+            const restoreWarn = () => console.warn = originalWarn;
+            console.warn = (...args) => {
+                const message = args.map(String).join(' ');
+                if (message.includes('outside a reactive tracking context')) {
+                    reactiveWarnings.push(message);
+                }
+                originalWarn.apply(console, args);
+            };
             const link = document.querySelector(".top-nav a[href='/projects?project=demo']");
             if (!link) {
+                restoreWarn();
                 done('missing projects link');
                 return;
             }
-            const isLoadingFallback = () => {
-                const fallback = document.querySelector('main.page-shell > p.muted');
-                return (fallback?.textContent ?? '').trim() === 'Loading...';
-            };
-            let sawLoading = isLoadingFallback();
-            const observer = new MutationObserver(() => {
-                if (isLoadingFallback()) {
-                    sawLoading = true;
-                }
-            });
-            observer.observe(document.body, {
-                childList: true,
-                characterData: true,
-                subtree: true,
-            });
             link.click();
 
             const deadline = Date.now() + 5000;
             const check = () => {
                 if (document.querySelector("[data-crudkit-leptos='projects'] .crud-nav")) {
-                    observer.disconnect();
-                    done(`loading=${sawLoading}`);
+                    restoreWarn();
+                    done(reactiveWarnings.length === 0
+                        ? 'rendered'
+                        : `reactive-warning:${reactiveWarnings.join('\n')}`);
                     return;
                 }
                 if (Date.now() > deadline) {
-                    observer.disconnect();
-                    done(`timeout;loading=${sawLoading};url=${window.location.href}`);
+                    restoreWarn();
+                    done(`timeout;url=${window.location.href}`);
                     return;
                 }
                 setTimeout(check, 0);
@@ -1671,13 +1674,36 @@ async fn assert_cached_frontend_route_revisit_avoids_loading(
             Vec::new(),
         )
         .await
-        .context("failed to verify cached frontend route navigation")?
+        .context("failed to verify frontend route navigation")?
         .convert::<String>()
-        .context("failed to read cached route navigation result")?;
-    assert_that!(result).is_equal_to("loading=false".to_owned());
+        .context("failed to read frontend route navigation result")?;
+    assert_that!(result).is_equal_to("rendered".to_owned());
 
     click(driver, By::Css(".top-nav a[href='/?project=demo']")).await?;
     find(driver, By::Css("section.board")).await?;
+    Ok(())
+}
+
+async fn assert_service_get_results_use_local_storage(driver: &WebDriver) -> Result<(), Report> {
+    let result = driver
+        .execute(
+            r#"
+            const required = [
+                'dispatch.query.board.v1',
+                'dispatch.query.board-items.v1',
+                'dispatch.query.projects.v1',
+            ];
+            return required
+                .filter((key) => !localStorage.getItem(key))
+                .join(',');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect service GET local-storage caches")?
+        .convert::<String>()
+        .context("failed to read service GET local-storage cache result")?;
+    assert_that!(result).is_empty();
     Ok(())
 }
 
@@ -1759,7 +1785,9 @@ async fn assert_crudkit_create_form_survives_live_event(driver: &WebDriver) -> R
     Ok(())
 }
 
-async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Result<(), Report> {
+async fn assert_request_error_toast_preserves_page_and_draft(
+    driver: &WebDriver,
+) -> Result<(), Report> {
     let prepared = driver
         .execute_async(
             r#"
@@ -1799,11 +1827,15 @@ async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Resul
                 ) {
                     window.__dispatchFailBoardPageRequest = false;
                     window.__dispatchFailedFetches.push(url.href);
-                    return Promise.resolve(new Response('browser-test injected request failure', {
-                        status: 503,
-                        statusText: 'Browser Test Failure',
-                        headers: { 'content-type': 'text/plain' },
-                    }));
+                    return new Promise((resolve) => {
+                        window.__dispatchReleaseBoardPageRequest = () => {
+                            resolve(new Response('browser-test injected request failure', {
+                                status: 503,
+                                statusText: 'Browser Test Failure',
+                                headers: { 'content-type': 'text/plain' },
+                            }));
+                        };
+                    });
                 }
                 return originalFetch(input, init);
             };
@@ -1812,9 +1844,9 @@ async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Resul
             Vec::new(),
         )
         .await
-        .context("failed to prepare request-failure browser-test state")?
+        .context("failed to prepare page-request failure browser-test state")?
         .convert::<String>()
-        .context("failed to read request-failure preparation result")?;
+        .context("failed to read page-request failure preparation result")?;
     assert_that!(prepared).is_equal_to("ok".to_owned());
 
     click(
@@ -1852,20 +1884,56 @@ async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Resul
                     window.fetch = window.__dispatchOriginalFetch;
                 }
                 window.__dispatchFailBoardPageRequest = false;
+                window.__dispatchReleaseBoardPageRequest = undefined;
             };
+            let released = false;
             const check = () => {
                 const failedFetches = window.__dispatchFailedFetches ?? [];
                 const draftInput = editableField();
                 const toast = document.querySelector('leptonic-toast[data-variant="error"]');
                 const toastText = toast?.textContent ?? '';
-                const errorPage = document.querySelector('main.error');
+                const topbar = document.querySelector('header.app-topbar');
+                const brand = topbar?.querySelector('.brand');
+                const navLinks = topbar?.querySelectorAll('.top-nav a').length ?? 0;
+                const projectSwitcher = topbar?.querySelector('.project-switcher');
+                const codexStatus = topbar?.querySelector('.topbar-codex');
+                const automationStatus = topbar?.querySelector('.topbar-automation');
+                const pageShell = document.querySelector('main.page-shell');
                 const board = document.querySelector('section.board');
+                const pageLoading = Array.from(document.querySelectorAll('main.page-shell'))
+                    .some((page) => page.textContent.trim() === 'Loading...');
                 if (
+                    !released &&
                     failedFetches.length === 1 &&
-                    toastText.includes('Request failed') &&
-                    !errorPage &&
+                    topbar &&
+                    brand &&
+                    navLinks === 5 &&
+                    projectSwitcher &&
+                    codexStatus &&
+                    automationStatus &&
+                    pageShell &&
                     board &&
-                    draftInput?.value === expectedDraft
+                    !toast &&
+                    draftInput?.value === expectedDraft &&
+                    !pageLoading &&
+                    window.__dispatchReleaseBoardPageRequest
+                ) {
+                    released = true;
+                    window.__dispatchReleaseBoardPageRequest();
+                }
+                if (
+                    released &&
+                    toastText.includes('Request failed') &&
+                    topbar &&
+                    brand &&
+                    navLinks === 5 &&
+                    projectSwitcher &&
+                    codexStatus &&
+                    automationStatus &&
+                    pageShell &&
+                    board &&
+                    draftInput?.value === expectedDraft &&
+                    !pageLoading
                 ) {
                     restoreFetch();
                     done('ok');
@@ -1874,12 +1942,21 @@ async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Resul
                 if (Date.now() > deadline) {
                     const report = [
                         `failedFetches=${failedFetches.join(',')}`,
+                        `released=${released}`,
                         `toast=${toastText}`,
-                        `errorPage=${Boolean(errorPage)}`,
+                        `topbar=${Boolean(topbar)}`,
+                        `brand=${Boolean(brand)}`,
+                        `navLinks=${navLinks}`,
+                        `projectSwitcher=${Boolean(projectSwitcher)}`,
+                        `codexStatus=${Boolean(codexStatus)}`,
+                        `automationStatus=${Boolean(automationStatus)}`,
+                        `pageShell=${Boolean(pageShell)}`,
                         `board=${Boolean(board)}`,
                         `draft=${draftInput?.value ?? '<missing>'}`,
+                        `pageLoading=${pageLoading}`,
                         `url=${window.location.href}`,
                     ].join('; ');
+                    window.__dispatchReleaseBoardPageRequest?.();
                     restoreFetch();
                     done(report);
                     return;
@@ -1891,9 +1968,9 @@ async fn assert_request_error_toast_preserves_draft(driver: &WebDriver) -> Resul
             Vec::new(),
         )
         .await
-        .context("failed to verify request error toast behaviour")?
+        .context("failed to verify failed page requests are rendered")?
         .convert::<String>()
-        .context("failed to read request error toast result")?;
+        .context("failed to read failed page-request result")?;
     assert_that!(result).is_equal_to("ok".to_owned());
     driver
         .action_chain()

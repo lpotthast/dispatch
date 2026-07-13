@@ -480,7 +480,7 @@ async fn complete_started_automation_run(
             .await;
         }
     };
-    let dispatch_binary = match dispatch_cli_path() {
+    let dispatch_binary = match dispatch_cli_path().await {
         Ok(path) => path,
         Err(err) => {
             return fail_run(

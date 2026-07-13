@@ -95,7 +95,7 @@ impl fmt::Display for ParseEnumError {
 
 impl Error for ParseEnumError {}
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProjectView {
     pub id: i64,
     pub name: String,
@@ -125,7 +125,7 @@ pub struct ProjectView {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProjectGitStatusView {
     pub is_repository: bool,
     pub branch: Option<String>,

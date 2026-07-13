@@ -77,7 +77,7 @@ Generic label add, update, and delete operations reject the reserved `state` lab
 
 When Dispatch launches an agent, it:
 
-1. resolves an agent-facing CLI path;
+1. resolves the published `dispatch` CLI from `PATH`, or explicitly builds it from sources when `DISPATCH_DEVELOPMENT=1`; a missing CLI rejects the launch before Codex starts or work is claimed;
 2. prepends the CLI directory to `PATH`;
 3. sets `DISPATCH_API_URL`;
 4. sets `DISPATCH_PROJECT`;

@@ -146,19 +146,13 @@ Global flags:
 --agent <agent-id>
 ```
 
-## Development Shim
+## CLI Availability And Development Builds
 
-Before the CLI is installed, development uses the tracked shim:
+Published Dispatch installations must provide the standalone `dispatch` CLI as an executable on the server's `PATH`. Before Codex starts or an item is claimed, the server resolves that executable and runs `dispatch --help` to verify that it is the agent-facing relay rather than an unrelated binary with the same name. A missing, non-executable, broken, or incorrect CLI rejects the automation launch because an agent without it cannot read or update Dispatch state.
 
-```text
-dev-bin/dispatch
-```
+Repository development is explicit. `just serve` and `just serve-release` set `DISPATCH_DEVELOPMENT=1`, which means the sibling `dispatch-cli/Cargo.toml` source is expected to exist. Before each agent launch, the server runs Cargo's build and freshness check outside the agent sandbox, then puts the resulting executable on the agent's `PATH`. `CARGO_TARGET_DIR`, then `DISPATCH_CLI_TARGET_DIR`, can override the default stable temporary `dispatch-cli-target` build directory.
 
-The shim runs the root-level `dispatch-cli` crate with Cargo. Dispatch development mode can configure this path as the agent-facing CLI and prepend `dev-bin` to `PATH`.
-
-The shim is tracked in Git so automation prompts and local development do not depend on an ignored file.
-
-When `CARGO_TARGET_DIR` is not already set, the shim builds into a writable temporary target directory. The shim is a Cargo launcher, not the installed CLI binary, so Cargo otherwise writes build outputs and lock files under the Dispatch source checkout. Dispatch-launched Codex agents run with Codex app-server's workspace-write sandbox rooted at the target project workspace; they should not need write access to the Dispatch checkout just to call the API relay. `DISPATCH_CLI_TARGET_DIR` can override the shim's default temp target directory.
+Development runs share that target executable. If CLI source changes between launches, the next launch may rebuild and replace the executable path that an already-running agent uses for later `dispatch` invocations. This should be rare and is an accepted development-only limitation; Dispatch does not currently create a unique CLI copy per run.
 
 ## Server Operator CLI
 

@@ -104,7 +104,16 @@ Automation rule administration should show and edit each work-consuming rule's m
 ## Live Updates
 
 The UI uses project and item event streams to refresh workflow state. Event streams are hints for refreshing the current view; persisted records remain the source of truth.
-Hydrated route page data is cached by route context. Revisiting a frontend route should render cached content immediately and refresh asynchronously instead of replacing the page with the loading fallback.
+
+Route components render a stable page shell and top bar immediately. Navigation, the route heading, and any data-independent controls must not be hidden behind a page-level resource, suspense boundary, or `Loading...` fallback. Controls that need server state render from route information, cached values, or safe defaults and then update reactively. A route must never replace its entire visible page with a loading state.
+
+Typed server-function responses flow into reactive signals that update only the elements and panels which depend on the returned data. Refreshes keep already rendered content mounted until replacement data is available. Frontend services surface request failures through brief Leptonic error toasts; a failure does not replace or unmount the route.
+
+Idempotent read requests exposed by frontend services are cached by their focused service. Persistent browser caches use `leptos_use` local-storage signals, are keyed by the request input, and retain typed DTOs. Route rendering reads a cached value synchronously and then revalidates it in the background; a successful response updates the cache and only the dependent reactive DOM. Mutation requests are not cached. Serialized response strings and application JSON blobs are not retained as the in-memory cache representation.
+
+Each operator route has its own module under `dispatch-server/src/frontend/pages/`. Route modules own their page response type, cached query signal, and page-specific reactive rendering, but the query does not gate the route shell or top bar. Focused, context-provided services own server functions, browser request clients, local-storage caches, and transport details; pages load or mutate backend state only through typed service methods. Service request implementations are replaceable for component and page tests.
+
+The application module owns only the shell and root providers. Genuinely shared UI behavior is split into focused modules under `dispatch-server/src/frontend/components/` rather than accumulating in the application module.
 
 ## Browser Coverage
 

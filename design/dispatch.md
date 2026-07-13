@@ -15,7 +15,7 @@ Dispatch coordinates software work across a local project, a server-owned work i
 - [architecture.md](architecture.md): process boundaries, crate layout, storage ownership, and CrudKit usage.
 - [data-model.md](data-model.md): projects, work items, comments, runs, automation rules, events, and settings.
 - [api.md](api.md): custom JSON endpoints, UI form endpoints, streaming endpoints, and CrudKit boundaries.
-- [cli.md](cli.md): standalone CLI contract, context resolution, commands, and development shim.
+- [cli.md](cli.md): standalone CLI contract, context resolution, commands, and development or published resolution.
 - [workflows.md](workflows.md): claim, progress, finish, release, automation launch, automation rules, stale claims, and run logs.
 - [ui.md](ui.md): Leptos routes, admin surfaces, live workflow visibility, and browser coverage.
 - [branding.md](branding.md): application icon concept, source prompt, assets, and iteration guidance.
@@ -30,7 +30,6 @@ dispatch-types/        shared request and response DTOs
 dispatch-api-client/   typed HTTP client
 dispatch-cli/          standalone agent-facing CLI binary named dispatch
 crudkit/               local CrudKit submodule dependency
-dev-bin/dispatch       tracked development shim for the agent-facing CLI
 ```
 
 The absence of a root workspace keeps the Dispatch crates independent from the `crudkit/` submodule workspace and avoids workspace dependency inheritance across repository boundaries. Repository-level `just` recipes call each crate with explicit `--manifest-path` values.

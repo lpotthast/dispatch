@@ -28,6 +28,12 @@ The server crate contains:
 
 The operator CLI in this crate may accept `--database` because it is part of the trusted server surface. It is not the agent-facing CLI.
 
+The hydrated frontend is organized by route under `dispatch-server/src/frontend/pages/`, with one module per operator page. The root application module only mounts the application shell and root providers. Shared UI behavior lives in focused modules under `frontend/components/`.
+
+Backend interaction is owned by focused service objects under `frontend/services/`. Production services wrap server functions and other transport details, are provided once from the root layout through Leptos context, and expose typed domain-oriented methods to pages and shared components. Their request callbacks are replaceable so consumers can be tested with in-process mocks. Route modules may own their page response types, resources, and rendering, but they do not define or invoke server functions or browser request clients directly.
+
+Cross-route browser caches are focused services provided through Leptos context and contain typed backend DTOs, not rendered views, complete page response objects, or serialized payloads. Persistence through browser local storage is a service boundary: values are decoded immediately into the typed reactive cache before consumers access them.
+
 ### `dispatch-types`
 
 This crate defines shared transport types for the API client and server. Examples include project views, work item views, comments, agent runs, automation rules, workflow request payloads, and shared enum values.
@@ -79,6 +85,6 @@ just browser-test
 
 `just serve` runs `cargo leptos serve`, which builds once and starts the server with the repository-local database and default bind address. It is not a watcher and does not restart the backend on source changes. The running server still serves frontend artifacts from the server crate's shared `target/site` output directory. Because Dispatch disables hashed frontend filenames, later `cargo leptos` builds, browser-test runs, or other UI verification commands can replace `/pkg/dispatch.js`, `/pkg/dispatch_bg.wasm`, and `/pkg/dispatch.css`; browser refreshes or navigations may then show newer frontend code while the already-running backend process remains unchanged.
 
-`dev-bin/dispatch` is the tracked development shim that runs `dispatch-cli` before the binary is installed globally.
+`just serve` explicitly sets `DISPATCH_DEVELOPMENT=1`. In that mode, automation builds the sibling `dispatch-cli` source crate before each agent launch and gives the resulting executable to the sandboxed agent. A published server does not assume source files exist: it requires an executable published `dispatch` CLI on `PATH` and rejects the automation launch before Codex starts or work is claimed when the CLI is unavailable.
 
 Server tracing writes pretty logs to stderr. The default target filter is `info,tokio=warn,runtime=warn,sqlx=warn`, which hides SQLx query noise while keeping warnings visible. Set `DISPATCH_SQLX_LOG=info` to opt SQLx query logs back in, or set `DISPATCH_LOG` to a full `tracing_subscriber::filter::Targets` directive list such as `debug,sqlx=warn`.

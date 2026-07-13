@@ -57,6 +57,7 @@ ssr = [
     "dep:axum",
     "dep:axum-macros",
     "dep:clap",
+    "dep:codee",
     "dep:codex-app-server-sdk",
     "dep:crudkit-core",
     "dep:crudkit-rs",
@@ -92,7 +93,7 @@ async-trait = { version = "0.1", optional = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
 axum-macros = { version = "0.5", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
-codee = { version = "0.3.5", optional = true }
+codee = { version = "0.3.5", features = ["json_serde"], optional = true }
 codex-app-server-sdk = { version = "0.5.1", optional = true }
 crudkit-core = { path = "../crudkit/crudkit-core", optional = true }
 crudkit-leptos = { path = "../crudkit/crudkit-leptos" }
@@ -105,7 +106,7 @@ htmd = { version = "0.5.4", optional = true }
 indexmap = { version = "2", features = ["serde"], optional = true }
 leptonic = { version = "0.5.0", git = "https://github.com/lpotthast/leptonic", branch = "migrate-to-leptos-0.8", features = ["tiptap"] }
 leptos = "0.8.19"
-leptos-use = { version = "0.18.3", default-features = false, features = ["use_websocket"], optional = true }
+leptos-use = { version = "0.18.3", default-features = false, features = ["storage", "use_websocket"], optional = true }
 leptos_axum = { version = "=0.8.7", optional = true }
 leptos_meta = "=0.8.5"
 leptos-routes = "0.4.1"

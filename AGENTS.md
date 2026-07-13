@@ -9,7 +9,7 @@ Start with `design/dispatch.md` for the system overview, core invariants, and do
 - `design/architecture.md`: process boundaries, crate responsibilities, storage ownership, and route classes.
 - `design/data-model.md`: projects, work items, comments, events, agent tools, agent runs, automation, and settings.
 - `design/api.md`: custom JSON endpoints, UI form endpoints, CrudKit boundaries, workflow semantics, and errors.
-- `design/cli.md`: agent-facing CLI contract, context resolution, commands, and development shim.
+- `design/cli.md`: agent-facing CLI contract, context resolution, commands, and development or published resolution.
 - `design/workflows.md`: claim, progress, finish, release, updates, automation launch, stale claims, run logs, and pull requests.
 - `design/ui.md`: Leptos routes, workflow surface, admin surfaces, project settings, live updates, and browser coverage.
 
@@ -23,7 +23,6 @@ Dispatch uses standalone root-level Rust 2024 crates and intentionally has no ro
 - `dispatch-types/`: shared request/response DTOs and enum types.
 - `dispatch-api-client/`: typed HTTP client for Dispatch JSON endpoints.
 - `dispatch-cli/`: standalone agent-facing `dispatch` CLI binary; it relays to a running server and must not open SQLite.
-- `dev-bin/dispatch`: tracked development shim that puts the CLI relay on `PATH` before installation.
 - `crudkit/`: Git submodule used as a local dependency; do not put Dispatch workflow rules there.
 - `design/`: authoritative product, workflow, UI, API, CLI, data-model, and architecture specifications for Dispatch.
 
@@ -43,7 +42,7 @@ Run commands from the repository root through `just`, which passes explicit `--m
 - `just browser-test`: run the ignored browser integration test; use `just browser-test-visible` for UI debugging.
 
 Server-local overrides: `DISPATCH_DATABASE`, `DISPATCH_BIND`, `DISPATCH_PROJECT`, and `DISPATCH_WORKSPACE_IDE`.
-Automation CLI override: `DISPATCH_CLI_PATH`.
+`just serve` sets `DISPATCH_DEVELOPMENT=1`, allowing automation to build the CLI from this source checkout. Published runs require the standalone `dispatch` CLI on `PATH`.
 
 ## Agent-Facing Contract
 
