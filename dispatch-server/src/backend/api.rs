@@ -732,6 +732,7 @@ mod tests {
                     ..Default::default()
                 },
             )),
+            codex_status_refresh: crate::backend::codex_app_server::CodexStatusRefresh::default(),
         };
         (temp, state, item.id)
     }

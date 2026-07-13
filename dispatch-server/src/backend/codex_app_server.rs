@@ -1,8 +1,9 @@
 //! Codex app-server readiness checks and Dispatch-managed runtime configuration.
 //!
 //! Dispatch distinguishes an app-server that can be started (`available`) from one whose account
-//! and usage state permit automation (`usable`). This module owns that readiness probe, the shared
-//! and per-project Codex homes, and the stdio launch configuration used by automation runs.
+//! and rate-limit state permit automation (`usable`). This module owns that readiness probe, the
+//! optional detailed usage probe, the shared and per-project Codex homes, and the owned WebSocket
+//! app-server processes used by probes and automation runs.
 //!
 //! The SDK currently exposes the account-related responses as opaque JSON objects. The private
 //! wire types below mirror the app-server schema so incompatible shape or field-type changes fail
@@ -19,7 +20,7 @@ use std::{
 };
 
 use codex_app_server_sdk::{
-    ClientError, Codex, CodexClient, StdioConfig,
+    ClientError, Codex, CodexClient, WsConfig,
     requests::{ClientInfo, GetAccountParams, InitializeParams},
 };
 use rootcause::{Result, prelude::*};
@@ -27,8 +28,16 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::{
-    sync::{RwLock, watch},
-    time::{MissedTickBehavior, timeout},
+    net::TcpListener,
+    process::Command,
+    sync::{Mutex, RwLock, oneshot},
+    task::JoinHandle,
+    time::{Instant, sleep, timeout},
+};
+use tokio_process_tools::{
+    Consumable, DEFAULT_MAX_BUFFERED_CHUNKS, DEFAULT_READ_CHUNK_SIZE, GracefulShutdown, Process,
+    ProcessStreamBuilder, WaitForCompletionResult, WriteCollectionOptions,
+    visitors::write::WriteChunks,
 };
 
 use crate::{
@@ -43,8 +52,12 @@ use crate::{
 };
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(14);
-const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const USAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const APP_SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const APP_SERVER_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const APP_SERVER_EXIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const APP_SERVER_LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const APP_SERVER_STATUS_LOG_FILE: &str = "status-app-server.log";
 // The SDK has no typed account-usage method, so raw protocol access is isolated to
 // `read_usage_response` below.
 const ACCOUNT_USAGE_READ_METHOD: &str = "account/usage/read";
@@ -53,10 +66,15 @@ const CLIENT_TITLE: &str = "Dispatch";
 const CODEX_HOME_DIR: &str = "codex";
 const CODEX_CONFIG: &str = r#"# Managed by Dispatch.
 # Dispatch provides project memory in each automation prompt and keeps Codex
-# memories disabled for deterministic, auditable runs.
+# memories and optional remote catalogs disabled for deterministic, low-traffic
+# runs. Dispatch manages Codex updates separately from agent startup.
+
+check_for_update_on_startup = false
 
 [features]
+apps = false
 memories = false
+remote_plugin = false
 
 [memories]
 use_memories = false
@@ -64,6 +82,152 @@ generate_memories = false
 disable_on_external_context = true
 "#;
 const PROJECT_RULES_FILE_NAME: &str = "dispatch-git.rules";
+
+pub(crate) type SharedCodexStatus = Arc<RwLock<CodexAppServerStatusView>>;
+
+struct AppServerProcess {
+    shutdown: Option<oneshot::Sender<()>>,
+    monitor: Option<JoinHandle<Result<()>>>,
+}
+
+impl AppServerProcess {
+    fn is_finished(&self) -> bool {
+        self.monitor.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    async fn shutdown(mut self) -> Result<()> {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        self.join_monitor().await
+    }
+
+    async fn join_monitor(mut self) -> Result<()> {
+        let Some(monitor) = self.monitor.take() else {
+            return Ok(());
+        };
+        monitor
+            .await
+            .context("failed to join Codex app-server process monitor")?
+    }
+}
+
+impl Drop for AppServerProcess {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+}
+
+/// A Codex protocol client paired with the Dispatch-owned app-server process serving it.
+///
+/// Dropping the owner requests process termination. Call [`Self::shutdown`] when the caller needs
+/// deterministic confirmation that the process and its output collector have exited.
+pub(crate) struct ManagedCodexAppServer {
+    client: CodexClient,
+    process: AppServerProcess,
+}
+
+impl ManagedCodexAppServer {
+    fn client(&self) -> &CodexClient {
+        &self.client
+    }
+
+    pub(crate) fn codex(&self) -> Codex {
+        Codex::from_client(self.client.clone())
+    }
+
+    pub(crate) async fn shutdown(self) -> Result<()> {
+        self.process.shutdown().await
+    }
+}
+
+/// Deduplicates detailed status probes across `/codex` page loads, live events, and browser tabs.
+#[derive(Clone, Default)]
+pub(crate) struct CodexStatusRefresh {
+    last_detailed_refresh: Arc<Mutex<Option<DetailedStatusCache>>>,
+}
+
+#[derive(Clone)]
+struct DetailedStatusCache {
+    refreshed_at: Instant,
+    status: CodexAppServerStatusView,
+}
+
+impl CodexStatusRefresh {
+    pub(crate) async fn refresh_if_stale(
+        &self,
+        store: &Store,
+        status: &RwLock<CodexAppServerStatusView>,
+        minimum_age: Duration,
+    ) -> CodexAppServerStatusView {
+        self.refresh(store, status, Some(minimum_age)).await
+    }
+
+    pub(crate) async fn refresh_now(
+        &self,
+        store: &Store,
+        status: &RwLock<CodexAppServerStatusView>,
+    ) -> CodexAppServerStatusView {
+        self.refresh(store, status, None).await
+    }
+
+    pub(crate) async fn store_detailed(
+        &self,
+        shared: &RwLock<CodexAppServerStatusView>,
+        status: CodexAppServerStatusView,
+    ) {
+        let mut last_detailed_refresh = self.last_detailed_refresh.lock().await;
+        *shared.write().await = status.clone();
+        *last_detailed_refresh = Some(DetailedStatusCache {
+            refreshed_at: Instant::now(),
+            status,
+        });
+    }
+
+    async fn refresh(
+        &self,
+        store: &Store,
+        status: &RwLock<CodexAppServerStatusView>,
+        minimum_age: Option<Duration>,
+    ) -> CodexAppServerStatusView {
+        let mut last_detailed_refresh = self.last_detailed_refresh.lock().await;
+        if let Some(cached) = last_detailed_refresh.as_ref()
+            && minimum_age.is_some_and(|minimum_age| cached.refreshed_at.elapsed() < minimum_age)
+        {
+            return cached.status.clone();
+        }
+
+        let refreshed = app_server_status(store).await;
+        *status.write().await = refreshed.clone();
+        *last_detailed_refresh = Some(DetailedStatusCache {
+            refreshed_at: Instant::now(),
+            status: refreshed.clone(),
+        });
+        refreshed
+    }
+}
+
+pub(crate) async fn publish_readiness_snapshot(
+    shared: &SharedCodexStatus,
+    status: CodexAppServerStatusView,
+) {
+    *shared.write().await = status;
+    events::publish_codex_status_changed();
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum StatusProbe {
+    Readiness,
+    Detailed,
+}
+
+impl StatusProbe {
+    fn includes_usage(self) -> bool {
+        self == Self::Detailed
+    }
+}
 
 /// Operator-facing guidance shown when the Codex executable cannot be discovered or started.
 pub const CODEX_INSTALL_PROMPT: &str =
@@ -509,6 +673,20 @@ impl AccountOperation {
 /// Probe failures are represented in the returned view so status pages can render them directly.
 /// This function does not return an error.
 pub async fn app_server_status(store: &Store) -> CodexAppServerStatusView {
+    app_server_status_with_probe(store, StatusProbe::Detailed).await
+}
+
+/// Performs the minimal startup or pre-run readiness probe.
+///
+/// Unlike [`app_server_status`], this omits the optional account token-activity request.
+pub async fn app_server_readiness(store: &Store) -> CodexAppServerStatusView {
+    app_server_status_with_probe(store, StatusProbe::Readiness).await
+}
+
+async fn app_server_status_with_probe(
+    store: &Store,
+    probe: StatusProbe,
+) -> CodexAppServerStatusView {
     let checked_at = utc_now();
     if let Err(err) = ensure_codex_home() {
         return unavailable_status(
@@ -523,44 +701,9 @@ pub async fn app_server_status(store: &Store) -> CodexAppServerStatusView {
                 "Dispatch cannot start Codex automation because Codex is not configured or discoverable. {CODEX_INSTALL_PROMPT}"
             )
         }) {
-        Ok(path) => app_server_status_for_binary(&path, checked_at).await,
+        Ok(path) => app_server_status_for_binary(&path, checked_at, probe).await,
         Err(err) => unavailable_status(checked_at, format!("Codex app-server is unavailable: {err:#}")),
     }
-}
-
-/// Spawns the periodic status refresher and stops it when `shutdown` closes or becomes `true`.
-///
-/// Each completed refresh replaces the shared status atomically and publishes a status-changed
-/// event for connected clients.
-pub fn spawn_status_refresher_until(
-    store: Store,
-    status: Arc<RwLock<CodexAppServerStatusView>>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    tokio::spawn(async move {
-        if *shutdown.borrow() {
-            return;
-        }
-        let mut interval = tokio::time::interval(STATUS_REFRESH_INTERVAL);
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        // Tokio intervals tick immediately. Consume that tick because startup already performs a
-        // synchronous readiness probe before this refresher is spawned.
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    let refreshed = app_server_status(&store).await;
-                    *status.write().await = refreshed;
-                    events::publish_codex_status_changed();
-                }
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
 }
 
 /// Logs out the account in Dispatch's managed Codex home and returns the refreshed status.
@@ -579,39 +722,44 @@ pub async fn logout_current_account(store: &Store) -> Result<CodexAppServerStatu
             )
         })?;
     timeout(STATUS_TIMEOUT, async {
-        let client = spawn_initialized_client(&codex_binary).await?;
-        client
+        let app_server = spawn_initialized_app_server(&codex_binary).await?;
+        app_server
+            .client()
             .account_logout()
             .await
             .context("Codex app-server rejected logout")?;
-        Ok::<(), Report>(())
+        let status = inspect_initialized_client(
+            &codex_binary,
+            utc_now(),
+            app_server.client(),
+            StatusProbe::Detailed,
+        )
+        .await;
+        app_server.shutdown().await?;
+        Ok::<_, Report>(status)
     })
     .await
-    .context("timed out while logging out of Codex")??;
-    Ok(app_server_status_for_binary(&codex_binary, utc_now()).await)
+    .context("timed out while logging out of Codex")?
 }
 
-/// Returns the status when `codex_binary` satisfies every automation precondition.
+/// Performs the minimal pre-run readiness probe for an already resolved Codex binary.
 ///
-/// # Errors
-///
-/// Returns the operator-facing readiness message when Codex is unavailable, unauthenticated, or
-/// blocked by an active usage limit.
-pub async fn ensure_app_server_usable(codex_binary: &Path) -> Result<CodexAppServerStatusView> {
-    let status = app_server_status_for_binary(codex_binary, utc_now()).await;
-    if status.usable {
-        return Ok(status);
-    }
-    bail!("{}", status.message)
+/// Failures are represented in the returned status so callers can publish the exact pre-run
+/// snapshot before deciding whether automation may continue.
+pub(crate) async fn app_server_readiness_for_binary(
+    codex_binary: &Path,
+) -> CodexAppServerStatusView {
+    app_server_status_for_binary(codex_binary, utc_now(), StatusProbe::Readiness).await
 }
 
 async fn app_server_status_for_binary(
     codex_binary: &Path,
     checked_at: String,
+    probe: StatusProbe,
 ) -> CodexAppServerStatusView {
     match timeout(
         STATUS_TIMEOUT,
-        inspect_app_server(codex_binary, checked_at.clone()),
+        inspect_app_server(codex_binary, checked_at.clone(), probe),
     )
     .await
     {
@@ -626,10 +774,13 @@ async fn app_server_status_for_binary(
     }
 }
 
-async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexAppServerStatusView {
-    let binary_path = codex_binary.to_string_lossy().into_owned();
-    let client = match spawn_initialized_client(codex_binary).await {
-        Ok(client) => client,
+async fn inspect_app_server(
+    codex_binary: &Path,
+    checked_at: String,
+    probe: StatusProbe,
+) -> CodexAppServerStatusView {
+    let app_server = match spawn_initialized_app_server(codex_binary).await {
+        Ok(app_server) => app_server,
         Err(err) => {
             return unavailable_status(
                 checked_at,
@@ -641,13 +792,31 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
         }
     };
 
+    let mut status =
+        inspect_initialized_client(codex_binary, checked_at, app_server.client(), probe).await;
+    if let Err(err) = app_server.shutdown().await {
+        status.warnings.push(format!(
+            "Codex app-server process cleanup could not be confirmed: {err:#}"
+        ));
+    }
+    status
+}
+
+async fn inspect_initialized_client(
+    codex_binary: &Path,
+    checked_at: String,
+    client: &CodexClient,
+    probe: StatusProbe,
+) -> CodexAppServerStatusView {
+    let binary_path = codex_binary.to_string_lossy().into_owned();
+
     let mut preconditions = vec![
         ReadinessPrecondition::AppServer
             .view(true, format!("Initialized `{}`.", codex_binary.display())),
     ];
     let mut warnings = Vec::new();
 
-    let account_response = match read_account_response(&client).await {
+    let account_response = match read_account_response(client).await {
         Ok(response) => response,
         Err(err) => {
             let message = auth_failure_message(AccountOperation::AccountStatus, &err)
@@ -686,7 +855,7 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
         account_status_message(account, account_label.as_deref(), requires_openai_auth);
     let mut auth_failure = None::<String>;
 
-    let rate_limit_response = match read_rate_limits_response(&client).await {
+    let rate_limit_response = match read_rate_limits_response(client).await {
         Ok(response) => Some(response),
         Err(err) => {
             if let Some(message) = auth_failure_message(AccountOperation::RateLimits, &err) {
@@ -712,24 +881,29 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
         .filter_map(|limit| limit.reached_type.as_deref())
         .collect::<Vec<_>>();
 
-    let usage_summary = match read_usage_response(&client).await {
-        Ok(response) => match response.summary {
-            Some(summary) => Some(summary.into()),
-            None => {
-                warnings.push("Codex token usage response did not include a summary.".to_owned());
+    let usage_summary = if probe.includes_usage() {
+        match read_usage_response(client).await {
+            Ok(response) => match response.summary {
+                Some(summary) => Some(summary.into()),
+                None => {
+                    warnings
+                        .push("Codex token usage response did not include a summary.".to_owned());
+                    None
+                }
+            },
+            Err(err) => {
+                if let Some(message) = auth_failure_message(AccountOperation::TokenUsage, &err) {
+                    auth_failure.get_or_insert(message);
+                } else {
+                    warnings.push(format!(
+                        "Codex token usage summary could not be read: {err}"
+                    ));
+                }
                 None
             }
-        },
-        Err(err) => {
-            if let Some(message) = auth_failure_message(AccountOperation::TokenUsage, &err) {
-                auth_failure.get_or_insert(message);
-            } else {
-                warnings.push(format!(
-                    "Codex token usage summary could not be read: {err}"
-                ));
-            }
-            None
         }
+    } else {
+        None
     };
 
     if let Some(message) = auth_failure {
@@ -789,26 +963,29 @@ async fn inspect_app_server(codex_binary: &Path, checked_at: String) -> CodexApp
     }
 }
 
-async fn spawn_initialized_client(codex_binary: &Path) -> Result<CodexClient> {
-    let mut config = stdio_config(codex_binary)?;
-    config.env = codex_environment()?;
-    let client = CodexClient::spawn_stdio(config)
-        .await
-        .context("failed to start Codex app-server")?;
+async fn spawn_initialized_app_server(codex_binary: &Path) -> Result<ManagedCodexAppServer> {
+    let app_server = spawn_managed_app_server(
+        codex_binary,
+        &codex_home_dir().join(APP_SERVER_STATUS_LOG_FILE),
+        codex_environment()?,
+    )
+    .await?;
     let init = InitializeParams::new(ClientInfo::new(
         CLIENT_NAME,
         CLIENT_TITLE,
         env!("CARGO_PKG_VERSION"),
     ));
-    client
+    app_server
+        .client()
         .initialize(init)
         .await
         .context("Codex app-server rejected initialize")?;
-    client
+    app_server
+        .client()
         .initialized()
         .await
         .context("Codex app-server rejected initialized notification")?;
-    Ok(client)
+    Ok(app_server)
 }
 
 fn unavailable_status(checked_at: String, message: String) -> CodexAppServerStatusView {
@@ -883,7 +1060,9 @@ async fn read_account_response(
 ) -> std::result::Result<AccountReadResponse, ClientError> {
     let response = client
         .account_read(GetAccountParams {
-            refresh_token: Some(true),
+            // The following rate-limit read is the remote readiness check and surfaces rejected
+            // or invalidated credentials. Avoid forcing a separate token refresh here.
+            refresh_token: Some(false),
             extra: Map::new(),
         })
         .await?;
@@ -975,29 +1154,195 @@ fn format_unix_timestamp(timestamp: i64) -> Option<String> {
         .and_then(|time| time.format(&Rfc3339).ok())
 }
 
-/// Spawns the high-level Codex SDK client for an automation run.
+/// Spawns a Dispatch-owned Codex app-server for an automation run.
 ///
 /// The supplied environment is extended with the project-specific `CODEX_HOME` and
-/// `CODEX_SQLITE_HOME`. On Unix, app-server stderr is appended to `stderr_path`; on other
-/// platforms the SDK's inherited-stderr behavior is retained.
+/// `CODEX_SQLITE_HOME`. App-server stderr is appended to `stderr_path` on every platform.
 ///
 /// # Errors
 ///
-/// Returns an error when a path cannot be represented by the SDK's UTF-8 configuration, the
-/// project Codex home is missing, or the app-server process cannot be started.
+/// Returns an error when the project Codex home is missing, the app-server process cannot be
+/// started, or its WebSocket endpoint does not become reachable.
 pub async fn spawn_codex_with_home_and_env(
     codex_binary: &Path,
     codex_home: &Path,
     stderr_path: &Path,
     mut env: HashMap<String, String>,
-) -> Result<Codex> {
-    let mut config = stdio_config_with_stderr_capture(codex_binary, stderr_path)?;
+) -> Result<ManagedCodexAppServer> {
     env.extend(codex_environment_for_home(codex_home)?);
-    config.env = env;
-    let codex = Codex::spawn_stdio(config)
+    spawn_managed_app_server(codex_binary, stderr_path, env).await
+}
+
+async fn spawn_managed_app_server(
+    codex_binary: &Path,
+    stderr_path: &Path,
+    env: HashMap<String, String>,
+) -> Result<ManagedCodexAppServer> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
-        .context("failed to start Codex app-server")?;
-    Ok(codex)
+        .context("failed to reserve a loopback port for Codex app-server")?;
+    let address = listener
+        .local_addr()
+        .context("failed to read the reserved Codex app-server address")?;
+    let url = format!("ws://{address}");
+    drop(listener);
+
+    let mut command = Command::new(codex_binary);
+    command
+        .arg("app-server")
+        .arg("--listen")
+        .arg(&url)
+        .envs(env);
+    let process = spawn_app_server_process(command, stderr_path).await?;
+    connect_managed_app_server(process, url).await
+}
+
+async fn connect_managed_app_server(
+    process: AppServerProcess,
+    url: String,
+) -> Result<ManagedCodexAppServer> {
+    connect_managed_app_server_with_timeout(process, url, APP_SERVER_CONNECT_TIMEOUT).await
+}
+
+async fn connect_managed_app_server_with_timeout(
+    process: AppServerProcess,
+    url: String,
+    connect_timeout: Duration,
+) -> Result<ManagedCodexAppServer> {
+    let deadline = Instant::now() + connect_timeout;
+    loop {
+        if process.is_finished() {
+            process
+                .join_monitor()
+                .await
+                .context("Codex app-server exited before its WebSocket endpoint became ready")?;
+            bail!("Codex app-server exited before its WebSocket endpoint became ready");
+        }
+
+        let connect = CodexClient::connect_ws(WsConfig::new(
+            url.clone(),
+            HashMap::new(),
+            Default::default(),
+        ));
+        let last_error =
+            match timeout(deadline.saturating_duration_since(Instant::now()), connect).await {
+                Ok(Ok(client)) => return Ok(ManagedCodexAppServer { client, process }),
+                Ok(Err(err)) => err.to_string(),
+                Err(_) => "timed out during the WebSocket handshake".to_owned(),
+            };
+
+        if Instant::now() >= deadline {
+            let cleanup_error = process.shutdown().await.err();
+            if let Some(cleanup_error) = cleanup_error {
+                bail!(
+                    "Codex app-server WebSocket endpoint {url} did not become ready: {last_error}. Process cleanup also failed: {cleanup_error:#}"
+                );
+            }
+            bail!(
+                "Codex app-server WebSocket endpoint {url} did not become ready within {connect_timeout:?}: {last_error}"
+            );
+        }
+
+        sleep(APP_SERVER_CONNECT_RETRY_INTERVAL).await;
+    }
+}
+
+async fn spawn_app_server_process(
+    command: Command,
+    stderr_path: &Path,
+) -> Result<AppServerProcess> {
+    if let Some(parent) = stderr_path.parent() {
+        fs::create_dir_all(parent).context_with(|| {
+            format!(
+                "failed to create Codex app-server log directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let stderr_file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(stderr_path)
+        .await
+        .context_with(|| {
+            format!(
+                "failed to open Codex app-server log {}",
+                stderr_path.display()
+            )
+        })?;
+
+    let process = Process::new(command)
+        .name("Codex app-server")
+        .stdout(ProcessStreamBuilder::discard)
+        .stderr(|stream| {
+            stream
+                .single_subscriber()
+                .reliable_with_backpressure()
+                .replay_all()
+                .read_chunk_size(DEFAULT_READ_CHUNK_SIZE)
+                .max_buffered_chunks(DEFAULT_MAX_BUFFERED_CHUNKS)
+        })
+        .spawn()
+        .context("failed to start Codex app-server process")?;
+    let stderr_consumer = process
+        .stderr()
+        .consume_async(WriteChunks::passthrough(
+            "stderr",
+            stderr_file,
+            WriteCollectionOptions::log_and_continue(),
+        ))
+        .context("failed to attach the Codex app-server stderr collector")?;
+    process.stderr().seal_replay();
+
+    let mut process = process.terminate_on_drop(app_server_shutdown_policy());
+    let (shutdown, mut shutdown_requested) = oneshot::channel();
+    let monitor = tokio::spawn(async move {
+        let shutdown_was_requested = loop {
+            let event = tokio::select! {
+                biased;
+                _ = &mut shutdown_requested => Some(true),
+                result = process.wait_for_completion(APP_SERVER_EXIT_POLL_INTERVAL) => {
+                    match result.context("failed while waiting for Codex app-server")? {
+                        WaitForCompletionResult::Completed(_) => Some(false),
+                        WaitForCompletionResult::Timeout { .. } => None,
+                    }
+                }
+            };
+            if let Some(shutdown_was_requested) = event {
+                break shutdown_was_requested;
+            }
+        };
+
+        if shutdown_was_requested {
+            process
+                .terminate(app_server_shutdown_policy())
+                .await
+                .context("failed to terminate Codex app-server")?;
+        }
+
+        timeout(APP_SERVER_LOG_DRAIN_TIMEOUT, stderr_consumer.wait())
+            .await
+            .context("timed out while draining Codex app-server stderr")?
+            .context("failed to join the Codex app-server stderr collector")?
+            .context("failed to write Codex app-server stderr")?;
+
+        if !shutdown_was_requested {
+            tracing::warn!("Codex app-server exited before Dispatch requested shutdown");
+        }
+        Ok(())
+    });
+
+    Ok(AppServerProcess {
+        shutdown: Some(shutdown),
+        monitor: Some(monitor),
+    })
+}
+
+fn app_server_shutdown_policy() -> GracefulShutdown {
+    GracefulShutdown::builder()
+        .unix_sigterm(Duration::from_secs(2))
+        .windows_ctrl_break(Duration::from_secs(2))
+        .build()
 }
 
 /// Returns the shared Dispatch-managed Codex home.
@@ -1056,7 +1401,7 @@ fn codex_auth_setup(codex_binary: &Path) -> CodexAuthSetupView {
         codex_config_path: codex_config.to_string_lossy().into_owned(),
         login_command: codex_login_command_for(codex_binary, &codex_home),
         refresh_instruction:
-            "After the browser login completes, return to Dispatch. Dispatch refreshes this state automatically; Refresh checks it immediately.".to_owned(),
+            "After the browser login completes, return to Dispatch and use Refresh to check the new account state.".to_owned(),
         api_key_instruction:
             "For API-key auth instead, start the Dispatch server with OPENAI_API_KEY set."
                 .to_owned(),
@@ -1210,11 +1555,14 @@ fn write_project_codex_config(codex_home: &Path, settings: &ProjectSettingsView)
         r#"# Managed by Dispatch.
 # This file is regenerated from the Dispatch project settings.
 
+check_for_update_on_startup = false
 approval_policy = "never"
 sandbox_mode = {sandbox_mode}
 
 [features]
+apps = false
 memories = false
+remote_plugin = false
 
 [memories]
 use_memories = false
@@ -1344,39 +1692,6 @@ fn utf8_path(path: &Path, description: &str) -> Result<String> {
         bail!("{description} is not valid UTF-8 and cannot be passed to the Codex SDK");
     };
     Ok(path.to_owned())
-}
-
-fn stdio_config(codex_binary: &Path) -> Result<StdioConfig> {
-    Ok(StdioConfig {
-        codex_binary: utf8_path(codex_binary, "Codex binary path")?,
-        ..Default::default()
-    })
-}
-
-#[cfg(unix)]
-fn stdio_config_with_stderr_capture(
-    codex_binary: &Path,
-    stderr_path: &Path,
-) -> Result<StdioConfig> {
-    Ok(StdioConfig {
-        codex_binary: "/bin/sh".to_owned(),
-        args: vec![
-            "-c".to_owned(),
-            "exec \"$1\" app-server 2>>\"$2\"".to_owned(),
-            "dispatch-codex-app-server".to_owned(),
-            utf8_path(codex_binary, "Codex binary path")?,
-            utf8_path(stderr_path, "Codex stderr path")?,
-        ],
-        ..Default::default()
-    })
-}
-
-#[cfg(not(unix))]
-fn stdio_config_with_stderr_capture(
-    codex_binary: &Path,
-    _stderr_path: &Path,
-) -> Result<StdioConfig> {
-    stdio_config(codex_binary)
 }
 
 #[cfg(test)]
@@ -1623,7 +1938,10 @@ mod tests {
 
         let config = fs::read_to_string(codex_config_path_for_home(&codex_home)).unwrap();
         assert!(config.contains("[features]"));
+        assert!(config.contains("check_for_update_on_startup = false"));
+        assert!(config.contains("apps = false"));
         assert!(config.contains("memories = false"));
+        assert!(config.contains("remote_plugin = false"));
         assert!(config.contains("[memories]"));
         assert!(config.contains("use_memories = false"));
         assert!(config.contains("generate_memories = false"));
@@ -1642,7 +1960,145 @@ mod tests {
         assert!(config.contains("sandbox_mode = \"workspace-write\""));
         assert!(config.contains("network_access = true"));
         assert!(config.contains("writable_roots = [\"/tmp/dispatch-browser\"]"));
+        assert!(config.contains("check_for_update_on_startup = false"));
+        assert!(config.contains("apps = false"));
         assert!(config.contains("memories = false"));
+        assert!(config.contains("remote_plugin = false"));
+    }
+
+    #[test]
+    fn readiness_probe_omits_optional_usage_request() {
+        assert!(!StatusProbe::Readiness.includes_usage());
+        assert!(StatusProbe::Detailed.includes_usage());
+    }
+
+    #[tokio::test]
+    async fn detailed_status_refresh_reuses_recent_detailed_result() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(temp.path().join("dispatch.sqlite3"))
+            .await
+            .unwrap();
+        let refresh = CodexStatusRefresh::default();
+        let shared = RwLock::new(CodexAppServerStatusView::default());
+        let expected = CodexAppServerStatusView {
+            available: true,
+            usable: true,
+            checked_at: "recent-detailed-status".to_owned(),
+            ..Default::default()
+        };
+        refresh.store_detailed(&shared, expected).await;
+        *shared.write().await = CodexAppServerStatusView {
+            checked_at: "newer-readiness-snapshot".to_owned(),
+            ..Default::default()
+        };
+
+        let cached = refresh
+            .refresh_if_stale(&store, &shared, Duration::from_secs(60))
+            .await;
+
+        assert_eq!(cached.checked_at, "recent-detailed-status");
+        assert!(cached.available);
+        assert!(cached.usable);
+    }
+
+    #[tokio::test]
+    async fn readiness_snapshot_replaces_shared_status() {
+        let shared = Arc::new(RwLock::new(CodexAppServerStatusView::default()));
+        let readiness = CodexAppServerStatusView {
+            available: true,
+            usable: true,
+            checked_at: "pre-run-readiness".to_owned(),
+            ..Default::default()
+        };
+
+        publish_readiness_snapshot(&shared, readiness).await;
+
+        let shared = shared.read().await;
+        assert_eq!(shared.checked_at, "pre-run-readiness");
+        assert!(shared.available);
+        assert!(shared.usable);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn websocket_handshake_cannot_outlive_connection_deadline() {
+        let temp = TempDir::new().unwrap();
+        let stderr_path = temp.path().join("app-server.stderr.log");
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let stalled_server = tokio::spawn(async move {
+            let (_connection, _) = listener.accept().await.unwrap();
+            sleep(Duration::from_secs(30)).await;
+        });
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let process = spawn_app_server_process(command, &stderr_path)
+            .await
+            .unwrap();
+
+        let started_at = Instant::now();
+        let error =
+            match connect_managed_app_server_with_timeout(process, url, Duration::from_millis(100))
+                .await
+            {
+                Ok(_) => panic!("stalled WebSocket handshake should time out"),
+                Err(error) => error,
+            };
+        stalled_server.abort();
+
+        assert!(
+            error
+                .to_string()
+                .contains("timed out during the WebSocket handshake")
+        );
+        assert!(started_at.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn managed_app_server_shutdown_terminates_reaps_and_drains_stderr() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        let fake_codex = temp.path().join("codex");
+        let ready = temp.path().join("ready");
+        let exited = temp.path().join("exited");
+        let stderr_path = temp.path().join("app-server.stderr.log");
+        fs::write(
+            &fake_codex,
+            r#"#!/bin/sh
+marker="$(dirname "$0")/exited"
+trap 'touch "$marker"; exit 0' TERM INT
+touch "$(dirname "$0")/ready"
+printf '%s\n' 'fake app-server started' >&2
+while :; do sleep 1; done
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_codex, permissions).unwrap();
+
+        let process = spawn_app_server_process(Command::new(&fake_codex), &stderr_path)
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            while !ready.exists() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake app-server did not become ready");
+        process.shutdown().await.unwrap();
+
+        assert!(exited.exists());
+        assert!(
+            fs::read_to_string(stderr_path)
+                .unwrap()
+                .contains("fake app-server started")
+        );
     }
 
     #[cfg(unix)]
@@ -1690,22 +2146,6 @@ mod tests {
         link_shared_codex_entry(&shared_home, &project_home, SharedCodexEntry::Auth).unwrap();
 
         assert!(fs::symlink_metadata(project_home.join("auth.json")).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn automation_stdio_config_captures_stderr_without_shell_interpolation() {
-        let config = stdio_config_with_stderr_capture(
-            Path::new("/Applications/Codex CLI/codex"),
-            Path::new("/Users/test/Dispatch Logs/run 7.stderr.log"),
-        )
-        .unwrap();
-
-        assert_eq!(config.codex_binary, "/bin/sh");
-        assert_eq!(config.args[0], "-c");
-        assert_eq!(config.args[1], "exec \"$1\" app-server 2>>\"$2\"");
-        assert_eq!(config.args[3], "/Applications/Codex CLI/codex");
-        assert_eq!(config.args[4], "/Users/test/Dispatch Logs/run 7.stderr.log");
     }
 
     #[test]

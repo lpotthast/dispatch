@@ -1368,6 +1368,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "tokio-process-tools",
  "tracing",
  "tracing-subscriber",
  "typetag",

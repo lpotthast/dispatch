@@ -14,7 +14,10 @@ use crate::{
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
+use leptos_use::use_interval_fn;
 use serde::{Deserialize, Serialize};
+
+const CODEX_STATUS_PAGE_REFRESH_INTERVAL_MS: u64 = 5 * 60 * 1000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CodexStatusPage {
@@ -40,6 +43,11 @@ pub fn PageCodex() -> impl IntoView {
             let selected_project = selected_project.clone();
             async move { service.load_page(selected_project).await }
         },
+    );
+    let refresh = result.refresh;
+    let _poll = use_interval_fn(
+        move || refresh.run(()),
+        CODEX_STATUS_PAGE_REFRESH_INTERVAL_MS,
     );
     project_cache().track(result.value, |page| &page.projects);
     refetch_on_live_event(result.refresh, codex_event_matches);
@@ -72,6 +80,9 @@ pub fn PageCodex() -> impl IntoView {
             <main class="page-shell codex-page">
                 <section class="page-heading">
                     <h1>"Codex automation"</h1>
+                    <p class="muted">
+                        "Detailed status refreshes every five minutes while this page is open."
+                    </p>
                 </section>
                 {move || {
                     let page = result.value.get().unwrap_or_else(|| CodexStatusPage {

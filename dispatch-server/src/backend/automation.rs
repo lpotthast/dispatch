@@ -372,10 +372,11 @@ pub async fn start_automation_with_sessions_until(
     project_name: &str,
     start: StartAutomation,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<codex_app_server::SharedCodexStatus>,
     cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentRunView> {
     let started = begin_automation_run(store, project_name, start).await?;
-    complete_started_automation_run(store, started, sessions, cancellation).await
+    complete_started_automation_run(store, started, sessions, codex_status, cancellation).await
 }
 
 pub async fn start_one_automation_run_in_background(
@@ -383,12 +384,13 @@ pub async fn start_one_automation_run_in_background(
     project_name: String,
     start: StartAutomation,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<codex_app_server::SharedCodexStatus>,
 ) -> Result<AgentRunView> {
     let started = begin_automation_run(&store, &project_name, start).await?;
     let initial_run = model_to_view(started.run.clone())?;
     let project_for_task = started.project_name.clone();
     tokio::spawn(async move {
-        match complete_started_automation_run(&store, started, sessions, None).await {
+        match complete_started_automation_run(&store, started, sessions, codex_status, None).await {
             Ok(run) if run.status == AgentRunStatus::Failed => {
                 tracing::error!(
                     run_id = run.id,
@@ -447,6 +449,7 @@ async fn complete_started_automation_run(
     store: &Store,
     started: StartedAutomationRun,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<codex_app_server::SharedCodexStatus>,
     cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentRunView> {
     let StartedAutomationRun {
@@ -491,11 +494,18 @@ async fn complete_started_automation_run(
             .await;
         }
     };
-    if let Err(err) = codex_app_server::ensure_app_server_usable(&codex_binary).await {
+    let readiness = codex_app_server::app_server_readiness_for_binary(&codex_binary).await;
+    if let Some(codex_status) = &codex_status {
+        codex_app_server::publish_readiness_snapshot(codex_status, readiness.clone()).await;
+    }
+    if !readiness.usable {
         return fail_run(
             store,
             run,
-            format!("Codex automation preconditions failed: {err:#}"),
+            format!(
+                "Codex automation preconditions failed: {}",
+                readiness.message
+            ),
         )
         .await;
     }
@@ -1795,7 +1805,7 @@ async fn run_codex_app_server_turn(
         thread_options = thread_options.model_reasoning_effort(codex_reasoning_effort);
     }
     let thread_options = thread_options.build();
-    let (mut thread, mut streamed) =
+    let (mut thread, mut streamed, mut app_server) =
         start_codex_streamed_turn(&start, &env, &thread_options, None, user_prompt)
             .await
             .map_err(|err| report!(err))
@@ -1809,6 +1819,10 @@ async fn run_codex_app_server_turn(
         let event = match streamed.next_event().await {
             Some(Ok(event)) => event,
             Some(Err(err)) => {
+                app_server
+                    .shutdown()
+                    .await
+                    .context("failed to stop interrupted Codex app-server")?;
                 let resumed = recover_codex_streamed_turn(
                     CodexStreamRecoveryContext {
                         start: &start,
@@ -1824,10 +1838,15 @@ async fn run_codex_app_server_turn(
                 .await?;
                 thread = resumed.0;
                 streamed = resumed.1;
+                app_server = resumed.2;
                 thread_id = thread.id().map(ToOwned::to_owned).or(thread_id);
                 continue;
             }
             None => {
+                app_server
+                    .shutdown()
+                    .await
+                    .context("failed to stop disconnected Codex app-server")?;
                 let resumed = recover_codex_streamed_turn(
                     CodexStreamRecoveryContext {
                         start: &start,
@@ -1843,6 +1862,7 @@ async fn run_codex_app_server_turn(
                 .await?;
                 thread = resumed.0;
                 streamed = resumed.1;
+                app_server = resumed.2;
                 thread_id = thread.id().map(ToOwned::to_owned).or(thread_id);
                 continue;
             }
@@ -1880,6 +1900,11 @@ async fn run_codex_app_server_turn(
         }
     };
 
+    app_server
+        .shutdown()
+        .await
+        .context("failed to stop Codex app-server after the completed turn")?;
+
     Ok(AgentProcessOutput {
         process_id: None,
         output,
@@ -1894,8 +1919,15 @@ async fn start_codex_streamed_turn(
     thread_options: &ThreadOptions,
     thread_id: Option<&str>,
     input: impl Into<String>,
-) -> std::result::Result<(Thread, StreamedTurn), CodexStreamStartError> {
-    let codex = codex_app_server::spawn_codex_with_home_and_env(
+) -> std::result::Result<
+    (
+        Thread,
+        StreamedTurn,
+        codex_app_server::ManagedCodexAppServer,
+    ),
+    CodexStreamStartError,
+> {
+    let app_server = codex_app_server::spawn_codex_with_home_and_env(
         &start.codex_binary,
         &start.codex_home,
         &start.codex_stderr_path,
@@ -1903,6 +1935,7 @@ async fn start_codex_streamed_turn(
     )
     .await
     .map_err(CodexStreamStartError::Spawn)?;
+    let codex = app_server.codex();
     let mut thread = if let Some(thread_id) = thread_id {
         codex.resume_thread_by_id(thread_id.to_owned(), thread_options.clone())
     } else if start.agent_reasoning_effort == Some(AgentReasoningEffort::Max) {
@@ -1921,7 +1954,7 @@ async fn start_codex_streamed_turn(
         .run_streamed(input.into(), TurnOptions::default())
         .await
         .map_err(CodexStreamStartError::Run)?;
-    Ok((thread, streamed))
+    Ok((thread, streamed, app_server))
 }
 
 async fn start_codex_thread_with_raw_effort(
@@ -2026,7 +2059,11 @@ async fn recover_codex_streamed_turn(
     thread_id: Option<&str>,
     recovery_attempts: &mut usize,
     err: ClientError,
-) -> Result<(Thread, StreamedTurn)> {
+) -> Result<(
+    Thread,
+    StreamedTurn,
+    codex_app_server::ManagedCodexAppServer,
+)> {
     let Some(reason) = recoverable_codex_stream_error_reason(&err) else {
         return Err(report!(err)
             .context("Codex app-server stream failed")

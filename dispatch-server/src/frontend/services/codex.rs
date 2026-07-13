@@ -1,4 +1,7 @@
 #[cfg(feature = "ssr")]
+use std::time::Duration;
+
+#[cfg(feature = "ssr")]
 use crate::backend::{app_state, page_data};
 use crate::frontend::{
     pages::CodexStatusPage,
@@ -8,6 +11,9 @@ use crate::frontend::{
     },
 };
 use leptos::prelude::*;
+
+#[cfg(feature = "ssr")]
+const CODEX_STATUS_PAGE_MINIMUM_REFRESH_AGE: Duration = Duration::from_secs(4 * 60);
 
 #[derive(Clone)]
 pub(crate) struct CodexService {
@@ -61,7 +67,14 @@ async fn load_codex_status_page(
     selected_project: Option<String>,
 ) -> Result<CodexStatusPage, ServerFnError> {
     let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
+    let codex_status = state
+        .codex_status_refresh
+        .refresh_if_stale(
+            &state.store,
+            &state.codex_status,
+            CODEX_STATUS_PAGE_MINIMUM_REFRESH_AGE,
+        )
+        .await;
     page_data::codex_status_page_data(
         &state.store,
         &state.automation_controller,

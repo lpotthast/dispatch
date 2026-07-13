@@ -67,6 +67,15 @@ The Codex app-server status panel should guide setup failures directly. When
 Dispatch's managed Codex home is not signed in, the panel shows the exact
 `CODEX_HOME` login command, the managed home path, and a refresh action instead
 of relying on users to reconstruct the command from server logs.
+Codex readiness outside `/codex` is a server-startup or pre-run snapshot rather
+than a globally polled value. Mounting `/codex` performs a detailed status check
+and keeps that page current with a five-minute refresh while it remains mounted;
+server-side single-flight caching prevents duplicate tabs or live-event refetches
+from multiplying detailed probes. The operator-triggered Refresh action bypasses
+that cache and performs a new detailed check immediately. Detailed checks include
+token-activity usage; ordinary readiness checks omit that optional usage request.
+After completing browser login, the operator uses Refresh to update the displayed
+account state immediately.
 
 ## Project Settings
 

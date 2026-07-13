@@ -14,6 +14,7 @@ use crate::{
         automation::{self, AutomationTriggerOrigin, StartAutomation},
         automation_admission,
         automation_controller::AutomationController,
+        codex_app_server::SharedCodexStatus,
         entities::{
             automation_trigger::{
                 self, AutomationTrigger, AutomationTriggerActiveModel, AutomationTriggerModel,
@@ -294,17 +295,19 @@ pub async fn run_due_triggers_with_sessions(
     store: &Store,
     sessions: Option<ProcessSessionRegistry>,
 ) -> Result<Vec<TriggerRunOutcome>> {
-    run_due_triggers_with_sessions_for_projects(store, sessions, None, None).await
+    run_due_triggers_with_sessions_for_projects(store, sessions, None, None, None).await
 }
 
 async fn run_due_triggers_with_sessions_for_projects(
     store: &Store,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<SharedCodexStatus>,
     active_project_names: Option<&[String]>,
     project_cancellations: Option<&HashMap<String, watch::Receiver<bool>>>,
 ) -> Result<Vec<TriggerRunOutcome>> {
     let scope = AutomationProjectScope::new(active_project_names, project_cancellations);
-    let mut outcomes = run_queued_evaluations(store, sessions.clone(), scope).await?;
+    let mut outcomes =
+        run_queued_evaluations(store, sessions.clone(), codex_status.clone(), scope).await?;
     let triggers = AutomationTrigger::find()
         .filter(automation_trigger::Column::Enabled.eq(true))
         .order_by_asc(automation_trigger::Column::Id)
@@ -335,6 +338,7 @@ async fn run_due_triggers_with_sessions_for_projects(
                         trigger,
                         None,
                         sessions.clone(),
+                        codex_status.clone(),
                         scope.cancellation_for(&project_name),
                     )
                     .await
@@ -354,6 +358,7 @@ async fn run_due_triggers_with_sessions_for_projects(
                         trigger.clone(),
                         event.work_item_id,
                         sessions.clone(),
+                        codex_status.clone(),
                         scope.cancellation_for(&project_name),
                     )
                     .await
@@ -373,6 +378,7 @@ async fn run_due_triggers_with_sessions_for_projects(
                 store,
                 project_name,
                 sessions.clone(),
+                codex_status.clone(),
                 scope.cancellation_for(project_name),
             )
             .await?
@@ -450,6 +456,7 @@ pub async fn schedule_trigger_evaluation(
 async fn run_queued_evaluations(
     store: &Store,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<SharedCodexStatus>,
     scope: AutomationProjectScope<'_>,
 ) -> Result<Vec<TriggerRunOutcome>> {
     let triggers = AutomationTrigger::find()
@@ -480,6 +487,7 @@ async fn run_queued_evaluations(
             trigger,
             None,
             sessions.clone(),
+            codex_status.clone(),
             scope.cancellation_for(&project_name),
         )
         .await
@@ -508,6 +516,7 @@ async fn run_next_work_item_automation_for_project(
     store: &Store,
     project_name: &str,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<SharedCodexStatus>,
     cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<Option<TriggerRunOutcome>> {
     let project_id = projects::project_id(store, project_name).await?;
@@ -572,6 +581,7 @@ async fn run_next_work_item_automation_for_project(
         project_name,
         candidates,
         sessions,
+        codex_status,
         cancellation,
     )
     .await
@@ -587,6 +597,7 @@ async fn run_first_available_work_item_automation_candidate(
     project_name: &str,
     candidates: Vec<WorkItemAutomationCandidate>,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<SharedCodexStatus>,
     cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<Option<TriggerRunOutcome>> {
     for candidate in candidates {
@@ -596,6 +607,7 @@ async fn run_first_available_work_item_automation_candidate(
             candidate.trigger,
             None,
             sessions.clone(),
+            codex_status.clone(),
             cancellation.clone(),
         )
         .await
@@ -626,6 +638,7 @@ fn work_item_automation_score(
 pub fn spawn_scheduler_until(
     store: Store,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<SharedCodexStatus>,
     controller: AutomationController,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -646,6 +659,7 @@ pub fn spawn_scheduler_until(
                         if let Err(err) = run_due_triggers_with_sessions_for_projects(
                             &store,
                             sessions.clone(),
+                            codex_status.clone(),
                             Some(&active_projects),
                             Some(&project_cancellations),
                         )
@@ -682,6 +696,7 @@ async fn evaluate_trigger_once(
     trigger: AutomationTriggerModel,
     work_item_id: Option<i64>,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<SharedCodexStatus>,
     cancellation: Option<watch::Receiver<bool>>,
 ) -> Option<TriggerRunOutcome> {
     let view = match model_to_view(trigger.clone()) {
@@ -724,6 +739,7 @@ async fn evaluate_trigger_once(
                         trigger,
                         work_item_id,
                         sessions,
+                        codex_status,
                         cancellation,
                     )
                     .await,
@@ -795,6 +811,7 @@ async fn run_trigger_once(
     trigger: AutomationTriggerModel,
     work_item_id: Option<i64>,
     sessions: Option<ProcessSessionRegistry>,
+    codex_status: Option<SharedCodexStatus>,
     cancellation: Option<watch::Receiver<bool>>,
 ) -> TriggerRunOutcome {
     let view = match model_to_view(trigger.clone()) {
@@ -827,6 +844,7 @@ async fn run_trigger_once(
             }),
         },
         sessions,
+        codex_status,
         cancellation,
     )
     .await;
@@ -1736,6 +1754,7 @@ mod tests {
             ],
             None,
             None,
+            None,
         )
         .await
         .unwrap()
@@ -1989,10 +2008,15 @@ mod tests {
             .unwrap();
 
         let active_projects = vec!["demo".to_owned()];
-        let outcomes =
-            run_due_triggers_with_sessions_for_projects(&store, None, Some(&active_projects), None)
-                .await
-                .unwrap();
+        let outcomes = run_due_triggers_with_sessions_for_projects(
+            &store,
+            None,
+            None,
+            Some(&active_projects),
+            None,
+        )
+        .await
+        .unwrap();
         let trigger = list_triggers(&store, "other")
             .await
             .unwrap()

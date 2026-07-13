@@ -26,7 +26,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
     let contexts = crudkit_resources::build_contexts(store.clone());
     let sessions = ProcessSessionRegistry::new();
     let automation_controller = AutomationController::new();
-    let codex_status = codex_app_server::app_server_status(&store).await;
+    let codex_status = codex_app_server::app_server_readiness(&store).await;
     if !codex_status.usable {
         tracing::warn!(
             "{}",
@@ -40,6 +40,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
         sessions: sessions.clone(),
         automation_controller: automation_controller.clone(),
         codex_status: codex_status.clone(),
+        codex_status_refresh: codex_app_server::CodexStatusRefresh::default(),
     };
     install_app_state(state.clone());
 
@@ -50,15 +51,10 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
     automation_triggers::spawn_scheduler_until(
         store.clone(),
         Some(sessions.clone()),
+        Some(codex_status),
         automation_controller.clone(),
         shutdown_rx.clone(),
     );
-    codex_app_server::spawn_status_refresher_until(
-        store.clone(),
-        codex_status,
-        shutdown_rx.clone(),
-    );
-
     let app = http::router(state, contexts, leptos_options);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(url = %format_args!("http://{bind}"), "Serving Dispatch");

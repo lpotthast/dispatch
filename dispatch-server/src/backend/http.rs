@@ -866,18 +866,11 @@ async fn start_automation(
                 trigger: None,
             },
             Some(state.sessions.clone()),
+            Some(state.codex_status.clone()),
         )
         .await
         .map(|_| ())
     } else {
-        let status = codex_app_server::app_server_status(&state.store).await;
-        let usable = status.usable;
-        let message = status.message.clone();
-        *state.codex_status.write().await = status;
-        events::publish_codex_status_changed();
-        if !usable {
-            return error_response(report!(message)).await;
-        }
         state
             .automation_controller
             .start_project(&state.store, project.clone())
@@ -1130,8 +1123,10 @@ async fn discover_agent_tools(
 ) -> Response {
     match agent_tools::discover_tools(&state.store).await {
         Ok(_) => {
-            let status = codex_app_server::app_server_status(&state.store).await;
-            *state.codex_status.write().await = status;
+            state
+                .codex_status_refresh
+                .refresh_now(&state.store, &state.codex_status)
+                .await;
             events::publish_agent_tool_changed();
             events::publish_codex_status_changed();
             let target = codex_return_target(form.return_to, form.project);
@@ -1147,7 +1142,10 @@ async fn logout_codex(
 ) -> Response {
     match codex_app_server::logout_current_account(&state.store).await {
         Ok(status) => {
-            *state.codex_status.write().await = status;
+            state
+                .codex_status_refresh
+                .store_detailed(&state.codex_status, status)
+                .await;
             events::publish_codex_status_changed();
             let target = codex_return_target(form.return_to, form.project);
             Redirect::to(&target).into_response()

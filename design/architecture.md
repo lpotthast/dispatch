@@ -58,6 +58,10 @@ SeaORM and CrudKit persistence records mirror SQLite and may represent enums or 
 
 Codex runtime state is Dispatch-owned local state under the user's Dispatch data directory. The shared managed Codex home stores login/status state. Each project gets a project Codex home under that shared tree for generated `config.toml`, `rules/*.rules`, sessions, logs, and SQLite state. Project homes may symlink shared auth and skill assets so projects can have independent runtime policy without requiring a new login for every project.
 
+Dispatch minimizes control-plane traffic to OpenAI. It performs one Codex readiness probe when the server starts and one immediately before each actual automation run so authentication or an active rate-limit block fails before work is claimed. It does not poll Codex status globally while idle, and enabling project automation does not add a probe before the per-run check. Readiness probes read account and rate-limit state only. While an operator has `/codex` mounted, that page loads a detailed status immediately and refreshes it every five minutes, including the token-activity summary; duplicate page or live-event requests within four minutes share the most recent detailed result. The manual Refresh action always forces a new detailed check. Managed Codex config disables automatic update checks and optional remote app or plugin catalogs that Dispatch automation does not use.
+
+Every spawned Codex app-server has an owned process lifetime. Dispatch starts the configured executable on a loopback WebSocket endpoint, uses the unmodified published SDK as the protocol client, and independently terminates and reaps the process tree. A status probe exits after its responses are collected, and an automation app-server exits after its run or recovery attempt ends. Cleanup does not depend on SDK client-drop behavior, so completed probes and runs cannot retain background processes that continue refreshing remote catalogs.
+
 ## Server Routes
 
 The server exposes three classes of routes:
