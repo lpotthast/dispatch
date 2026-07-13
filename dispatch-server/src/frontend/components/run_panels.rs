@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     frontend::{
         live_events::{
@@ -208,6 +210,7 @@ fn RunSessionsPanel(
         None
     };
     let (selected_run_id, set_selected_run_id) = signal(initial_selected_run_id);
+    let shown_thinking_history = RwSignal::new(HashSet::<i64>::new());
     Effect::new(move |_| {
         if !sync_selection_with_url {
             return;
@@ -320,7 +323,22 @@ fn RunSessionsPanel(
             .or_else(|| detail_sessions.first().cloned());
         match selected {
             Some(session) => {
-                run_session_detail(&detail_project, session, detail_workspace_editors.clone())
+                let run_id = session.run.id;
+                let show_thinking_history = shown_thinking_history.get().contains(&run_id);
+                let toggle_thinking_history = Callback::new(move |()| {
+                    shown_thinking_history.update(|shown| {
+                        if !shown.remove(&run_id) {
+                            shown.insert(run_id);
+                        }
+                    });
+                });
+                run_session_detail(
+                    &detail_project,
+                    session,
+                    detail_workspace_editors.clone(),
+                    show_thinking_history,
+                    toggle_thinking_history,
+                )
             }
             None => view! { <p class="muted">"No run selected."</p> }.into_any(),
         }
@@ -440,6 +458,8 @@ fn run_session_detail(
     project: &str,
     session: BoardRunSessionView,
     workspace_editors: Vec<WorkspaceEditorView>,
+    show_thinking_history: bool,
+    toggle_thinking_history: Callback<()>,
 ) -> AnyView {
     let href = format!(
         "/projects/{}/automation/runs/{}/log",
@@ -467,7 +487,12 @@ fn run_session_detail(
     let command = recorded_field(&session.run.command);
     let working_dir = run_workspace_actions(project, &session.run, workspace_editors, href.clone());
     let status_class = run_status_class(session.run.status);
-    let output = run_output_view(session.output.clone());
+    let output = run_output_view(
+        session.output.clone(),
+        session.active,
+        show_thinking_history,
+        toggle_thinking_history,
+    );
     let developer_instructions = session
         .developer_instructions
         .unwrap_or_else(|| "No developer instructions have been written yet.".to_owned());

@@ -85,6 +85,10 @@ pub fn PageRunLog() -> impl IntoView {
     let title = run_id
         .map(|run_id| format!("Run #{run_id}"))
         .unwrap_or_else(|| "Run log".to_owned());
+    let show_thinking_history = RwSignal::new(false);
+    let toggle_thinking_history = Callback::new(move |()| {
+        show_thinking_history.update(|show| *show = !*show);
+    });
     view! {
         <Title text="Run log"/>
         <div>
@@ -94,13 +98,26 @@ pub fn PageRunLog() -> impl IntoView {
                     <a href=board_href>"Board"</a>
                     <h1>{title}</h1>
                 </section>
-                {move || result.value.get().map(run_log_content)}
+                {move || {
+                    let show_thinking_history = show_thinking_history.get();
+                    result.value.get().map(|page| {
+                        run_log_content(
+                            page,
+                            show_thinking_history,
+                            toggle_thinking_history,
+                        )
+                    })
+                }}
             </main>
         </div>
     }
 }
 
-fn run_log_content(page: RunLogPage) -> AnyView {
+fn run_log_content(
+    page: RunLogPage,
+    show_thinking_history: bool,
+    toggle_thinking_history: Callback<()>,
+) -> AnyView {
     let RunLogPage {
         projects: _,
         active_project_names: _,
@@ -148,7 +165,12 @@ fn run_log_content(page: RunLogPage) -> AnyView {
             </>
         }
     });
-    let output = run_output_view(run_log.output.clone());
+    let output = run_output_view(
+        run_log.output.clone(),
+        run_log.active,
+        show_thinking_history,
+        toggle_thinking_history,
+    );
     let developer_instructions = run_log
         .developer_instructions
         .unwrap_or_else(|| "No developer instructions have been written.".to_owned());

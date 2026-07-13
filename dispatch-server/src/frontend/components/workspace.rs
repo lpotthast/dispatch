@@ -1,6 +1,5 @@
-use crate::{
-    frontend::pages::RuntimeConfigView,
-    shared::view_models::{AgentRunView, ProjectGitStatusView, ProjectView, WorkspaceEditorView},
+use crate::shared::view_models::{
+    AgentRunView, ProjectGitStatusView, ProjectView, WorkspaceEditorView,
 };
 use leptos::prelude::*;
 
@@ -196,78 +195,6 @@ fn workspace_editor_icon_src(target: &str) -> Option<&'static str> {
         "vscode" => Some("/icons/workspace-vscode.svg"),
         _ => None,
     }
-}
-
-pub(crate) fn runtime_panel(runtime: RuntimeConfigView, return_to: String) -> AnyView {
-    view! {
-        <section class="runtime-panel panel">
-            <div class="panel-heading">
-                <h2>"Runtime"</h2>
-            </div>
-            <div class="runtime-paths">
-                {database_path_actions(&runtime, return_to)}
-                {readonly_path_row("Database directory", runtime.database_directory)}
-                {readonly_path_row("Codex home", runtime.codex_home_path)}
-                {readonly_path_row("Codex config", runtime.codex_config_path)}
-            </div>
-        </section>
-    }
-    .into_any()
-}
-
-fn database_path_actions(runtime: &RuntimeConfigView, return_to: String) -> AnyView {
-    let database_path = runtime.database_path.clone();
-    let path_for_copy = database_path.clone();
-    let (copy_message, set_copy_message) = signal(None::<String>);
-
-    view! {
-        <div class="workspace-actions">
-            <div class="workspace-path">
-                <span class="workspace-label">"Database file"</span>
-                <code>{database_path}</code>
-                <span class="workspace-status workspace-status-ok">"Active"</span>
-            </div>
-            <div class="workspace-buttons">
-                <button
-                    type="button"
-                    class="secondary workspace-button"
-                    on:click=move |_| {
-                        copy_workspace_text(
-                            path_for_copy.clone(),
-                            "Copied path",
-                            set_copy_message,
-                        );
-                    }
-                >
-                    "Copy path"
-                </button>
-                <form method="post" action="/system/database/open">
-                    <input type="hidden" name="return_to" value=return_to/>
-                    <button type="submit" class="secondary workspace-button">
-                        "Open directory"
-                    </button>
-                </form>
-                {move || {
-                    copy_message
-                        .get()
-                        .map(|message| view! { <span class="workspace-copy-status">{message}</span> })
-                }}
-            </div>
-        </div>
-    }
-    .into_any()
-}
-
-fn readonly_path_row(label: &'static str, path: String) -> AnyView {
-    view! {
-        <div class="workspace-actions">
-            <div class="workspace-path">
-                <span class="workspace-label">{label}</span>
-                <code>{path}</code>
-            </div>
-        </div>
-    }
-    .into_any()
 }
 
 fn non_empty_string(value: String) -> Option<String> {

@@ -242,7 +242,8 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         find(driver, By::Css("section.project-settings")).await?;
         find(driver, By::Css("section.board")).await?;
         assert_board_shell_uses_viewport_width(driver).await?;
-        find(driver, By::Css(".workspace-panel .workspace-actions")).await?;
+        assert_board_layout_is_lane_first(driver).await?;
+        find(driver, By::Css(".workspace-bar > .workspace-actions")).await?;
         assert_that!(driver.title().await.context("failed to read page title")?)
             .is_equal_to("Dispatch");
         assert_source_contains(driver, "Copy path").await?;
@@ -316,7 +317,7 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         assert_source_does_not_contain(driver, "missing field `identifier`").await?;
         assert_source_does_not_contain(driver, "unknown variant `Position`").await?;
         find(driver, By::Css(".lane:nth-child(1) .lane-edit")).await?;
-        find(driver, By::Css(".lane:nth-child(1) .lane-add")).await?;
+        find(driver, By::Css(".lane:nth-child(1) .lane-header .lane-add")).await?;
         find(driver, By::Css(".lane:nth-child(2) .lane-add")).await?;
         assert_lane_add_button_count(driver, 2).await?;
         assert_source_does_not_contain(driver, "data-crudkit-leptos=\"automation-triggers\"")
@@ -374,6 +375,7 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
             "committed 0123456789ab (required)",
         )
         .await?;
+        assert_run_output_fixture(driver, app).await?;
         assert_run_log_commit_fixture(
             driver,
             app,
@@ -436,7 +438,7 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         open_new_item_modal(driver).await?;
         assert_new_item_modal_actions(driver).await?;
         find(driver, By::Css("#new-item-modal select[name='state']")).await?;
-        assert_new_item_lane_options(driver).await?;
+        assert_lane_new_item_state(driver).await?;
         close_clean_new_item_modal(driver).await?;
         assert_lane_add_preselects_state(driver).await?;
         assert_new_item_modal_dirty_leave_protection(driver).await?;
@@ -782,6 +784,405 @@ async fn seed_run_commit_outcome_fixtures(app: &DispatchTestApp) -> Result<(), R
         .await
         .context("failed to seed missing-required automation run fixture")?;
     assert_that!(missing_required.rows_affected()).is_equal_to(1);
+
+    let output_path = app._tmpdir.path().join("run-503.output.json");
+    let command = r#"/bin/zsh -lc "sed -n '1,4p' design/ui.md""#;
+    let generic_command = "/bin/zsh -lc 'just check'";
+    let diff_command = "/bin/zsh -lc 'git diff -- design/ui.md'";
+    let diff_output = "diff --git a/design/ui.md b/design/ui.md\nindex 1111111..2222222 100644\n--- a/design/ui.md\n+++ b/design/ui.md\n@@ -1 +1 @@\n-old copy\n+new copy";
+    let output = serde_json::json!({
+        "schema_version": 1,
+        "pieces": [
+            {
+                "sequence": 1,
+                "timestamp": "2026-06-19T10:04:00Z",
+                "kind": "reasoning",
+                "source": "codex",
+                "item_id": "reasoning_1",
+                "title": "thinking",
+                "body": "",
+                "metadata": { "status": "started" }
+            },
+            {
+                "sequence": 2,
+                "timestamp": "2026-06-19T10:04:08Z",
+                "kind": "reasoning",
+                "source": "codex",
+                "item_id": "reasoning_1",
+                "title": "thinking",
+                "body": "",
+                "metadata": { "status": "completed" }
+            },
+            {
+                "sequence": 3,
+                "timestamp": "2026-06-19T10:04:09Z",
+                "kind": "tool_call",
+                "source": "codex",
+                "item_id": "command_1",
+                "title": "command started",
+                "body": command,
+                "metadata": {
+                    "tool_type": "command",
+                    "status": "started",
+                    "command": command
+                }
+            },
+            {
+                "sequence": 4,
+                "timestamp": "2026-06-19T10:04:10Z",
+                "kind": "tool_call",
+                "source": "codex",
+                "item_id": "command_1",
+                "title": "command completed",
+                "body": command,
+                "metadata": {
+                    "tool_type": "command",
+                    "status": "completed",
+                    "command": command,
+                    "exit_code": 0,
+                    "output": "line one\nline two\nline three\nline four"
+                }
+            },
+            {
+                "sequence": 5,
+                "timestamp": "2026-06-19T10:04:11Z",
+                "kind": "tool_call",
+                "source": "codex",
+                "item_id": "command_2",
+                "title": "command started",
+                "body": generic_command,
+                "metadata": {
+                    "tool_type": "command",
+                    "status": "started",
+                    "command": generic_command
+                }
+            },
+            {
+                "sequence": 6,
+                "timestamp": "2026-06-19T10:04:12Z",
+                "kind": "tool_call",
+                "source": "codex",
+                "item_id": "command_2",
+                "title": "command completed",
+                "body": generic_command,
+                "metadata": {
+                    "tool_type": "command",
+                    "status": "completed",
+                    "command": generic_command,
+                    "exit_code": 0,
+                    "output": "checked"
+                }
+            },
+            {
+                "sequence": 7,
+                "timestamp": "2026-06-19T10:04:13Z",
+                "kind": "tool_call",
+                "source": "codex",
+                "item_id": "command_3",
+                "title": "command started",
+                "body": diff_command,
+                "metadata": {
+                    "tool_type": "command",
+                    "status": "started",
+                    "command": diff_command
+                }
+            },
+            {
+                "sequence": 8,
+                "timestamp": "2026-06-19T10:04:14Z",
+                "kind": "tool_call",
+                "source": "codex",
+                "item_id": "command_3",
+                "title": "command completed",
+                "body": diff_command,
+                "metadata": {
+                    "tool_type": "command",
+                    "status": "completed",
+                    "command": diff_command,
+                    "exit_code": 0,
+                    "output": diff_output
+                }
+            },
+            {
+                "sequence": 9,
+                "timestamp": "2026-06-19T10:04:15Z",
+                "kind": "model_message",
+                "source": "codex",
+                "item_id": "message_1",
+                "title": "final answer",
+                "body": "Readable model output.",
+                "metadata": { "final_answer": true }
+            }
+        ]
+    });
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&output).context("failed to encode run-output fixture")?,
+    )
+    .context("failed to write run-output fixture")?;
+    let compact_output = db
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            r#"
+            INSERT INTO "agent_runs" (
+                "id",
+                "project_id",
+                "work_item_id",
+                "memory_event_id",
+                "trigger_id",
+                "trigger_name",
+                "tool_name",
+                "mutability",
+                "status",
+                "command",
+                "working_dir",
+                "worktree_path",
+                "branch_name",
+                "process_id",
+                "exit_code",
+                "log_path",
+                "developer_instructions_path",
+                "user_prompt_path",
+                "agent_model",
+                "agent_reasoning_effort",
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+                "commit_required",
+                "commit_outcome",
+                "commit_shas",
+                "pr_requested",
+                "pr_url",
+                "cleanup_status",
+                "worktree_cleaned_at",
+                "result_summary",
+                "started_at",
+                "finished_at",
+                "created_at",
+                "updated_at"
+            )
+            SELECT
+                503,
+                "id",
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                'codex',
+                'mutating',
+                'completed',
+                'codex --browser-test',
+                '/tmp/dispatch-browser-test',
+                NULL,
+                NULL,
+                NULL,
+                0,
+                ?1,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                0,
+                'not_required',
+                '[]',
+                0,
+                NULL,
+                'not_applicable',
+                NULL,
+                'Rendered compact browser-test output.',
+                '2026-06-19T10:04:00Z',
+                '2026-06-19T10:04:13Z',
+                '2026-06-19T10:04:00Z',
+                '2026-06-19T10:04:13Z'
+            FROM "projects"
+            WHERE "name" = 'demo';
+            "#,
+            vec![output_path.to_string_lossy().into_owned().into()],
+        ))
+        .await
+        .context("failed to seed compact run-output fixture")?;
+    assert_that!(compact_output.rows_affected()).is_equal_to(1);
+
+    Ok(())
+}
+
+async fn assert_run_output_fixture(
+    driver: &WebDriver,
+    app: &DispatchTestApp,
+) -> Result<(), Report> {
+    driver
+        .goto(app.url("/projects/demo/automation/runs/503/log"))
+        .await
+        .context("failed to open compact run-output fixture")?;
+    let toggle = find(driver, By::Css(".thinking-history-toggle")).await?;
+    assert_that!(
+        toggle
+            .text()
+            .await
+            .context("failed to read thinking toggle")?
+    )
+    .is_equal_to("Thinking (1)");
+    assert_that!(
+        driver
+            .execute(
+                "return document.querySelectorAll('.output-reasoning-history').length;",
+                Vec::new(),
+            )
+            .await
+            .context("failed to inspect hidden thinking history")?
+            .convert::<i64>()
+            .context("failed to read hidden thinking history count")?
+    )
+    .is_equal_to(0);
+
+    let exploring = find(driver, By::Css(".command-exploring")).await?;
+    assert_that!(
+        exploring
+            .text()
+            .await
+            .context("failed to read exploring summary")?
+    )
+    .is_equal_to("Exploring design/ui.md...");
+    find(
+        driver,
+        By::XPath("//code[normalize-space()='Ran just check']"),
+    )
+    .await?;
+    assert_source_does_not_contain(driver, "exit 0").await?;
+    assert_source_does_not_contain(driver, "Command details").await?;
+    assert_source_does_not_contain(driver, "Hide full output").await?;
+
+    let preview = find(driver, By::Css(".tool-output-preview")).await?;
+    assert_that!(
+        preview
+            .text()
+            .await
+            .context("failed to read compact output preview")?
+    )
+    .is_equal_to("line one\nline two");
+    click(driver, By::Css(".tool-output-block summary")).await?;
+    assert_that!(
+        find(
+            driver,
+            By::Css(".tool-output-block[open] .tool-output-full")
+        )
+        .await?
+        .text()
+        .await
+        .context("failed to read expanded command output")?
+    )
+    .is_equal_to("line one\nline two\nline three\nline four");
+    click(
+        driver,
+        By::Css(".tool-output-block[open] .tool-output-full"),
+    )
+    .await?;
+    assert_that!(
+        driver
+            .execute(
+                "return document.querySelector('.tool-output-block')?.open ?? true;",
+                Vec::new(),
+            )
+            .await
+            .context("failed to inspect collapsed command output")?
+            .convert::<bool>()
+            .context("failed to read collapsed command output state")?
+    )
+    .is_false();
+
+    find(
+        driver,
+        By::XPath("//code[normalize-space()='Ran git diff -- design/ui.md']"),
+    )
+    .await?;
+    let collapsed_diff_visibility = driver
+        .execute(
+            r#"
+            const row = [...document.querySelectorAll('.output-command')]
+                .find(candidate => candidate.querySelector('.command-summary')?.textContent.trim() === 'Ran git diff -- design/ui.md');
+            const details = row?.querySelector('.tool-output-block');
+            const preview = details?.querySelector('.tool-output-preview');
+            const full = details?.querySelector('.tool-output-full');
+            return details && preview && full
+                ? `${details.open}|${getComputedStyle(preview).display}|${getComputedStyle(full).display}`
+                : '';
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect collapsed diff output")?
+        .convert::<String>()
+        .context("failed to read collapsed diff visibility")?;
+    assert_that!(collapsed_diff_visibility).is_equal_to("false|block|none");
+    click(
+        driver,
+        By::XPath(
+            "//article[.//code[normalize-space()='Ran git diff -- design/ui.md']]//details[contains(@class, 'tool-output-block')]/summary",
+        ),
+    )
+    .await?;
+    let expanded_diff_visibility = driver
+        .execute(
+            r#"
+            const row = [...document.querySelectorAll('.output-command')]
+                .find(candidate => candidate.querySelector('.command-summary')?.textContent.trim() === 'Ran git diff -- design/ui.md');
+            const details = row?.querySelector('.tool-output-block');
+            const preview = details?.querySelector('.tool-output-preview');
+            const full = details?.querySelector('.tool-output-full');
+            return details && preview && full
+                ? `${details.open}|${getComputedStyle(preview).display}|${getComputedStyle(full).display}`
+                : '';
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect expanded diff output")?
+        .convert::<String>()
+        .context("failed to read expanded diff visibility")?;
+    assert_that!(expanded_diff_visibility).is_equal_to("true|none|block");
+
+    click(driver, By::Css(".thinking-history-toggle input")).await?;
+    let history = find(driver, By::Css(".output-reasoning-history")).await?;
+    assert_that!(
+        history
+            .text()
+            .await
+            .context("failed to read thinking history row")?
+    )
+    .is_equal_to("Thought for 8s");
+    assert_that!(
+        driver
+            .execute(
+                "return document.querySelectorAll('.output-reasoning-history details').length;",
+                Vec::new(),
+            )
+            .await
+            .context("failed to inspect empty thinking disclosures")?
+            .convert::<i64>()
+            .context("failed to read empty thinking disclosure count")?
+    )
+    .is_equal_to(0);
+
+    let colors = driver
+        .execute(
+            r#"
+            const output = document.querySelector('.model-output');
+            const section = output?.closest('section');
+            const toolOutput = document.querySelector('.tool-output-preview');
+            return output && section && toolOutput
+                ? `${getComputedStyle(output).color}|${getComputedStyle(section).backgroundColor}|${getComputedStyle(toolOutput).color}`
+                : '';
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect run-output colors")?
+        .convert::<String>()
+        .context("failed to read run-output colors")?;
+    assert_that!(colors).is_equal_to("rgb(32, 36, 42)|rgb(255, 255, 255)|rgb(104, 116, 130)");
 
     Ok(())
 }
@@ -2179,7 +2580,7 @@ async fn open_new_item_modal(driver: &WebDriver) -> Result<(), Report> {
         if !last_state.starts_with("modalVisible=true;") {
             click_css_after_modal_backdrops_clear(
                 driver,
-                "section.board-toolbar > button",
+                ".lane:nth-child(1) .lane-add",
                 "opening new item modal",
             )
             .await?;
@@ -2241,7 +2642,82 @@ async fn assert_board_shell_uses_viewport_width(driver: &WebDriver) -> Result<()
     Ok(())
 }
 
-async fn assert_new_item_lane_options(driver: &WebDriver) -> Result<(), Report> {
+async fn assert_board_layout_is_lane_first(driver: &WebDriver) -> Result<(), Report> {
+    let desktop = driver
+        .execute(
+            r#"
+            const main = document.querySelector('main.page-shell');
+            const workspace = main?.querySelector('.workspace-bar');
+            const board = main?.querySelector('section.board');
+            const laneAdd = board?.querySelector('.lane-add');
+            if (!main || !workspace || !board || !laneAdd) {
+                throw new Error('missing compact Board layout');
+            }
+            const workspaceBeforeBoard = Boolean(
+                workspace.compareDocumentPosition(board) & Node.DOCUMENT_POSITION_FOLLOWING
+            );
+            return [
+                `heading=${Boolean(main.querySelector('h1'))}`,
+                `toolbar=${Boolean(main.querySelector('.board-toolbar'))}`,
+                `runtime=${Boolean(main.querySelector('.runtime-panel'))}`,
+                `workspaceBeforeBoard=${workspaceBeforeBoard}`,
+                `workspaceHeight=${Math.round(workspace.getBoundingClientRect().height)}`,
+                `addInHeader=${Boolean(laneAdd.closest('.lane-header'))}`,
+            ].join(';');
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect compact desktop Board layout")?
+        .convert::<String>()
+        .context("failed to read compact desktop Board layout")?;
+    let expected_prefix =
+        "heading=false;toolbar=false;runtime=false;workspaceBeforeBoard=true;workspaceHeight=";
+    if !desktop.starts_with(expected_prefix) || !desktop.ends_with(";addInHeader=true") {
+        bail!("unexpected compact desktop Board layout: {desktop}");
+    }
+    let Some(workspace_height) = desktop
+        .strip_prefix(expected_prefix)
+        .and_then(|rest| rest.strip_suffix(";addInHeader=true"))
+        .and_then(|height| height.parse::<i64>().ok())
+    else {
+        bail!("failed to parse compact workspace bar height from {desktop}");
+    };
+    if workspace_height >= 100 {
+        bail!("workspace bar was not compact: {workspace_height}px high");
+    }
+
+    driver
+        .set_window_rect(0, 0, 390, 900)
+        .await
+        .context("failed to resize browser for narrow Board layout")?;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mobile_add = driver
+        .execute(
+            r#"
+            const laneAdd = document.querySelector('.lane .lane-add');
+            if (!laneAdd) {
+                throw new Error('missing narrow Board lane add control');
+            }
+            const style = getComputedStyle(laneAdd);
+            return `${style.opacity}|${style.pointerEvents}|${Boolean(laneAdd.closest('.lane-header'))}`;
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to inspect narrow Board lane add control")?
+        .convert::<String>()
+        .context("failed to read narrow Board lane add control")?;
+    assert_that!(mobile_add).is_equal_to("1|auto|true".to_owned());
+
+    driver
+        .set_window_rect(0, 0, 1800, 1000)
+        .await
+        .context("failed to restore desktop browser size")?;
+    Ok(())
+}
+
+async fn assert_lane_new_item_state(driver: &WebDriver) -> Result<(), Report> {
     let summary = driver
         .execute(
             r#"
@@ -2254,10 +2730,10 @@ async fn assert_new_item_lane_options(driver: &WebDriver) -> Result<(), Report> 
             Vec::new(),
         )
         .await
-        .context("failed to inspect new item state options")?
+        .context("failed to inspect lane-scoped new item state")?
         .convert::<String>()
-        .context("failed to read new item state options")?;
-    assert_that!(summary).is_equal_to("idea|idea,open,in_progress,done".to_owned());
+        .context("failed to read lane-scoped new item state")?;
+    assert_that!(summary).is_equal_to("idea|idea".to_owned());
     Ok(())
 }
 
@@ -2758,7 +3234,7 @@ async fn inspect_new_item_modal_state(driver: &WebDriver) -> Result<String, Repo
         .execute(
             r#"
             const modal = document.querySelector('leptonic-modal#new-item-modal');
-            const button = document.querySelector('section.board-toolbar > button');
+            const button = document.querySelector('.lane:nth-child(1) .lane-add');
             const host = document.querySelector('leptonic-modal-host');
             const hostStyle = host ? getComputedStyle(host) : null;
             const bodyText = document.body.textContent ?? '';

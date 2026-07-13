@@ -3,7 +3,7 @@ use crate::{
         components::{
             ActivePage, TopBarAutomation, WorkItemStatesContext, cached_query,
             claim_badge_with_source, encode_path, format_label, preview, project_workspace_panel,
-            provide_work_item_states_context, runtime_panel, selected_project_signal, top_bar,
+            provide_work_item_states_context, selected_project_signal, top_bar,
         },
         crudkit::{WorkItemsPanel, work_items_crudkit_config_for_view},
         live_events::{board_items_event_matches, refetch_on_live_event},
@@ -60,7 +60,6 @@ pub struct BoardPage {
     pub misconfigured_item_count: i64,
     pub api_base_url: String,
     pub codex_status: CodexAppServerStatusView,
-    pub runtime: RuntimeConfigView,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -69,14 +68,6 @@ pub struct BoardItemsSection {
     pub swim_lanes: Vec<SwimLaneView>,
     pub work_item_states: Vec<WorkItemStateView>,
     pub misconfigured_item_count: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct RuntimeConfigView {
-    pub database_path: String,
-    pub database_directory: String,
-    pub codex_home_path: String,
-    pub codex_config_path: String,
 }
 
 #[component]
@@ -194,22 +185,11 @@ pub fn PageBoard() -> impl IntoView {
         automation,
         codex_status,
     );
-    let fallback_title = move || selected_project.get().unwrap_or_else(|| "Board".to_owned());
-
     view! {
         <Title text="Dispatch"/>
         <div>
             {topbar}
             <main class="page-shell">
-                {move || {
-                    result.value.get().is_none().then(|| view! {
-                        <section class="board-toolbar">
-                            <div class="board-heading">
-                                <h1>{fallback_title()}</h1>
-                            </div>
-                        </section>
-                    })
-                }}
                 <For
                     each=move || result.value.get()
                     key=|page| page.selected_project.clone()
@@ -243,13 +223,11 @@ fn board_content(
         misconfigured_item_count,
         api_base_url,
         codex_status: _,
-        runtime,
     } = page;
 
     if let (Some(project), Some(project_view), Some(settings)) =
         (selected_project.clone(), selected_project_view, settings)
     {
-        let page_title = project_view.display_name.clone();
         let board_return_to = format!("/?project={}", encode_path(&project));
         let project_workspace = project_workspace_panel(
             &project,
@@ -267,9 +245,6 @@ fn board_content(
         let (create_item_state_options, set_create_item_state_options) =
             signal(initial_create_item_state_options);
         let create_item_label_suggestions = Signal::derive(move || label_suggestions.clone());
-        let has_create_item_states = Memo::new(move |_| {
-            !state_options_from_project_states(&work_item_states_context.states.get()).is_empty()
-        });
         let open_create_item = Callback::new(move |request: CreateItemOpenRequest| {
             let states = work_item_states_context.states.get_untracked();
             let options = state_options_for_open_request(&states, &request);
@@ -310,28 +285,11 @@ fn board_content(
             set_auto_commit,
         );
         let maintenance = maintenance_view(&project);
-        let runtime = runtime_panel(runtime, format!("/?project={}", encode_path(&project)));
 
         view! {
             <>
-                    <section class="board-toolbar">
-                        <div class="board-heading">
-                            <h1>{page_title}</h1>
-                        </div>
-                        <button
-                            type="button"
-                            disabled=move || !has_create_item_states.get()
-                            on:click=move |_| {
-                                open_create_item.run(CreateItemOpenRequest::AnyState)
-                            }
-                        >
-                            "New item"
-                        </button>
-                    </section>
-                    <section class="workspace-panel panel">
-                        <div class="panel-heading">
-                            <h2>"Workspace"</h2>
-                        </div>
+                    <section class="workspace-bar" aria-label="Workspace">
+                        <span class="workspace-bar-title">"Workspace"</span>
                         {project_workspace}
                     </section>
                     {board}
@@ -342,7 +300,6 @@ fn board_content(
                         project_id=admin_project_id
                     />
                     {project_settings}
-                    {runtime}
                     {maintenance}
             </>
         }
@@ -354,7 +311,6 @@ fn board_content(
                     <h2>"Choose a project"</h2>
                     <a class="button-link" href="/projects">"Projects"</a>
                 </section>
-                {runtime_panel(runtime, "/".to_owned())}
             </>
         }
         .into_any()
@@ -889,19 +845,23 @@ fn board_view(
             view! {
                 <section class="lane">
                     <header class="lane-header">
-                        <h2>{label}</h2>
-                        <span class="lane-count">{count}</span>
-                        <a
-                            class="lane-edit"
-                            href=edit_href
-                            title=edit_label.clone()
-                            aria-label=edit_label
-                        >
-                            "⚙"
-                        </a>
+                        <div class="lane-heading">
+                            <h2>{label}</h2>
+                            <span class="lane-count">{count}</span>
+                        </div>
+                        <div class="lane-actions">
+                            {add_button}
+                            <a
+                                class="lane-edit"
+                                href=edit_href
+                                title=edit_label.clone()
+                                aria-label=edit_label
+                            >
+                                "⚙"
+                            </a>
+                        </div>
                     </header>
                     <div class="lane-cards">{cards}</div>
-                    {add_button}
                 </section>
             }
         })

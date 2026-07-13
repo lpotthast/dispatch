@@ -2,9 +2,10 @@ use crate::frontend::rich_text::rich_text_editor_html;
 use crate::shared::view_models::{AgentRunOutputKind, AgentRunOutputPiece};
 
 use super::{
-    abbreviate_lines, claim_elapsed_seconds_at, compact_run_output, diff_line_class,
-    format_claim_elapsed_seconds, format_output_duration, looks_like_diff,
-    output_entry_duration_seconds, output_entry_title, preview,
+    abbreviate_lines, claim_elapsed_seconds_at, command_presentation, compact_run_output,
+    current_reasoning_sequence, diff_line_class, format_claim_elapsed_seconds,
+    format_output_duration, looks_like_diff, output_entry_duration_seconds, output_entry_title,
+    preview,
 };
 use serde_json::json;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -87,10 +88,64 @@ fn compact_run_output_replaces_started_tool_entry() {
     );
     assert_eq!(entries[0].piece.title, "command Completed");
     assert_eq!(output_entry_duration_seconds(&entries[0]), Some(83));
-    assert_eq!(
-        output_entry_title(&entries[0]),
-        "command completed in 1m 23s"
-    );
+    assert_eq!(output_entry_title(&entries[0]), "Ran command in 1m 23s");
+}
+
+#[test]
+fn compact_run_output_turns_completed_reasoning_into_a_timing_entry() {
+    let output = vec![
+        output_piece(
+            1,
+            "2026-06-19T10:00:00Z",
+            AgentRunOutputKind::Reasoning,
+            Some("reasoning_1"),
+            "thinking",
+            "",
+            json!({ "status": "started" }),
+        ),
+        output_piece(
+            2,
+            "2026-06-19T10:00:08Z",
+            AgentRunOutputKind::Reasoning,
+            Some("reasoning_1"),
+            "thinking",
+            "",
+            json!({ "status": "completed" }),
+        ),
+    ];
+
+    let entries = compact_run_output(output);
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(output_entry_title(&entries[0]), "Thought for 8s");
+    assert!(entries[0].piece.body.is_empty());
+}
+
+#[test]
+fn current_reasoning_must_be_active_and_the_latest_event() {
+    let mut output = vec![output_piece(
+        1,
+        "2026-06-19T10:00:00Z",
+        AgentRunOutputKind::Reasoning,
+        Some("reasoning_1"),
+        "thinking",
+        "",
+        json!({ "status": "started" }),
+    )];
+
+    assert_eq!(current_reasoning_sequence(&output, true), Some(1));
+    assert_eq!(current_reasoning_sequence(&output, false), None);
+
+    output.push(output_piece(
+        2,
+        "2026-06-19T10:00:01Z",
+        AgentRunOutputKind::ToolCall,
+        Some("call_1"),
+        "command started",
+        "just check",
+        json!({ "tool_type": "command", "status": "started" }),
+    ));
+    assert_eq!(current_reasoning_sequence(&output, true), None);
 }
 
 #[test]
@@ -136,10 +191,60 @@ fn abbreviate_lines_keeps_short_output_and_marks_truncation() {
         abbreviate_lines("one\ntwo", 5),
         ("one\ntwo".to_owned(), false)
     );
-    assert_eq!(
-        abbreviate_lines("1\n2\n3\n4\n5\n6", 5),
-        ("1\n2\n3\n4\n5\n...".to_owned(), true)
+    assert_eq!(abbreviate_lines("1\n2\n3", 2), ("1\n2".to_owned(), true));
+}
+
+#[test]
+fn command_presentation_unwraps_shell_and_recognizes_conservative_file_reads() {
+    let sed = command_presentation(
+        r#"/bin/zsh -lc "sed -n '10,30p' 'dispatch-server/src/file with spaces.rs'""#,
     );
+    assert_eq!(
+        sed.display,
+        "sed -n '10,30p' 'dispatch-server/src/file with spaces.rs'"
+    );
+    assert_eq!(
+        sed.exploring_file.as_deref(),
+        Some("dispatch-server/src/file with spaces.rs")
+    );
+
+    assert_eq!(
+        command_presentation("cat -- design/ui.md")
+            .exploring_file
+            .as_deref(),
+        Some("design/ui.md")
+    );
+    assert_eq!(
+        command_presentation("head -n 20 dispatch-server/src/lib.rs")
+            .exploring_file
+            .as_deref(),
+        Some("dispatch-server/src/lib.rs")
+    );
+    assert_eq!(
+        command_presentation("tail --lines=20 dispatch-server/src/lib.rs")
+            .exploring_file
+            .as_deref(),
+        Some("dispatch-server/src/lib.rs")
+    );
+}
+
+#[test]
+fn command_presentation_leaves_ambiguous_inspection_as_commands() {
+    for command in [
+        "cat first.rs second.rs",
+        "cat $FILE",
+        "cat file.rs | head",
+        "cat file.rs|head",
+        "cat --help",
+        "rg pattern dispatch-server/src/lib.rs",
+        "git diff -- dispatch-server/src/lib.rs",
+    ] {
+        assert_eq!(
+            command_presentation(command).exploring_file,
+            None,
+            "unexpected exploration label for {command}"
+        );
+    }
 }
 
 #[test]

@@ -4,13 +4,13 @@ use rootcause::Result;
 
 use crate::{
     backend::{
-        automation, automation_controller::AutomationController, codex_app_server, comments,
-        item_label_service, items, personalities, process_sessions::ProcessSessionRegistry,
-        projects, relationships, storage::Store, swim_lanes, work_item_states, workspace,
+        automation, automation_controller::AutomationController, comments, item_label_service,
+        items, personalities, process_sessions::ProcessSessionRegistry, projects, relationships,
+        storage::Store, swim_lanes, work_item_states, workspace,
     },
     frontend::{
         ApiDocsPage, BoardItemsSection, BoardPage, BoardRunSessionView, CodexStatusPage, ItemPage,
-        ProjectsPage, RunLogPage, RunsPage, RunsSection, RuntimeConfigView, TriggersPage,
+        ProjectsPage, RunLogPage, RunsPage, RunsSection, TriggersPage,
     },
     shared::view_models::{AgentRunView, CodexAppServerStatusView, ProcessSessionView},
 };
@@ -79,7 +79,6 @@ pub(crate) async fn board_page_data(
         misconfigured_item_count,
         api_base_url,
         codex_status,
-        runtime: runtime_config_view(store),
     })
 }
 
@@ -157,23 +156,6 @@ pub(crate) async fn runs_section(
         automation_running,
         run_sessions,
     })
-}
-
-fn runtime_config_view(store: &Store) -> RuntimeConfigView {
-    RuntimeConfigView {
-        database_path: store.path().to_string_lossy().into_owned(),
-        database_directory: store
-            .path()
-            .parent()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        codex_home_path: codex_app_server::codex_home_dir()
-            .to_string_lossy()
-            .into_owned(),
-        codex_config_path: codex_app_server::codex_config_path()
-            .to_string_lossy()
-            .into_owned(),
-    }
 }
 
 async fn board_run_sessions(

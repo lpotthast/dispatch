@@ -13,7 +13,6 @@ pub(crate) struct CreateItemStateOption {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CreateItemOpenRequest {
-    AnyState,
     SingleState(String),
 }
 
@@ -22,7 +21,6 @@ pub(crate) fn state_options_for_open_request(
     request: &CreateItemOpenRequest,
 ) -> Vec<CreateItemStateOption> {
     match request {
-        CreateItemOpenRequest::AnyState => state_options_from_project_states(states),
         CreateItemOpenRequest::SingleState(identifier) => states
             .iter()
             .filter(|state| state.identifier == *identifier)
@@ -98,27 +96,6 @@ mod tests {
             operator: Operator::Equal,
             value,
         })
-    }
-
-    #[test]
-    fn open_request_for_any_state_returns_all_project_states() {
-        let states = [state("open", "Open"), state("done", "Done")];
-
-        let options = state_options_for_open_request(&states, &CreateItemOpenRequest::AnyState);
-
-        assert_eq!(
-            options,
-            vec![
-                CreateItemStateOption {
-                    identifier: "open".to_owned(),
-                    name: "Open".to_owned(),
-                },
-                CreateItemStateOption {
-                    identifier: "done".to_owned(),
-                    name: "Done".to_owned(),
-                },
-            ]
-        );
     }
 
     #[test]

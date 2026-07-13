@@ -1365,6 +1365,7 @@ dependencies = [
  "sea-orm-migration",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "time",
  "tokio",

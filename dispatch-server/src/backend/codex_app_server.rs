@@ -1350,11 +1350,6 @@ pub fn codex_home_dir() -> PathBuf {
     codex_home_dir_for_dispatch_home(&dispatch_home_dir())
 }
 
-/// Returns the shared managed Codex configuration path.
-pub fn codex_config_path() -> PathBuf {
-    codex_config_path_for_home(&codex_home_dir())
-}
-
 /// Returns the isolated managed Codex home for `project_id`.
 pub fn codex_project_home_dir(project_id: i64) -> PathBuf {
     codex_home_dir()
