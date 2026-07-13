@@ -3029,7 +3029,7 @@ async fn assert_item_relationship_create_delete_flow(
     driver
         .execute(
             r#"
-            const form = document.querySelector('.relationship-row form[action$="/delete"]');
+            const form = document.querySelector('.relationship-delete-form');
             if (!form) {
                 throw new Error('missing relationship delete form');
             }
@@ -3231,7 +3231,7 @@ async fn assert_item_label_update_delete_flow(driver: &WebDriver) -> Result<(), 
             r#"
             const row = Array.from(document.querySelectorAll('.label-row'))
                 .find(row => row.querySelector('.label-chip')?.textContent?.trim() === 'severity=high');
-            const form = row?.querySelector('form:not([action$="/delete"])');
+            const form = row?.querySelector('.label-update-form');
             const value = form?.querySelector('input[name="value"]');
             if (!form || !value) {
                 throw new Error('missing label update form');
@@ -3266,7 +3266,7 @@ async fn assert_item_label_update_delete_flow(driver: &WebDriver) -> Result<(), 
             r#"
             const row = Array.from(document.querySelectorAll('.label-row'))
                 .find(row => row.querySelector('.label-chip')?.textContent?.trim() === 'severity=critical');
-            const form = row?.querySelector('form[action$="/delete"]');
+            const form = row?.querySelector('.label-delete-form');
             if (!form) {
                 throw new Error('missing label delete form');
             }
@@ -3310,14 +3310,12 @@ async fn assert_state_label_dropdown_and_move(driver: &WebDriver) -> Result<(), 
             if (!form) {
                 throw new Error('missing state label form');
             }
-            const key = form.querySelector('input[name="key"]');
             const valueSelect = form.querySelector('select[name="value"]');
             const valueInput = form.querySelector('input[name="value"]');
             if (!valueSelect) {
                 throw new Error('missing state label select');
             }
             return [
-                `key=${key?.value ?? '<missing>'}`,
                 `value=${valueSelect.value}`,
                 `hasValueInput=${Boolean(valueInput)}`,
                 `options=${Array.from(valueSelect.options)
@@ -3332,7 +3330,7 @@ async fn assert_state_label_dropdown_and_move(driver: &WebDriver) -> Result<(), 
         .convert::<String>()
         .context("failed to read state label select summary")?;
     assert_that!(summary).is_equal_to(
-        "key=state;value=in_progress;hasValueInput=false;options=idea:Idea|open:Open|in_progress:In progress|done:Done"
+        "value=in_progress;hasValueInput=false;options=idea:Idea|open:Open|in_progress:In progress|done:Done"
             .to_owned(),
     );
 

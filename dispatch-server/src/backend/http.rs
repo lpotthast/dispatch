@@ -18,19 +18,16 @@ use crate::{
         app_state::AppState,
         automation::{self, StartAutomation},
         automation_triggers::{self, CreateAutomationTrigger},
-        codex_app_server,
-        comments::{self, AddComment},
-        crudkit_resources, events, item_label_service,
+        codex_app_server, crudkit_resources, events,
         items::{self, CreateWorkItem, UpdateWorkItem},
         projects::{self, UpdateProjectSettings},
-        relationships,
         workspace::{self, WorkspaceOpenTarget},
     },
     frontend,
     shared::view_models::{
         AgentGitCommandPolicy, AgentGitHardResetPolicy, AgentReasoningEffort, AgentRunStatus,
-        AgentToolName, AuthorType, AutomationActivation, AutomationEffect, DEFAULT_STATE_LABEL,
-        RevertStrategy, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentToolName, AutomationActivation, AutomationEffect, DEFAULT_STATE_LABEL, RevertStrategy,
+        WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -168,38 +165,9 @@ pub(crate) fn router(
             "/projects/{project}/items/{item_id}/update",
             post(update_item),
         )
-        .route("/projects/{project}/items/{item_id}/move", post(move_item))
         .route(
             "/projects/{project}/items/{item_id}/delete",
             post(delete_item),
-        )
-        .route(
-            "/projects/{project}/items/{item_id}/comments",
-            post(add_comment),
-        )
-        .route(
-            "/projects/{project}/items/{item_id}/labels",
-            post(add_item_label),
-        )
-        .route(
-            "/projects/{project}/items/{item_id}/labels/{label_id}/update",
-            post(update_item_label),
-        )
-        .route(
-            "/projects/{project}/items/{item_id}/labels/{label_id}/delete",
-            post(delete_item_label),
-        )
-        .route(
-            "/projects/{project}/items/{item_id}/relationships",
-            post(add_item_relationship),
-        )
-        .route(
-            "/projects/{project}/items/{item_id}/relationships/{relationship_id}/update",
-            post(update_item_relationship),
-        )
-        .route(
-            "/projects/{project}/items/{item_id}/relationships/{relationship_id}/delete",
-            post(delete_item_relationship),
         )
         .route("/agent-tools/discover", post(discover_agent_tools))
         .route("/codex/logout", post(logout_codex))
@@ -1257,36 +1225,6 @@ async fn update_item(
     }
 }
 
-#[derive(serde::Deserialize)]
-struct MoveItemForm {
-    #[serde(alias = "value")]
-    state: String,
-    version: i64,
-}
-
-async fn move_item(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id)): Path<(String, i64)>,
-    Form(form): Form<MoveItemForm>,
-) -> Response {
-    let parsed_state = parse_state_label(form.state);
-
-    match items::move_item(
-        &state.store,
-        &project,
-        item_id,
-        parsed_state,
-        Some(form.version),
-    )
-    .await
-    {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
-        Err(err) => error_response(err).await,
-    }
-}
-
 fn parse_optional_state_label(value: Option<String>) -> String {
     value
         .and_then(|value| {
@@ -1294,15 +1232,6 @@ fn parse_optional_state_label(value: Option<String>) -> String {
             (!value.is_empty()).then_some(value)
         })
         .unwrap_or_else(|| DEFAULT_STATE_LABEL.to_owned())
-}
-
-fn parse_state_label(value: String) -> String {
-    let value = value.trim().to_owned();
-    if value.is_empty() {
-        DEFAULT_STATE_LABEL.to_owned()
-    } else {
-        value
-    }
 }
 
 async fn delete_item(
@@ -1317,151 +1246,6 @@ async fn delete_item(
     }
 }
 
-#[derive(serde::Deserialize)]
-struct AddItemLabelForm {
-    key: String,
-    value: Option<String>,
-    version: i64,
-}
-
-async fn add_item_label(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id)): Path<(String, i64)>,
-    Form(form): Form<AddItemLabelForm>,
-) -> Response {
-    match item_label_service::add_label(
-        &state.store,
-        &project,
-        item_id,
-        form.key,
-        form.value,
-        Some(form.version),
-    )
-    .await
-    {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct UpdateItemLabelForm {
-    key: String,
-    value: Option<String>,
-    version: i64,
-}
-
-async fn update_item_label(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id, label_id)): Path<(String, i64, i64)>,
-    Form(form): Form<UpdateItemLabelForm>,
-) -> Response {
-    match item_label_service::update_label(
-        &state.store,
-        &project,
-        item_id,
-        label_id,
-        Some(form.key),
-        Some(form.value),
-        Some(form.version),
-    )
-    .await
-    {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct DeleteItemLabelForm {
-    version: i64,
-}
-
-async fn delete_item_label(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id, label_id)): Path<(String, i64, i64)>,
-    Form(form): Form<DeleteItemLabelForm>,
-) -> Response {
-    match item_label_service::delete_label(
-        &state.store,
-        &project,
-        item_id,
-        label_id,
-        Some(form.version),
-    )
-    .await
-    {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct AddItemRelationshipForm {
-    target_work_item_id: i64,
-    kind: String,
-}
-
-async fn add_item_relationship(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id)): Path<(String, i64)>,
-    Form(form): Form<AddItemRelationshipForm>,
-) -> Response {
-    match relationships::create_relationship(
-        &state.store,
-        &project,
-        item_id,
-        form.target_work_item_id,
-        form.kind,
-    )
-    .await
-    {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct UpdateItemRelationshipForm {
-    kind: String,
-}
-
-async fn update_item_relationship(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
-    Form(form): Form<UpdateItemRelationshipForm>,
-) -> Response {
-    match relationships::update_relationship_for_item(
-        &state.store,
-        &project,
-        item_id,
-        relationship_id,
-        form.kind,
-    )
-    .await
-    {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
-    }
-}
-
-async fn delete_item_relationship(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
-) -> Response {
-    match relationships::delete_relationship_for_item(
-        &state.store,
-        &project,
-        item_id,
-        relationship_id,
-    )
-    .await
-    {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
-    }
-}
-
 fn item_redirect(project: &str, item_id: i64) -> Response {
     Redirect::to(&format!(
         "/projects/{}/items/{}",
@@ -1469,33 +1253,4 @@ fn item_redirect(project: &str, item_id: i64) -> Response {
         item_id
     ))
     .into_response()
-}
-
-#[derive(serde::Deserialize)]
-struct AddCommentForm {
-    body: String,
-    author_name: Option<String>,
-}
-
-async fn add_comment(
-    Extension(state): Extension<AppState>,
-    Path((project, item_id)): Path<(String, i64)>,
-    Form(form): Form<AddCommentForm>,
-) -> Response {
-    let author_name = form.author_name.filter(|value| !value.trim().is_empty());
-    match comments::add_comment(
-        &state.store,
-        &project,
-        item_id,
-        AddComment {
-            author_type: AuthorType::User,
-            author_name,
-            body: form.body,
-        },
-    )
-    .await
-    {
-        Ok(_) => item_redirect(&project, item_id),
-        Err(err) => error_response(err).await,
-    }
 }

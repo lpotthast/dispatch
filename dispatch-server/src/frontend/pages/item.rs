@@ -57,6 +57,8 @@ pub fn PageItem() -> impl IntoView {
     refetch_on_live_event(result.refresh, move |event| {
         item_event_matches(event, project_for_events.as_deref(), item_id)
     });
+    let (interactive, set_interactive) = signal(false);
+    Effect::new(move |_| set_interactive.set(true));
     let active_project_names = Signal::derive(move || {
         result
             .value
@@ -97,7 +99,7 @@ pub fn PageItem() -> impl IntoView {
                     result
                         .value
                         .get()
-                        .map(|page| item_content(page, result.refresh))
+                        .map(|page| item_content(page, result.refresh, interactive))
                         .unwrap_or_else(|| {
                         view! {
                             <section class="item-header">
@@ -143,7 +145,11 @@ mod content {
     use leptos::prelude::*;
     use leptos_router::{NavigateOptions, hooks::use_navigate};
 
-    pub(crate) fn item_content(page: ItemPage, refresh: Callback<()>) -> AnyView {
+    pub(crate) fn item_content(
+        page: ItemPage,
+        refresh: Callback<()>,
+        interactive: ReadSignal<bool>,
+    ) -> AnyView {
         let ItemPage {
             projects: _,
             active_project_names: _,
@@ -159,11 +165,6 @@ mod content {
         } = page;
         provide_work_item_states_context(work_item_states);
         let board_href = format!("/?project={}", encode_path(&project));
-        let comment_action = format!(
-            "/projects/{}/items/{}/comments",
-            encode_path(&project),
-            item.id
-        );
         let header_title = format!("#{} {}", item.id, item.title);
         let item_state_display = state_label(&item).to_owned();
         let item_project_id = item.project_id;
@@ -254,8 +255,9 @@ mod content {
                 }
             })
             .collect::<Vec<_>>();
-        let labels = item_labels_view(&project, &item, label_suggestions, refresh);
-        let relationship_views = item_relationships_view(&project, &item, relationships, refresh);
+        let labels = item_labels_view(&project, &item, label_suggestions, refresh, interactive);
+        let relationship_views =
+            item_relationships_view(&project, &item, relationships, refresh, interactive);
 
         view! {
             <>
@@ -291,7 +293,7 @@ mod content {
                     <section class="comments">
                         <h2>"Comments"</h2>
                         {comment_views}
-                        <form method="post" action=comment_action on:submit=comment_submit>
+                        <form class="comment-add-form" on:submit=comment_submit>
                             <input
                                 name="author_name"
                                 placeholder="Your name"
@@ -309,7 +311,9 @@ mod content {
                                     set_comment_body.set(event_target_value(&event));
                                 }
                             ></textarea>
-                            <button disabled=move || comment_pending.get()>"Add comment"</button>
+                            <button disabled=move || !interactive.get() || comment_pending.get()>
+                                "Add comment"
+                            </button>
                         </form>
                     </section>
             </>
@@ -417,12 +421,8 @@ mod content {
         item: &WorkItemView,
         relationships: Vec<WorkItemRelationshipListEntry>,
         refresh: Callback<()>,
+        interactive: ReadSignal<bool>,
     ) -> AnyView {
-        let add_action = format!(
-            "/projects/{}/items/{}/relationships",
-            encode_path(project),
-            item.id
-        );
         let (target_item_id, set_target_item_id) = signal(String::new());
         let (relationship_kind, set_relationship_kind) = signal(String::new());
         let service = item_service();
@@ -456,45 +456,47 @@ mod content {
         };
         let rows = relationships
             .into_iter()
-            .map(|entry| item_relationship_row(project, item.id, entry, refresh))
+            .map(|entry| item_relationship_row(project, item.id, entry, refresh, interactive))
             .collect::<Vec<_>>();
         let empty = rows.is_empty().then(|| {
             view! { <p class="muted">"No relationships"</p> }
         });
 
         view! {
-        <section class="item-relationships panel">
-            <h2>"Relationships"</h2>
-            <div class="relationship-list">
-                {empty}
-                {rows}
-            </div>
-            <form class="relationship-add-form" method="post" action=add_action on:submit=add_submit>
-                <input
-                    type="number"
-                    min="1"
-                    name="target_work_item_id"
-                    placeholder="target item id"
-                    required
-                    prop:value=move || target_item_id.get()
-                    on:input=move |event| {
-                        set_target_item_id.set(event_target_value(&event));
-                    }
-                />
-                <input
-                    name="kind"
-                    placeholder="kind"
-                    required
-                    prop:value=move || relationship_kind.get()
-                    on:input=move |event| {
-                        set_relationship_kind.set(event_target_value(&event));
-                    }
-                />
-                <button disabled=move || add_pending.get()>"Add relationship"</button>
-            </form>
-        </section>
-    }
-    .into_any()
+            <section class="item-relationships panel">
+                <h2>"Relationships"</h2>
+                <div class="relationship-list">
+                    {empty}
+                    {rows}
+                </div>
+                <form class="relationship-add-form" on:submit=add_submit>
+                    <input
+                        type="number"
+                        min="1"
+                        name="target_work_item_id"
+                        placeholder="target item id"
+                        required
+                        prop:value=move || target_item_id.get()
+                        on:input=move |event| {
+                            set_target_item_id.set(event_target_value(&event));
+                        }
+                    />
+                    <input
+                        name="kind"
+                        placeholder="kind"
+                        required
+                        prop:value=move || relationship_kind.get()
+                        on:input=move |event| {
+                            set_relationship_kind.set(event_target_value(&event));
+                        }
+                    />
+                    <button disabled=move || !interactive.get() || add_pending.get()>
+                        "Add relationship"
+                    </button>
+                </form>
+            </section>
+        }
+        .into_any()
     }
 
     fn item_relationship_row(
@@ -502,24 +504,13 @@ mod content {
         item_id: i64,
         entry: WorkItemRelationshipListEntry,
         refresh: Callback<()>,
+        interactive: ReadSignal<bool>,
     ) -> impl IntoView + 'static {
         let relationship = entry.relationship;
         let related = match entry.direction {
             WorkItemRelationshipDirection::Outgoing => relationship.target.clone(),
             WorkItemRelationshipDirection::Incoming => relationship.source.clone(),
         };
-        let update_form_action = format!(
-            "/projects/{}/items/{}/relationships/{}/update",
-            encode_path(project),
-            item_id,
-            relationship.id
-        );
-        let delete_form_action = format!(
-            "/projects/{}/items/{}/relationships/{}/delete",
-            encode_path(project),
-            item_id,
-            relationship.id
-        );
         let (kind, set_kind) = signal(relationship.kind.clone());
         let service = item_service();
         let delete_service = service.clone();
@@ -588,17 +579,22 @@ mod content {
                         "#"{related.id} " [" {related_state} "] " {related.title}
                     </a>
                 </div>
-                <form method="post" action=update_form_action class="relationship-kind-form" on:submit=update_submit>
+                <form class="relationship-kind-form" on:submit=update_submit>
                     <input
                         name="kind"
                         required
                         prop:value=move || kind.get()
                         on:input=move |event| set_kind.set(event_target_value(&event))
                     />
-                    <button disabled=move || update_pending.get()>"Update"</button>
+                    <button disabled=move || !interactive.get() || update_pending.get()>"Update"</button>
                 </form>
-                <form method="post" action=delete_form_action on:submit=delete_submit>
-                    <button class="danger" disabled=move || delete_pending.get()>"Delete"</button>
+                <form class="relationship-delete-form" on:submit=delete_submit>
+                    <button
+                        class="danger"
+                        disabled=move || !interactive.get() || delete_pending.get()
+                    >
+                        "Delete"
+                    </button>
                 </form>
             </article>
         }
@@ -626,12 +622,8 @@ mod content {
         item: &WorkItemView,
         suggestions: Vec<ProjectLabelView>,
         refresh: Callback<()>,
+        interactive: ReadSignal<bool>,
     ) -> AnyView {
-        let add_action = format!(
-            "/projects/{}/items/{}/labels",
-            encode_path(project),
-            item.id
-        );
         let suggestion_options = label_suggestion_options(&suggestions);
         let state_options = use_context::<WorkItemStatesContext>()
             .map(|context| context.states)
@@ -674,7 +666,7 @@ mod content {
             .labels
             .iter()
             .cloned()
-            .map(|label| item_label_row(project, item, label, state_options, refresh))
+            .map(|label| item_label_row(project, item, label, state_options, refresh, interactive))
             .collect::<Vec<_>>();
 
         view! {
@@ -683,8 +675,7 @@ mod content {
                 <datalist id="label-key-suggestions">{suggestion_options}</datalist>
                 <datalist id="state-value-suggestions">{state_suggestion_options}</datalist>
                 <div class="label-list">{rows}</div>
-                <form class="label-add-form" method="post" action=add_action on:submit=add_submit>
-                    <input type="hidden" name="version" value=item.version.to_string()/>
+                <form class="label-add-form" on:submit=add_submit>
                     <input
                         name="key"
                         list="label-key-suggestions"
@@ -700,7 +691,7 @@ mod content {
                         prop:value=move || label_value.get()
                         on:input=move |event| set_label_value.set(event_target_value(&event))
                     />
-                    <button disabled=move || add_pending.get()>"Add label"</button>
+                    <button disabled=move || !interactive.get() || add_pending.get()>"Add label"</button>
                 </form>
             </section>
         }
@@ -713,24 +704,9 @@ mod content {
         label: WorkItemLabelView,
         work_item_states: ReadSignal<Vec<WorkItemStateView>>,
         refresh: Callback<()>,
+        interactive: ReadSignal<bool>,
     ) -> impl IntoView + 'static {
         let is_state = label.key == STATE_LABEL_KEY;
-        let update_form_action = if is_state {
-            format!("/projects/{}/items/{}/move", encode_path(project), item.id)
-        } else {
-            format!(
-                "/projects/{}/items/{}/labels/{}/update",
-                encode_path(project),
-                item.id,
-                label.id
-            )
-        };
-        let delete_form_action = format!(
-            "/projects/{}/items/{}/labels/{}/delete",
-            encode_path(project),
-            item.id,
-            label.id
-        );
         let initial_value = label.value.clone().unwrap_or_default();
         let rendered = format_label(&label.key, label.value.as_deref());
         let can_delete = label.key != STATE_LABEL_KEY;
@@ -811,15 +787,15 @@ mod content {
                     {rendered}
                 </span>
                 <form
-                    method="post"
-                    action=update_form_action
-                    class=if is_state { "state-label-form" } else { "" }
+                    class=if is_state {
+                        "label-update-form state-label-form"
+                    } else {
+                        "label-update-form"
+                    }
                     on:submit=update_submit
                 >
-                    <input type="hidden" name="version" value=item.version.to_string()/>
                     {if is_state {
                         view! {
-                            <input type="hidden" name="key" value=STATE_LABEL_KEY/>
                             <select
                                 name="value"
                                 class="state-label-select"
@@ -846,12 +822,16 @@ mod content {
                         }
                         .into_any()
                     }}
-                    <button disabled=move || update_pending.get()>"Update"</button>
+                    <button disabled=move || !interactive.get() || update_pending.get()>"Update"</button>
                 </form>
                 {can_delete.then(|| view! {
-                    <form method="post" action=delete_form_action on:submit=delete_submit>
-                        <input type="hidden" name="version" value=item.version.to_string()/>
-                        <button class="danger" disabled=move || delete_pending.get()>"Delete"</button>
+                    <form class="label-delete-form" on:submit=delete_submit>
+                        <button
+                            class="danger"
+                            disabled=move || !interactive.get() || delete_pending.get()
+                        >
+                            "Delete"
+                        </button>
                     </form>
                 })}
             </article>
