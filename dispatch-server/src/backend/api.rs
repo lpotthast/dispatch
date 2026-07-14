@@ -7,7 +7,7 @@ use axum::{
         Path, Query,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -15,11 +15,14 @@ use axum::{
     routing::{get, post},
 };
 use dispatch_types::{
-    AddCommentRequest, ApiError, ClaimWorkItemRequest, ClaimWorkItemResponse,
+    AddCommentRequest, ApiError, AssignWorkItemGroupRequest, AutomationBundleExportView,
+    AutomationBundleValidationView, AutomationPersonalityInput, AutomationRuleInput,
+    BundleYamlRequest, ClaimWorkItemRequest, ClaimWorkItemResponse, CreateWorkItemGroupRequest,
     CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest, CreateWorkItemRequest,
     DEFAULT_STATE_LABEL, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
-    RequestFeedbackWorkItemRequest, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
-    UpdateWorkItemRelationshipRequest, UpdateWorkItemRequest,
+    RemoveAutomationBundleRequest, RequestFeedbackWorkItemRequest, RestoreRevisionRequest,
+    RoutingExplainRequest, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
+    UpdateWorkItemRelationshipRequest, UpdateWorkItemRequest, WorkItemSearchRequest,
 };
 use futures_core::Stream;
 use rootcause::Result;
@@ -28,12 +31,15 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::{
         app_state::AppState,
-        automation, comments,
+        automation, automation_bundles, automation_revisions, automation_routing,
+        automation_triggers, comments,
         comments::AddComment,
         events, item_claims, item_label_service, items,
         items::{CreateWorkItem, UpdateWorkItem},
-        projects, relationships,
+        personalities, projects, relationships,
+        request_attribution::RequestAttribution,
         storage::Store,
+        work_item_groups,
     },
     shared::view_models::ProcessSessionView,
 };
@@ -67,6 +73,15 @@ where
         .route(
             "/api/projects/{project}/items",
             get(list_items).post(create_item),
+        )
+        .route("/api/projects/{project}/items/search", post(search_items))
+        .route(
+            "/api/projects/{project}/work-groups",
+            get(list_work_groups).post(create_work_group),
+        )
+        .route(
+            "/api/projects/{project}/work-groups/{group_key}/items",
+            post(assign_work_group_items),
         )
         .route("/api/projects/{project}/labels", get(list_project_labels))
         .route("/api/projects/{project}/items/claim", post(claim_item))
@@ -116,6 +131,18 @@ where
         )
         .route("/api/projects/{project}/automation/runs", get(list_runs))
         .route(
+            "/api/projects/{project}/automation/triggers",
+            get(list_automation_triggers),
+        )
+        .route(
+            "/api/projects/{project}/automation/triggers/{id_or_key}",
+            get(get_automation_trigger),
+        )
+        .route(
+            "/api/projects/{project}/automation/routing/explain",
+            post(explain_automation_routing),
+        )
+        .route(
             "/api/projects/{project}/automation/runs/{run_id}/log",
             get(get_run_log),
         )
@@ -129,6 +156,90 @@ where
             get(item_events),
         )
         .route("/api/events/ws", get(ui_events_ws))
+        .route(
+            "/operator/api/automation/bundles/validate",
+            post(validate_automation_bundle),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/bundles/diff",
+            post(diff_automation_bundle),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/bundles/apply",
+            post(apply_automation_bundle),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/bundles",
+            get(list_installed_automation_bundles),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/bundles/{bundle_key}",
+            axum::routing::delete(remove_automation_bundle),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/bundles/{bundle_key}/export",
+            get(export_automation_bundle),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/triggers/{trigger_id}/revisions",
+            get(list_automation_revisions),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/rules",
+            get(operator_list_rules).post(operator_create_rule),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/rules/{rule_id}",
+            get(operator_get_rule)
+                .put(operator_update_rule)
+                .delete(operator_delete_rule),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/rules/{rule_id}/schedule",
+            post(operator_schedule_rule),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/rules/{rule_id}/restore",
+            post(operator_restore_rule),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/rules/{rule_id}/detach",
+            post(operator_detach_rule),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/revisions/{revision_id}/analytics",
+            get(operator_revision_analytics),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/evaluations",
+            get(operator_list_evaluations),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/personalities",
+            get(operator_list_personalities).post(operator_create_personality),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/personalities/{personality_id}",
+            get(operator_get_personality)
+                .put(operator_update_personality)
+                .delete(operator_delete_personality),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/personalities/{personality_id}/revisions",
+            get(operator_list_personality_revisions),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/personalities/{personality_id}/restore",
+            post(operator_restore_personality),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/personalities/{personality_id}/detach",
+            post(operator_detach_personality),
+        )
+        .route(
+            "/operator/api/projects/{project}/automation/routing/explain",
+            post(explain_automation_routing),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,6 +254,12 @@ struct LabelMutationQuery {
 
 #[derive(Debug, Deserialize)]
 struct ListRunsQuery {
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListEvaluationsQuery {
+    trigger_id: Option<i64>,
     limit: Option<u64>,
 }
 
@@ -177,8 +294,20 @@ async fn list_project_memory_events(
 async fn set_project_memory(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<UpdateProjectMemoryRequest>,
 ) -> Response {
+    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
+    {
+        Ok(attribution) => attribution,
+        Err(err) => return json_result::<()>(Err(err)),
+    };
+    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
+    if let Err(err) = attribution.cross_check_agent_run_id(request.agent_run_id) {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         projects::update_memory_with_source(
             &state.store,
@@ -196,8 +325,20 @@ async fn set_project_memory(
 async fn append_project_memory(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<UpdateProjectMemoryRequest>,
 ) -> Response {
+    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
+    {
+        Ok(attribution) => attribution,
+        Err(err) => return json_result::<()>(Err(err)),
+    };
+    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
+    if let Err(err) = attribution.cross_check_agent_run_id(request.agent_run_id) {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         projects::append_memory_with_source(
             &state.store,
@@ -234,13 +375,385 @@ async fn list_project_labels(
     json_result(item_label_service::list_project_labels(&state.store, &project).await)
 }
 
+async fn search_items(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<WorkItemSearchRequest>,
+) -> Response {
+    let result = async {
+        RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        items::search_items(&state.store, &project, request).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn list_automation_triggers(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let result = async {
+        RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        automation_triggers::list_triggers(&state.store, &project).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn get_automation_trigger(
+    Extension(state): Extension<AppState>,
+    Path((project, id_or_key)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let result = async {
+        RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        automation_triggers::get_trigger(&state.store, &project, &id_or_key).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn explain_automation_routing(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<RoutingExplainRequest>,
+) -> Response {
+    let result = async {
+        RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        automation_routing::explain(&state.store, &project, request).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn validate_automation_bundle(Json(request): Json<BundleYamlRequest>) -> Response {
+    json_result(
+        automation_bundles::validate_yaml(&request.yaml).map(|bundle| {
+            AutomationBundleValidationView {
+                manifest: bundle.manifest,
+                manifest_hash: bundle.manifest_hash,
+            }
+        }),
+    )
+}
+
+async fn diff_automation_bundle(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    Json(request): Json<BundleYamlRequest>,
+) -> Response {
+    json_result(automation_bundles::diff_yaml(&state.store, &project, &request.yaml).await)
+}
+
+async fn apply_automation_bundle(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    Json(request): Json<BundleYamlRequest>,
+) -> Response {
+    json_result(
+        automation_bundles::apply_yaml(
+            &state.store,
+            &project,
+            &request.yaml,
+            request.expected_current_hash.as_deref(),
+        )
+        .await,
+    )
+}
+
+async fn export_automation_bundle(
+    Extension(state): Extension<AppState>,
+    Path((project, bundle_key)): Path<(String, String)>,
+) -> Response {
+    json_result(
+        automation_bundles::export_yaml(&state.store, &project, &bundle_key)
+            .await
+            .map(|yaml| AutomationBundleExportView { yaml }),
+    )
+}
+
+async fn list_installed_automation_bundles(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+) -> Response {
+    json_result(automation_bundles::list_installed(&state.store, &project).await)
+}
+
+async fn remove_automation_bundle(
+    Extension(state): Extension<AppState>,
+    Path((project, bundle_key)): Path<(String, String)>,
+    Json(request): Json<RemoveAutomationBundleRequest>,
+) -> Response {
+    json_result(
+        automation_bundles::remove_bundle(
+            &state.store,
+            &project,
+            &bundle_key,
+            request.expected_current_hash.as_deref(),
+        )
+        .await,
+    )
+}
+
+async fn list_automation_revisions(
+    Extension(state): Extension<AppState>,
+    Path((project, trigger_id)): Path<(String, i64)>,
+) -> Response {
+    let result = async {
+        let project_id = projects::project_id(&state.store, &project).await?;
+        automation_revisions::list_trigger_revisions(&state.store, project_id, trigger_id).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn operator_list_rules(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+) -> Response {
+    json_result(automation_triggers::list_triggers(&state.store, &project).await)
+}
+
+async fn operator_get_rule(
+    Extension(state): Extension<AppState>,
+    Path((project, rule_id)): Path<(String, String)>,
+) -> Response {
+    json_result(automation_triggers::get_trigger(&state.store, &project, &rule_id).await)
+}
+
+async fn operator_create_rule(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    Json(input): Json<AutomationRuleInput>,
+) -> Response {
+    json_result(automation_triggers::create_trigger_from_input(&state.store, &project, input).await)
+}
+
+async fn operator_update_rule(
+    Extension(state): Extension<AppState>,
+    Path((project, rule_id)): Path<(String, i64)>,
+    Json(input): Json<AutomationRuleInput>,
+) -> Response {
+    json_result(
+        automation_triggers::update_trigger_from_input(&state.store, &project, rule_id, input)
+            .await,
+    )
+}
+
+async fn operator_delete_rule(
+    Extension(state): Extension<AppState>,
+    Path((project, rule_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(
+        automation_triggers::delete_trigger(&state.store, &project, rule_id)
+            .await
+            .map(|()| serde_json::json!({ "deleted": true })),
+    )
+}
+
+async fn operator_schedule_rule(
+    Extension(state): Extension<AppState>,
+    Path((project, rule_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(
+        automation_triggers::schedule_trigger_evaluation(&state.store, &project, rule_id).await,
+    )
+}
+
+async fn operator_restore_rule(
+    Extension(state): Extension<AppState>,
+    Path((project, rule_id)): Path<(String, i64)>,
+    Json(request): Json<RestoreRevisionRequest>,
+) -> Response {
+    let result = async {
+        automation_revisions::restore_trigger_revision(
+            &state.store,
+            &project,
+            rule_id,
+            request.revision_id,
+        )
+        .await
+        .and_then(automation_triggers::model_to_view)
+    }
+    .await;
+    json_result(result)
+}
+
+async fn operator_detach_rule(
+    Extension(state): Extension<AppState>,
+    Path((project, rule_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(automation_triggers::detach_trigger(&state.store, &project, rule_id).await)
+}
+
+async fn operator_revision_analytics(
+    Extension(state): Extension<AppState>,
+    Path((project, revision_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(
+        automation_revisions::trigger_revision_analytics(&state.store, &project, revision_id).await,
+    )
+}
+
+async fn operator_list_evaluations(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    Query(query): Query<ListEvaluationsQuery>,
+) -> Response {
+    json_result(
+        automation_revisions::list_evaluations(
+            &state.store,
+            &project,
+            query.trigger_id,
+            query.limit.unwrap_or(100),
+        )
+        .await,
+    )
+}
+
+async fn operator_list_personalities(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+) -> Response {
+    json_result(personalities::list_personalities(&state.store, &project).await)
+}
+
+async fn operator_get_personality(
+    Extension(state): Extension<AppState>,
+    Path((project, personality_id)): Path<(String, String)>,
+) -> Response {
+    json_result(personalities::get_personality(&state.store, &project, &personality_id).await)
+}
+
+async fn operator_create_personality(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    Json(input): Json<AutomationPersonalityInput>,
+) -> Response {
+    json_result(personalities::create_personality(&state.store, &project, input).await)
+}
+
+async fn operator_update_personality(
+    Extension(state): Extension<AppState>,
+    Path((project, personality_id)): Path<(String, i64)>,
+    Json(input): Json<AutomationPersonalityInput>,
+) -> Response {
+    json_result(
+        personalities::update_personality(&state.store, &project, personality_id, input).await,
+    )
+}
+
+async fn operator_delete_personality(
+    Extension(state): Extension<AppState>,
+    Path((project, personality_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(
+        personalities::delete_personality(&state.store, &project, personality_id)
+            .await
+            .map(|()| serde_json::json!({ "deleted": true })),
+    )
+}
+
+async fn operator_list_personality_revisions(
+    Extension(state): Extension<AppState>,
+    Path((project, personality_id)): Path<(String, i64)>,
+) -> Response {
+    let result = async {
+        let project_id = projects::project_id(&state.store, &project).await?;
+        automation_revisions::list_personality_revisions(&state.store, project_id, personality_id)
+            .await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn operator_restore_personality(
+    Extension(state): Extension<AppState>,
+    Path((project, personality_id)): Path<(String, i64)>,
+    Json(request): Json<RestoreRevisionRequest>,
+) -> Response {
+    json_result(
+        automation_revisions::restore_personality_revision(
+            &state.store,
+            &project,
+            personality_id,
+            request.revision_id,
+        )
+        .await
+        .map(dispatch_types::PersonalityView::from),
+    )
+}
+
+async fn operator_detach_personality(
+    Extension(state): Extension<AppState>,
+    Path((project, personality_id)): Path<(String, i64)>,
+) -> Response {
+    json_result(personalities::detach_personality(&state.store, &project, personality_id).await)
+}
+
+async fn list_work_groups(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let result = async {
+        RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        work_item_groups::list_groups(&state.store, &project).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn create_work_group(
+    Extension(state): Extension<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CreateWorkItemGroupRequest>,
+) -> Response {
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        work_item_groups::create_group(&state.store, &project, request, &attribution).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn assign_work_group_items(
+    Extension(state): Extension<AppState>,
+    Path((project, group_key)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AssignWorkItemGroupRequest>,
+) -> Response {
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        work_item_groups::assign_items(
+            &state.store,
+            &project,
+            &group_key,
+            request.item_ids,
+            &attribution,
+        )
+        .await
+    }
+    .await;
+    json_result(result)
+}
+
 async fn create_item(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<CreateWorkItemRequest>,
 ) -> Response {
-    json_result(
-        items::create_item(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        items::create_item_with_attribution(
             &state.store,
             &project,
             CreateWorkItem {
@@ -253,25 +766,37 @@ async fn create_item(
                 agent_reasoning_effort_override: request.agent_reasoning_effort_override,
                 initial_labels: request.initial_labels,
             },
+            &attribution,
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn get_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
 ) -> Response {
-    json_result(items::get_item(&state.store, &project, item_id).await)
+    let result = async {
+        RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        items::get_item(&state.store, &project, item_id).await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn update_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<UpdateWorkItemRequest>,
 ) -> Response {
-    json_result(
-        items::update_item(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        items::update_item_with_attribution(
             &state.store,
             &project,
             item_id,
@@ -283,16 +808,28 @@ async fn update_item(
                 agent_reasoning_effort_override: request.agent_reasoning_effort_override,
                 expect_version: request.expect_version,
             },
+            &attribution,
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn claim_item(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<ClaimWorkItemRequest>,
 ) -> Response {
+    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
+    {
+        Ok(attribution) => attribution,
+        Err(err) => return json_result::<()>(Err(err)),
+    };
+    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         item_claims::claim_item(&state.store, &project, &request.agent_id, &request.state)
             .await
@@ -303,8 +840,17 @@ async fn claim_item(
 async fn progress_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<ProgressWorkItemRequest>,
 ) -> Response {
+    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
+    {
+        Ok(attribution) => attribution,
+        Err(err) => return json_result::<()>(Err(err)),
+    };
+    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         item_claims::progress_item(
             &state.store,
@@ -320,8 +866,17 @@ async fn progress_item(
 async fn finish_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<FinishWorkItemRequest>,
 ) -> Response {
+    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
+    {
+        Ok(attribution) => attribution,
+        Err(err) => return json_result::<()>(Err(err)),
+    };
+    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         item_claims::finish_item(
             &state.store,
@@ -337,8 +892,17 @@ async fn finish_item(
 async fn release_item(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<ReleaseWorkItemRequest>,
 ) -> Response {
+    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
+    {
+        Ok(attribution) => attribution,
+        Err(err) => return json_result::<()>(Err(err)),
+    };
+    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         item_claims::release_item(
             &state.store,
@@ -355,8 +919,17 @@ async fn release_item(
 async fn request_item_feedback(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<RequestFeedbackWorkItemRequest>,
 ) -> Response {
+    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
+    {
+        Ok(attribution) => attribution,
+        Err(err) => return json_result::<()>(Err(err)),
+    };
+    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         item_claims::request_feedback(
             &state.store,
@@ -379,10 +952,13 @@ async fn list_comments(
 async fn add_comment(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<AddCommentRequest>,
 ) -> Response {
-    json_result(
-        comments::add_comment(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        comments::add_comment_with_attribution(
             &state.store,
             &project,
             item_id,
@@ -391,9 +967,12 @@ async fn add_comment(
                 author_name: request.author_name,
                 body: request.body,
             },
+            attribution.event(),
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn list_runs(
@@ -535,56 +1114,76 @@ async fn list_item_labels(
 async fn add_item_label(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Query(query): Query<LabelMutationQuery>,
     Json(request): Json<CreateWorkItemLabelRequest>,
 ) -> Response {
-    json_result(
-        item_label_service::add_label(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        item_label_service::add_label_with_attribution(
             &state.store,
             &project,
             item_id,
             request.key,
             request.value,
             query.expect_version,
+            attribution.event(),
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn update_item_label(
     Extension(state): Extension<AppState>,
     Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
     Json(request): Json<UpdateWorkItemLabelRequest>,
 ) -> Response {
-    json_result(
-        item_label_service::update_label(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        item_label_service::update_label_with_attribution(
             &state.store,
             &project,
             item_id,
-            label_id,
-            request.key,
-            request.value,
-            request.expect_version,
+            item_label_service::UpdateLabelInput {
+                label_id,
+                key: request.key,
+                value: request.value,
+                expect_version: request.expect_version,
+            },
+            attribution.event(),
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn delete_item_label(
     Extension(state): Extension<AppState>,
     Path((project, item_id, label_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
     Query(query): Query<LabelMutationQuery>,
 ) -> Response {
-    json_result(
-        item_label_service::delete_label(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        item_label_service::delete_label_with_attribution(
             &state.store,
             &project,
             item_id,
             label_id,
             query.expect_version,
+            attribution.event(),
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn list_item_relationships(
@@ -597,68 +1196,110 @@ async fn list_item_relationships(
 async fn create_item_relationship(
     Extension(state): Extension<AppState>,
     Path((project, item_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<CreateWorkItemRelationshipRequest>,
 ) -> Response {
-    json_result(
-        relationships::create_relationship(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        relationships::create_relationship_with_attribution(
             &state.store,
             &project,
             item_id,
             request.target_work_item_id,
             request.kind,
+            attribution.event(),
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn update_relationship(
     Extension(state): Extension<AppState>,
     Path((project, relationship_id)): Path<(String, i64)>,
+    headers: HeaderMap,
     Json(request): Json<UpdateWorkItemRelationshipRequest>,
 ) -> Response {
-    json_result(
-        relationships::update_relationship(&state.store, &project, relationship_id, request.kind)
-            .await,
-    )
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        relationships::update_relationship_with_attribution(
+            &state.store,
+            &project,
+            relationship_id,
+            request.kind,
+            attribution.event(),
+        )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn delete_relationship(
     Extension(state): Extension<AppState>,
     Path((project, relationship_id)): Path<(String, i64)>,
+    headers: HeaderMap,
 ) -> Response {
-    json_result(relationships::delete_relationship(&state.store, &project, relationship_id).await)
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        relationships::delete_relationship_with_attribution(
+            &state.store,
+            &project,
+            relationship_id,
+            attribution.event(),
+        )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn update_item_relationship(
     Extension(state): Extension<AppState>,
     Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
     Json(request): Json<UpdateWorkItemRelationshipRequest>,
 ) -> Response {
-    json_result(
-        relationships::update_relationship_for_item(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        relationships::update_relationship_for_item_with_attribution(
             &state.store,
             &project,
             item_id,
             relationship_id,
             request.kind,
+            attribution.event(),
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 async fn delete_item_relationship(
     Extension(state): Extension<AppState>,
     Path((project, item_id, relationship_id)): Path<(String, i64, i64)>,
+    headers: HeaderMap,
 ) -> Response {
-    json_result(
-        relationships::delete_relationship_for_item(
+    let result = async {
+        let attribution =
+            RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        relationships::delete_relationship_for_item_with_attribution(
             &state.store,
             &project,
             item_id,
             relationship_id,
+            attribution.event(),
         )
-        .await,
-    )
+        .await
+    }
+    .await;
+    json_result(result)
 }
 
 #[cfg(test)]
@@ -758,6 +1399,7 @@ mod tests {
             claim_item(
                 Extension(state.clone()),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(ClaimWorkItemRequest {
                     agent_id: agent_id.clone(),
                     state: "open".to_owned(),
@@ -774,6 +1416,7 @@ mod tests {
             progress_item(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), item_id)),
+                HeaderMap::new(),
                 Json(ProgressWorkItemRequest {
                     agent_id: agent_id.clone(),
                     body: "Working".to_owned(),
@@ -788,6 +1431,7 @@ mod tests {
             release_item(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), item_id)),
+                HeaderMap::new(),
                 Json(ReleaseWorkItemRequest {
                     agent_id: agent_id.clone(),
                     comment: Some("Paused".to_owned()),
@@ -809,6 +1453,7 @@ mod tests {
             claim_item(
                 Extension(state.clone()),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(ClaimWorkItemRequest {
                     agent_id: agent_id.clone(),
                     state: "open".to_owned(),
@@ -839,6 +1484,7 @@ mod tests {
             claim_item(
                 Extension(state.clone()),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(ClaimWorkItemRequest {
                     agent_id: agent_id.clone(),
                     state: "open".to_owned(),
@@ -853,6 +1499,7 @@ mod tests {
             request_item_feedback(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), feedback_item_id)),
+                HeaderMap::new(),
                 Json(RequestFeedbackWorkItemRequest {
                     agent_id: agent_id.clone(),
                     body: "Need a user decision".to_owned(),
@@ -890,6 +1537,7 @@ mod tests {
             claim_item(
                 Extension(state.clone()),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(ClaimWorkItemRequest {
                     agent_id: agent_id.clone(),
                     state: "open".to_owned(),
@@ -904,6 +1552,7 @@ mod tests {
             finish_item(
                 Extension(state),
                 Path(("demo".to_owned(), finish_item_id)),
+                HeaderMap::new(),
                 Json(FinishWorkItemRequest {
                     agent_id,
                     report: "Done".to_owned(),
@@ -927,6 +1576,7 @@ mod tests {
             update_item(
                 Extension(state),
                 Path(("demo".to_owned(), item_id)),
+                HeaderMap::new(),
                 Json(UpdateWorkItemRequest {
                     title: Some("Endpoint update".to_owned()),
                     description: None,
@@ -962,6 +1612,7 @@ mod tests {
             create_item(
                 Extension(state.clone()),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(backwards_compatible),
             )
             .await,
@@ -981,6 +1632,7 @@ mod tests {
             create_item(
                 Extension(state),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(CreateWorkItemRequest {
                     title: "Initial labels request".to_owned(),
                     description: "New client payload".to_owned(),
@@ -1026,6 +1678,7 @@ mod tests {
             add_item_label(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), item_id)),
+                HeaderMap::new(),
                 Query(LabelMutationQuery {
                     expect_version: None,
                 }),
@@ -1054,6 +1707,7 @@ mod tests {
             update_item_label(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), item_id, label.id)),
+                HeaderMap::new(),
                 Json(UpdateWorkItemLabelRequest {
                     key: Some("priority".to_owned()),
                     value: Some(Some("p1".to_owned())),
@@ -1082,6 +1736,7 @@ mod tests {
         let deleted = delete_item_label(
             Extension(state),
             Path(("demo".to_owned(), item_id, label.id)),
+            HeaderMap::new(),
             Query(LabelMutationQuery {
                 expect_version: None,
             }),
@@ -1113,6 +1768,7 @@ mod tests {
             create_item_relationship(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), source_id)),
+                HeaderMap::new(),
                 Json(CreateWorkItemRelationshipRequest {
                     target_work_item_id: target_id,
                     kind: " is follow-up of ".to_owned(),
@@ -1156,6 +1812,7 @@ mod tests {
             create_item_relationship(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), source_id)),
+                HeaderMap::new(),
                 Json(CreateWorkItemRelationshipRequest {
                     target_work_item_id: target_id,
                     kind: "is follow-up of".to_owned(),
@@ -1170,6 +1827,7 @@ mod tests {
             create_item_relationship(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), source_id)),
+                HeaderMap::new(),
                 Json(CreateWorkItemRelationshipRequest {
                     target_work_item_id: source_id,
                     kind: "relates".to_owned(),
@@ -1184,6 +1842,7 @@ mod tests {
             create_item_relationship(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), source_id)),
+                HeaderMap::new(),
                 Json(CreateWorkItemRelationshipRequest {
                     target_work_item_id: target_id,
                     kind: " ".to_owned(),
@@ -1198,6 +1857,7 @@ mod tests {
             update_relationship(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), created.relationship.id)),
+                HeaderMap::new(),
                 Json(UpdateWorkItemRelationshipRequest {
                     kind: "unblocks".to_owned(),
                 }),
@@ -1211,6 +1871,7 @@ mod tests {
             delete_relationship(
                 Extension(state.clone()),
                 Path(("demo".to_owned(), created.relationship.id)),
+                HeaderMap::new(),
             )
             .await,
         )
@@ -1232,6 +1893,7 @@ mod tests {
             set_project_memory(
                 Extension(state.clone()),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(UpdateProjectMemoryRequest {
                     agent_id: "dispatch-run-7".to_owned(),
                     agent_run_id: None,
@@ -1252,6 +1914,7 @@ mod tests {
             append_project_memory(
                 Extension(state.clone()),
                 Path("demo".to_owned()),
+                HeaderMap::new(),
                 Json(UpdateProjectMemoryRequest {
                     agent_id: "dispatch-run-7".to_owned(),
                     agent_run_id: None,

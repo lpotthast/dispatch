@@ -52,6 +52,25 @@ pub async fn create_relationship(
     target_work_item_id: i64,
     kind: String,
 ) -> Result<WorkItemRelationshipListEntry> {
+    create_relationship_with_attribution(
+        store,
+        project_name,
+        source_work_item_id,
+        target_work_item_id,
+        kind,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn create_relationship_with_attribution(
+    store: &Store,
+    project_name: &str,
+    source_work_item_id: i64,
+    target_work_item_id: i64,
+    kind: String,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<WorkItemRelationshipListEntry> {
     let mutation = CreateRelationshipMutation::new(source_work_item_id, target_work_item_id, kind)?;
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -72,7 +91,7 @@ pub async fn create_relationship(
     )
     .await?;
     let touched = endpoint_items
-        .touch_and_record_event(&txn, project_id, mutation.created_event())
+        .touch_and_record_event(&txn, project_id, mutation.created_event(), attribution)
         .await?;
     txn.commit()
         .await
@@ -85,13 +104,40 @@ pub async fn create_relationship(
     })
 }
 
+#[cfg(test)]
 pub async fn update_relationship(
     store: &Store,
     project_name: &str,
     relationship_id: i64,
     kind: String,
 ) -> Result<WorkItemRelationshipView> {
-    update_relationship_inner(store, project_name, None, relationship_id, kind).await
+    update_relationship_inner(
+        store,
+        project_name,
+        None,
+        relationship_id,
+        kind,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn update_relationship_with_attribution(
+    store: &Store,
+    project_name: &str,
+    relationship_id: i64,
+    kind: String,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<WorkItemRelationshipView> {
+    update_relationship_inner(
+        store,
+        project_name,
+        None,
+        relationship_id,
+        kind,
+        attribution,
+    )
+    .await
 }
 
 pub async fn update_relationship_for_item(
@@ -101,15 +147,59 @@ pub async fn update_relationship_for_item(
     relationship_id: i64,
     kind: String,
 ) -> Result<WorkItemRelationshipView> {
-    update_relationship_inner(store, project_name, Some(item_id), relationship_id, kind).await
+    update_relationship_inner(
+        store,
+        project_name,
+        Some(item_id),
+        relationship_id,
+        kind,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
 }
 
+pub(crate) async fn update_relationship_for_item_with_attribution(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    relationship_id: i64,
+    kind: String,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<WorkItemRelationshipView> {
+    update_relationship_inner(
+        store,
+        project_name,
+        Some(item_id),
+        relationship_id,
+        kind,
+        attribution,
+    )
+    .await
+}
+
+#[cfg(test)]
 pub async fn delete_relationship(
     store: &Store,
     project_name: &str,
     relationship_id: i64,
 ) -> Result<DeleteWorkItemRelationshipResponse> {
-    delete_relationship_inner(store, project_name, None, relationship_id).await
+    delete_relationship_inner(
+        store,
+        project_name,
+        None,
+        relationship_id,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn delete_relationship_with_attribution(
+    store: &Store,
+    project_name: &str,
+    relationship_id: i64,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<DeleteWorkItemRelationshipResponse> {
+    delete_relationship_inner(store, project_name, None, relationship_id, attribution).await
 }
 
 pub async fn delete_relationship_for_item(
@@ -118,7 +208,31 @@ pub async fn delete_relationship_for_item(
     item_id: i64,
     relationship_id: i64,
 ) -> Result<DeleteWorkItemRelationshipResponse> {
-    delete_relationship_inner(store, project_name, Some(item_id), relationship_id).await
+    delete_relationship_inner(
+        store,
+        project_name,
+        Some(item_id),
+        relationship_id,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn delete_relationship_for_item_with_attribution(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    relationship_id: i64,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<DeleteWorkItemRelationshipResponse> {
+    delete_relationship_inner(
+        store,
+        project_name,
+        Some(item_id),
+        relationship_id,
+        attribution,
+    )
+    .await
 }
 
 async fn update_relationship_inner(
@@ -127,6 +241,7 @@ async fn update_relationship_inner(
     requested_item_id: Option<i64>,
     relationship_id: i64,
     kind: String,
+    attribution: work_item_events::EventAttribution<'_>,
 ) -> Result<WorkItemRelationshipView> {
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -153,7 +268,7 @@ async fn update_relationship_inner(
     let updated =
         work_item_relationships::update_kind_in_tx(&txn, relationship, mutation.kind()).await?;
     let touched = endpoint_items
-        .touch_and_record_event(&txn, project_id, mutation.updated_event())
+        .touch_and_record_event(&txn, project_id, mutation.updated_event(), attribution)
         .await?;
     txn.commit()
         .await
@@ -168,6 +283,7 @@ async fn delete_relationship_inner(
     project_name: &str,
     requested_item_id: Option<i64>,
     relationship_id: i64,
+    attribution: work_item_events::EventAttribution<'_>,
 ) -> Result<DeleteWorkItemRelationshipResponse> {
     let project_id = projects::project_id(store, project_name).await?;
     let txn = store
@@ -184,7 +300,7 @@ async fn delete_relationship_inner(
 
     work_item_relationships::delete_by_id_in_tx(&txn, relationship_id).await?;
     let touched = endpoint_items
-        .touch_and_record_event(&txn, project_id, mutation.deleted_event())
+        .touch_and_record_event(&txn, project_id, mutation.deleted_event(), attribution)
         .await?;
     txn.commit()
         .await
@@ -228,6 +344,7 @@ impl RelationshipEndpointItems {
         conn: &C,
         project_id: i64,
         event: RelationshipEvent,
+        attribution: work_item_events::EventAttribution<'_>,
     ) -> Result<RelationshipEndpoints>
     where
         C: ConnectionTrait,
@@ -240,6 +357,7 @@ impl RelationshipEndpointItems {
             source.id,
             event.event_type,
             event.source_body,
+            attribution,
         )
         .await?;
         record_relationship_event(
@@ -248,6 +366,7 @@ impl RelationshipEndpointItems {
             target.id,
             event.event_type,
             event.target_body,
+            attribution,
         )
         .await?;
         Ok(RelationshipEndpoints {
@@ -413,12 +532,20 @@ async fn record_relationship_event<C>(
     item_id: i64,
     event_type: WorkItemEventType,
     body: String,
+    attribution: work_item_events::EventAttribution<'_>,
 ) -> Result<()>
 where
     C: ConnectionTrait,
 {
-    work_item_events::record_event_in_tx(conn, project_id, Some(item_id), event_type, &body)
-        .await?;
+    work_item_events::record_event_with_attribution_in_tx(
+        conn,
+        project_id,
+        Some(item_id),
+        event_type,
+        &body,
+        attribution,
+    )
+    .await?;
     Ok(())
 }
 

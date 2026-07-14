@@ -3,12 +3,46 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait};
 
 use crate::{
     backend::{
-        entities::work_item::{WorkItemActiveModel, WorkItemModel},
+        entities::{
+            work_item::{WorkItemActiveModel, WorkItemModel},
+            work_item_origin::WorkItemOriginActiveModel,
+        },
         item_labels, projects, work_item_events, work_item_labels, work_item_updates,
         workflow_labels,
     },
-    shared::view_models::{AgentReasoningEffort, CreateWorkItemLabelRequest, WorkItemEventType},
+    shared::view_models::{
+        AgentReasoningEffort, CreateWorkItemLabelRequest, WorkItemEventType, WorkItemOriginKind,
+    },
 };
+
+#[derive(Clone, Debug)]
+pub(crate) struct InsertWorkItemOrigin {
+    pub(crate) kind: WorkItemOriginKind,
+    pub(crate) actor_id: Option<String>,
+    pub(crate) agent_run_id: Option<i64>,
+    pub(crate) producing_evaluation_id: Option<i64>,
+    pub(crate) trigger_id: Option<i64>,
+    pub(crate) trigger_revision_id: Option<i64>,
+    pub(crate) trigger_name: Option<String>,
+    pub(crate) bundle_key: Option<String>,
+    pub(crate) deduplication_key: Option<String>,
+}
+
+impl Default for InsertWorkItemOrigin {
+    fn default() -> Self {
+        Self {
+            kind: WorkItemOriginKind::Operator,
+            actor_id: None,
+            agent_run_id: None,
+            producing_evaluation_id: None,
+            trigger_id: None,
+            trigger_revision_id: None,
+            trigger_name: None,
+            bundle_key: None,
+            deduplication_key: None,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CreateWorkItem {
@@ -102,6 +136,28 @@ pub(crate) async fn insert_planned_in_tx<C>(
 where
     C: ConnectionTrait,
 {
+    insert_planned_with_origin_in_tx(
+        conn,
+        project_id,
+        plan,
+        created_at,
+        InsertWorkItemOrigin::default(),
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn insert_planned_with_origin_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    plan: CreateWorkItemPlan,
+    created_at: String,
+    origin: InsertWorkItemOrigin,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<WorkItemModel>
+where
+    C: ConnectionTrait,
+{
     let insert = plan.into_insert(project_id, created_at);
     let item = insert
         .active
@@ -125,12 +181,30 @@ where
         )
         .await?;
     }
-    work_item_events::record_event_in_tx(
+    WorkItemOriginActiveModel {
+        work_item_id: Set(item.id),
+        project_id: Set(project_id),
+        origin_kind: Set(origin.kind.as_storage().to_owned()),
+        actor_id: Set(origin.actor_id),
+        agent_run_id: Set(origin.agent_run_id),
+        producing_evaluation_id: Set(origin.producing_evaluation_id),
+        trigger_id: Set(origin.trigger_id),
+        trigger_revision_id: Set(origin.trigger_revision_id),
+        trigger_name: Set(origin.trigger_name),
+        bundle_key: Set(origin.bundle_key),
+        deduplication_key: Set(origin.deduplication_key),
+        created_at: Set(item.created_at.clone()),
+    }
+    .insert(conn)
+    .await
+    .context("failed to create work item origin")?;
+    work_item_events::record_event_with_attribution_in_tx(
         conn,
         project_id,
         Some(item.id),
         WorkItemEventType::ItemCreated,
         "Created item",
+        attribution,
     )
     .await?;
 

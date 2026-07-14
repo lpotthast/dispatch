@@ -1,18 +1,23 @@
 use std::time::Duration;
 
+use crudkit_core::condition::{
+    Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+};
 use dispatch_types::{
-    AddCommentRequest, ClaimWorkItemRequest, CreateWorkItemLabelRequest,
-    CreateWorkItemRelationshipRequest, CreateWorkItemRequest, FinishWorkItemRequest,
-    ProgressWorkItemRequest, ReleaseWorkItemRequest, RequestFeedbackWorkItemRequest,
-    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRelationshipRequest,
-    UpdateWorkItemRequest,
+    AddCommentRequest, AssignWorkItemGroupRequest, ClaimWorkItemRequest,
+    CreateWorkItemGroupRequest, CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest,
+    CreateWorkItemRequest, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
+    RequestFeedbackWorkItemRequest, RoutingExplainRequest, UpdateProjectMemoryRequest,
+    UpdateWorkItemLabelRequest, UpdateWorkItemRelationshipRequest, UpdateWorkItemRequest,
+    WorkItemSearchRequest,
 };
 use rootcause::Result;
 
 use crate::{
     commands::{
-        AutomationCommand, Command, CommentCommand, ItemCommand, ItemCreateArgs, LabelCommand,
-        MemoryCommand, RelationshipCommand,
+        AutomationCommand, AutomationRoutingCommand, AutomationTriggersCommand, Command,
+        CommentCommand, GroupCommand, ItemCommand, ItemCreateArgs, LabelCommand, MemoryCommand,
+        RelationshipCommand,
     },
     context::ResolvedContext,
     git_guard::run_git,
@@ -25,9 +30,68 @@ pub(crate) async fn run(command: Command, context: ResolvedContext) -> Result<()
         Command::Comment { command } => run_comment(command, context).await,
         Command::Label { command } => run_label(command, context).await,
         Command::Relationship { command } => run_relationship(command, context).await,
+        Command::Group { command } => run_group(command, context).await,
         Command::Memory { command } => run_memory(command, context).await,
         Command::Automation { command } => run_automation(command, context).await,
         Command::Git(args) => run_git(args.args),
+    }
+}
+
+async fn run_group(command: GroupCommand, context: ResolvedContext) -> Result<()> {
+    let client = context.client();
+    let project = context.project()?;
+    match command {
+        GroupCommand::List(args) => {
+            let groups = client.list_work_item_groups(project).await?;
+            output::write(args.json, &groups, |output| {
+                for group in &groups {
+                    writeln!(
+                        output,
+                        "{} ({}) - {} item{}",
+                        group.name,
+                        group.key,
+                        group.item_count,
+                        if group.item_count == 1 { "" } else { "s" }
+                    )?;
+                }
+                Ok(())
+            })
+        }
+        GroupCommand::Create(args) => {
+            let group = client
+                .create_work_item_group(
+                    project,
+                    &CreateWorkItemGroupRequest {
+                        key: args.key,
+                        name: args.name,
+                    },
+                )
+                .await?;
+            output::write(args.json, &group, |output| {
+                writeln!(output, "Created work group {} ({})", group.name, group.key)
+            })
+        }
+        GroupCommand::Assign(args) => {
+            let assigned = args.item_ids.len();
+            let group = client
+                .assign_work_item_group_items(
+                    project,
+                    &args.key,
+                    &AssignWorkItemGroupRequest {
+                        item_ids: args.item_ids,
+                    },
+                )
+                .await?;
+            output::write(args.json, &group, |output| {
+                writeln!(
+                    output,
+                    "Assigned {assigned} item{} to {} ({})",
+                    if assigned == 1 { "" } else { "s" },
+                    group.name,
+                    group.key
+                )
+            })
+        }
     }
 }
 
@@ -39,6 +103,48 @@ async fn run_item(command: ItemCommand, context: ResolvedContext) -> Result<()> 
             let items = client.list_items(project, args.state.as_deref()).await?;
             output::write(args.json, &items, |output| {
                 render::write_item_rows(output, &items)
+            })
+        }
+        ItemCommand::Search(args) => {
+            let labels = (!args.labels.is_empty()).then(|| {
+                Condition::All(
+                    args.labels
+                        .into_iter()
+                        .map(label_condition_element)
+                        .collect(),
+                )
+            });
+            let selector = args
+                .selector_json
+                .as_deref()
+                .map(serde_json::from_str::<Condition>)
+                .transpose()?;
+            let request = WorkItemSearchRequest {
+                states: args.states,
+                labels,
+                selector,
+                text: args.text,
+                finished: if args.finished {
+                    Some(true)
+                } else if args.unfinished {
+                    Some(false)
+                } else {
+                    None
+                },
+                created_by_run: args.created_by_run,
+                produced_by_trigger: args.produced_by_trigger,
+                relationship_kind: args.relationship_kind,
+                updated_since: args.updated_since,
+                limit: args.limit,
+                cursor: args.cursor,
+            };
+            let page = client.search_items(project, &request).await?;
+            output::write(args.json, &page, |output| {
+                render::write_item_rows(output, &page.items)?;
+                if let Some(cursor) = &page.next_cursor {
+                    writeln!(output, "Next cursor: {cursor}")?;
+                }
+                Ok(())
             })
         }
         ItemCommand::Show(args) => {
@@ -380,7 +486,7 @@ async fn run_memory(command: MemoryCommand, context: ResolvedContext) -> Result<
                     project,
                     &UpdateProjectMemoryRequest {
                         agent_id: agent_id.to_owned(),
-                        agent_run_id: None,
+                        agent_run_id: context.agent_run_id(),
                         body: args.body,
                     },
                 )
@@ -400,7 +506,7 @@ async fn run_memory(command: MemoryCommand, context: ResolvedContext) -> Result<
                     project,
                     &UpdateProjectMemoryRequest {
                         agent_id: agent_id.to_owned(),
-                        agent_run_id: None,
+                        agent_run_id: context.agent_run_id(),
                         body: args.body,
                     },
                 )
@@ -432,7 +538,93 @@ async fn run_automation(command: AutomationCommand, context: ResolvedContext) ->
                 render::write_run_log(output, &log)
             })
         }
+        AutomationCommand::Triggers { command } => match command {
+            AutomationTriggersCommand::List(args) => {
+                let triggers = client.list_automation_triggers(project).await?;
+                output::write(args.json, &triggers, |output| {
+                    for trigger in &triggers {
+                        writeln!(
+                            output,
+                            "#{} {} [{} / {}]{}",
+                            trigger.id,
+                            trigger.name,
+                            trigger.activation,
+                            trigger.effect,
+                            if trigger.exclusive { " exclusive" } else { "" }
+                        )?;
+                    }
+                    Ok(())
+                })
+            }
+            AutomationTriggersCommand::Show(args) => {
+                let trigger = client
+                    .get_automation_trigger(project, &args.id_or_key)
+                    .await?;
+                output::write(args.json, &trigger, |output| {
+                    writeln!(output, "#{} {}", trigger.id, trigger.name)?;
+                    writeln!(output, "Activation: {}", trigger.activation)?;
+                    writeln!(output, "Effect: {}", trigger.effect)?;
+                    writeln!(output, "Schedule: {}", trigger.schedule)?;
+                    writeln!(output, "Exclusive: {}", trigger.exclusive)
+                })
+            }
+        },
+        AutomationCommand::Routing { command } => match command {
+            AutomationRoutingCommand::Explain(args) => {
+                let explanation = client
+                    .explain_automation_routing(
+                        project,
+                        &RoutingExplainRequest {
+                            item_id: Some(context.item_id(args.item_id)?),
+                            rule: None,
+                        },
+                    )
+                    .await?;
+                output::write(args.json, &explanation, |output| {
+                    writeln!(
+                        output,
+                        "Winner: {}",
+                        explanation
+                            .winner_trigger_id
+                            .map(|id| format!("#{id}"))
+                            .unwrap_or_else(|| "none".to_owned())
+                    )?;
+                    for rule in &explanation.rules {
+                        writeln!(
+                            output,
+                            "{}: match={} due={} admission={} score={}{}{}",
+                            rule.trigger_name,
+                            rule.selector_matches,
+                            rule.due,
+                            rule.admission_allowed,
+                            rule.fairness_score,
+                            if rule.exclusive { " exclusive" } else { "" },
+                            if rule.would_win { " winner" } else { "" }
+                        )?;
+                        for blocker in &rule.blockers {
+                            writeln!(output, "  blocked: {blocker}")?;
+                        }
+                    }
+                    Ok(())
+                })
+            }
+        },
     }
+}
+
+fn label_condition_element(raw: String) -> ConditionElement {
+    let (key, value) = match raw.split_once('=') {
+        Some((key, value)) => (
+            key.trim().to_owned(),
+            ConditionClauseValue::String(value.trim().to_owned()),
+        ),
+        None => (raw.trim().to_owned(), ConditionClauseValue::Bool(true)),
+    };
+    ConditionElement::Clause(ConditionClause {
+        column_name: key,
+        operator: Operator::Equal,
+        value,
+    })
 }
 
 fn optional_override<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {

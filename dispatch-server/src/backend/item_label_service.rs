@@ -37,6 +37,27 @@ pub async fn add_label(
     value: Option<String>,
     expect_version: Option<i64>,
 ) -> Result<WorkItemView> {
+    add_label_with_attribution(
+        store,
+        project_name,
+        item_id,
+        key,
+        value,
+        expect_version,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn add_label_with_attribution(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    key: String,
+    value: Option<String>,
+    expect_version: Option<i64>,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<WorkItemView> {
     let label = item_label_mutations::AddLabelMutation::new(key, value)?;
     let context =
         LabelMutationContext::start(store, project_name, item_id, expect_version, "label add")
@@ -56,7 +77,13 @@ pub async fn add_label(
     )
     .await?;
     context
-        .finish(store, project_name, label.added_event(), "label add")
+        .finish(
+            store,
+            project_name,
+            label.added_event(),
+            "label add",
+            attribution,
+        )
         .await
 }
 
@@ -69,20 +96,55 @@ pub async fn update_label(
     value: Option<Option<String>>,
     expect_version: Option<i64>,
 ) -> Result<WorkItemView> {
-    let label = item_label_mutations::UpdateLabelMutation::new(key, value)?;
+    update_label_with_attribution(
+        store,
+        project_name,
+        item_id,
+        UpdateLabelInput {
+            label_id,
+            key,
+            value,
+            expect_version,
+        },
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
 
-    let context =
-        LabelMutationContext::start(store, project_name, item_id, expect_version, "label update")
-            .await?;
+pub(crate) struct UpdateLabelInput {
+    pub(crate) label_id: i64,
+    pub(crate) key: Option<String>,
+    pub(crate) value: Option<Option<String>>,
+    pub(crate) expect_version: Option<i64>,
+}
+
+pub(crate) async fn update_label_with_attribution(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    input: UpdateLabelInput,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<WorkItemView> {
+    let label = item_label_mutations::UpdateLabelMutation::new(input.key, input.value)?;
+
+    let context = LabelMutationContext::start(
+        store,
+        project_name,
+        item_id,
+        input.expect_version,
+        "label update",
+    )
+    .await?;
     let existing =
-        work_item_labels::get_for_item(&context.txn, context.project_id, item_id, label_id).await?;
+        work_item_labels::get_for_item(&context.txn, context.project_id, item_id, input.label_id)
+            .await?;
     let label = label.apply_to(&existing)?;
     if work_item_labels::item_has_key(
         &context.txn,
         context.project_id,
         item_id,
         &label.key,
-        Some(label_id),
+        Some(input.label_id),
     )
     .await?
     {
@@ -98,7 +160,7 @@ pub async fn update_label(
     )
     .await?;
     context
-        .finish(store, project_name, event, "label update")
+        .finish(store, project_name, event, "label update", attribution)
         .await
 }
 
@@ -108,6 +170,25 @@ pub async fn delete_label(
     item_id: i64,
     label_id: i64,
     expect_version: Option<i64>,
+) -> Result<DeleteWorkItemLabelResponse> {
+    delete_label_with_attribution(
+        store,
+        project_name,
+        item_id,
+        label_id,
+        expect_version,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn delete_label_with_attribution(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    label_id: i64,
+    expect_version: Option<i64>,
+    attribution: work_item_events::EventAttribution<'_>,
 ) -> Result<DeleteWorkItemLabelResponse> {
     let context =
         LabelMutationContext::start(store, project_name, item_id, expect_version, "label delete")
@@ -119,7 +200,7 @@ pub async fn delete_label(
 
     work_item_labels::delete_by_id_in_tx(&context.txn, deletion.label_id()).await?;
     let work_item = context
-        .finish(store, project_name, event, "label delete")
+        .finish(store, project_name, event, "label delete", attribution)
         .await?;
     Ok(DeleteWorkItemLabelResponse {
         deleted: true,
@@ -164,6 +245,7 @@ impl LabelMutationContext {
         project_name: &str,
         event: item_label_mutations::LabelMutationEvent,
         operation: &'static str,
+        attribution: work_item_events::EventAttribution<'_>,
     ) -> Result<WorkItemView> {
         let Self {
             project_id,
@@ -172,12 +254,13 @@ impl LabelMutationContext {
         } = self;
         let item_id = item.id;
         let updated = work_items::touch(&txn, item).await?;
-        work_item_events::record_event_in_tx(
+        work_item_events::record_event_with_attribution_in_tx(
             &txn,
             project_id,
             Some(item_id),
             event.event_type,
             &event.body,
+            attribution,
         )
         .await?;
         txn.commit()

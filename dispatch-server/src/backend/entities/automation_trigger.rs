@@ -63,6 +63,35 @@ pub struct Model {
 
     pub priority: i64,
 
+    #[serde(default)]
+    pub exclusive: bool,
+
+    pub produced_work_spec_json: Option<String>,
+
+    pub postconditions_json: Option<String>,
+
+    pub model_override: Option<String>,
+
+    pub reasoning_effort_override: Option<String>,
+
+    pub timeout_seconds: Option<i64>,
+
+    pub max_concurrent_runs: Option<i64>,
+
+    pub concurrency_group: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub current_revision_id: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub managed_bundle_key: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub managed_object_key: Option<String>,
+
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
     pub evaluation_count: i64,
@@ -152,6 +181,28 @@ pub mod read_view {
         pub work_item_selector: Option<String>,
 
         pub priority: i64,
+
+        pub exclusive: bool,
+
+        pub produced_work_spec_json: Option<String>,
+
+        pub postconditions_json: Option<String>,
+
+        pub model_override: Option<String>,
+
+        pub reasoning_effort_override: Option<String>,
+
+        pub timeout_seconds: Option<i64>,
+
+        pub max_concurrent_runs: Option<i64>,
+
+        pub concurrency_group: Option<String>,
+
+        pub current_revision_id: Option<i64>,
+
+        pub managed_bundle_key: Option<String>,
+
+        pub managed_object_key: Option<String>,
 
         pub evaluation_count: i64,
 

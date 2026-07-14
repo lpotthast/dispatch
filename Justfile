@@ -5,6 +5,7 @@ bind := env_var_or_default("DISPATCH_BIND", "127.0.0.1:4000")
 project := env_var_or_default("DISPATCH_PROJECT", "demo")
 server_manifest := "dispatch-server/Cargo.toml"
 cli_manifest := "dispatch-cli/Cargo.toml"
+operator_manifest := "dispatch-operator/Cargo.toml"
 api_client_manifest := "dispatch-api-client/Cargo.toml"
 types_manifest := "dispatch-types/Cargo.toml"
 
@@ -17,24 +18,28 @@ icons *args:
 fmt:
     cargo fmt --manifest-path "{{server_manifest}}"
     cargo fmt --manifest-path "{{cli_manifest}}"
+    cargo fmt --manifest-path "{{operator_manifest}}"
     cargo fmt --manifest-path "{{api_client_manifest}}"
     cargo fmt --manifest-path "{{types_manifest}}"
 
 check:
     cargo check --manifest-path "{{server_manifest}}"
     cargo check --manifest-path "{{cli_manifest}}"
+    cargo check --manifest-path "{{operator_manifest}}"
     cargo check --manifest-path "{{api_client_manifest}}"
     cargo check --manifest-path "{{types_manifest}}"
 
 update:
     cargo update --manifest-path "{{server_manifest}}"
     cargo update --manifest-path "{{cli_manifest}}"
+    cargo update --manifest-path "{{operator_manifest}}"
     cargo update --manifest-path "{{api_client_manifest}}"
     cargo update --manifest-path "{{types_manifest}}"
 
 upgrade:
     cargo upgrade --manifest-path "{{server_manifest}}"
     cargo upgrade --manifest-path "{{cli_manifest}}"
+    cargo upgrade --manifest-path "{{operator_manifest}}"
     cargo upgrade --manifest-path "{{api_client_manifest}}"
     cargo upgrade --manifest-path "{{types_manifest}}"
 
@@ -42,6 +47,7 @@ test:
     cargo test --manifest-path "{{server_manifest}}" --lib --bins
     cargo test --manifest-path "{{server_manifest}}" --doc
     cargo test --manifest-path "{{cli_manifest}}" --bins
+    cargo test --manifest-path "{{operator_manifest}}" --bins
     cargo test --manifest-path "{{api_client_manifest}}" --lib
     cargo test --manifest-path "{{api_client_manifest}}" --doc
     cargo test --manifest-path "{{types_manifest}}" --lib
@@ -59,6 +65,7 @@ browser-test-pause:
 clippy:
     cargo clippy --manifest-path "{{server_manifest}}" --all-targets -- -D warnings
     cargo clippy --manifest-path "{{cli_manifest}}" --all-targets -- -D warnings
+    cargo clippy --manifest-path "{{operator_manifest}}" --all-targets -- -D warnings
     cargo clippy --manifest-path "{{api_client_manifest}}" --all-targets -- -D warnings
     cargo clippy --manifest-path "{{types_manifest}}" --all-targets -- -D warnings
 
@@ -71,6 +78,9 @@ run *args:
 
 cli *args:
     cargo run -q --manifest-path "{{cli_manifest}}" -- {{args}}
+
+operator *args:
+    cargo run -q --manifest-path "{{operator_manifest}}" -- {{args}}
 
 serve:
     DISPATCH_DEVELOPMENT=1 cargo leptos --manifest-path "{{server_manifest}}" serve -- --database "{{database}}" --bind "{{bind}}"

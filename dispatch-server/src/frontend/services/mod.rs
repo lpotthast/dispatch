@@ -10,7 +10,13 @@ mod request;
 mod runs;
 
 pub(crate) use api_docs::ApiDocsService;
-pub(crate) use automation::AutomationService;
+pub(crate) use automation::{
+    AutomationService, apply_bundle_yaml, detach_automation_personality, detach_automation_rule,
+    diff_bundle_yaml, explain_automation_route, export_bundle_yaml, list_installed_bundles,
+    load_automation_personality_inspector, load_automation_rule_inspector, remove_installed_bundle,
+    restore_automation_personality_revision, restore_automation_rule_revision,
+    validate_bundle_yaml,
+};
 pub(crate) use board::BoardService;
 pub(crate) use codex::CodexService;
 pub(crate) use items::ItemService;

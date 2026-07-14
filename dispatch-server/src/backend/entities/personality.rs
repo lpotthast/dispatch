@@ -43,6 +43,18 @@ pub struct Model {
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
+    pub current_revision_id: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub managed_bundle_key: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub managed_object_key: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
     pub created_at: String,
 
     #[ck_create_model(exclude)]

@@ -25,6 +25,7 @@ The main workflow surface should make these states easy to inspect:
 
 - backlog and all work;
 - project-defined swim-lanes based on lane filters and lane ordering;
+- same-group work item cards collected under a visible group header within each lane;
 - in-progress work and claimant, including the triggering automation source when available and a frontend-derived elapsed claim timer from the claim start time;
 - recent comments and progress;
 - automation status;
@@ -113,6 +114,10 @@ The board and run detail views should make workspaces directly reachable. Projec
 
 Automation rule administration should show and edit each work-consuming rule's mutability with `mutating` and `read_only` choices and its selected project-local personality by name. Automation rule lists should show personality names rather than raw ids. Personality administration lives near automation administration as a normal project-scoped admin resource with create, edit, list, and delete controls. Personality descriptions are plain multiline prompt text. Deleting `Default` or any personality still referenced by automation should surface the server's clear rejection message. Automation status should show total running runs plus separate mutating and read-only counts, and run list/detail views should display the persisted run mutability so historical logs remain understandable after a rule changes.
 
+Automation administration also exposes a visible installed-bundle inventory with managed-object counts, YAML file selection into the editor, validate/diff/apply/export, and an inline confirmed removal action. It also exposes managed-object identity, produced-work configuration, exclusivity, rule execution limits, concurrency groups, timeouts, and semantic postconditions. Managed objects reject individual edit/delete until detached. Operator diagnostics show route winners and admission blockers; revision, evaluation, and analytics data support historical inspection and restore.
+
+Item detail displays immutable origin with links to a source run and automation context where available. Run detail displays trigger/personality revisions, system-prompt event, effective input hash and timeout/group, semantic outcome/failures, and attributed created/modified item links. Exact model input remains in the role-separated run artifacts.
+
 ## Live Updates
 
 The UI uses project and item event streams to refresh workflow state. Event streams are hints for refreshing the current view; persisted records remain the source of truth.
@@ -136,3 +141,5 @@ just browser-test
 ```
 
 The browser test should continue to cover UI placement and workflow visibility after changes to Leptos layouts, generated admin surfaces, or automation controls.
+
+Automation browser coverage includes the structured/raw selector boundary, YAML file selection, bundle diff/apply/inventory/removal, managed identity and detach behavior, revision restore, produced-work and postcondition fields, provenance links, admission diagnostics, semantic failure visibility, and grouped cards on the board. The optional `examples/automation/engineering-review.yaml` fixture proves exact lens production and grouping plus planner, scout, verifier, and implementation routing without introducing review semantics into Dispatch itself; it is never auto-applied.

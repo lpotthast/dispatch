@@ -35,6 +35,10 @@ pub struct Model {
     #[ck_update_model(exclude)]
     pub project_id: i64,
 
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub work_group_id: Option<i64>,
+
     pub title: String,
 
     pub description: String,
@@ -103,6 +107,8 @@ pub mod read_view {
         pub id: i64,
 
         pub project_id: i64,
+
+        pub work_group_id: Option<i64>,
 
         pub title: String,
 

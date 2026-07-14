@@ -38,7 +38,7 @@ Run commands from the repository root through `just`, which passes explicit `--m
 - `just clippy`: run clippy with `--all-targets -- -D warnings` for Dispatch crates.
 - `just verify`: run formatting, tests, and clippy.
 - `just serve`: run the server with `.dispatch/dispatch.sqlite3` on `127.0.0.1:4000`.
-- `just cli -- <args>`: run the API-relay CLI.
+- `just cli <args>`: run the API-relay CLI.
 - `just browser-test`: run the ignored browser integration test; use `just browser-test-visible` for UI debugging.
 
 Server-local overrides: `DISPATCH_DATABASE`, `DISPATCH_BIND`, `DISPATCH_PROJECT`, and `DISPATCH_WORKSPACE_IDE`.

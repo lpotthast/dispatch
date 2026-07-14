@@ -402,6 +402,9 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         assert_source_contains(driver, "Work-consuming automations").await?;
         assert_source_contains(driver, "Work-producing automations").await?;
         assert_source_contains(driver, "Mutability").await?;
+        assert_automation_bundle_controls(driver).await?;
+        assert_personality_revision_restore(driver).await?;
+        assert_structured_automation_configuration_editors(driver).await?;
         assert_source_contains(driver, "No automation selected").await?;
         assert_source_does_not_contain(driver, "Create trigger").await?;
         assert_source_does_not_contain(driver, "trigger-edit-form").await?;
@@ -419,10 +422,27 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
         find(driver, By::XPath("//*[contains(text(), 'refine-new')]")).await?;
         assert_source_contains(driver, "refine-new").await?;
 
+        seed_grouped_work_items(driver).await?;
         driver
             .goto(app.url("/?project=demo"))
             .await
             .context("failed to reopen Dispatch board page")?;
+        let grouped = find(driver, By::Css("[data-work-group-key='browser-review']")).await?;
+        assert_that!(
+            grouped
+                .find_all(By::Css("article.card"))
+                .await
+                .context("failed to count grouped board cards")?
+                .len()
+        )
+        .is_equal_to(2);
+        assert_that!(
+            grouped
+                .text()
+                .await
+                .context("failed to read grouped work")?
+        )
+        .contains("Browser review");
         assert_source_does_not_contain(driver, "Dispatch labels").await?;
         driver
             .goto(app.url("/api/docs?project=demo"))
@@ -548,6 +568,57 @@ impl BrowserTest<DispatchTestApp> for DispatchBoardTest {
 
         Ok(())
     }
+}
+
+async fn seed_grouped_work_items(driver: &WebDriver) -> Result<(), Report> {
+    let result = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            (async () => {
+                const json = async (url, body) => {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!response.ok) throw new Error(await response.text());
+                    return response.json();
+                };
+                await json('/api/projects/demo/work-groups', {
+                    key: 'browser-review',
+                    name: 'Browser review',
+                });
+                const first = await json('/api/projects/demo/items', {
+                    title: 'Grouped finding one',
+                    description: 'First grouped browser-test item',
+                    state: 'open',
+                    initial_labels: [],
+                    agent_model_override: null,
+                    agent_reasoning_effort_override: null,
+                });
+                const second = await json('/api/projects/demo/items', {
+                    title: 'Grouped finding two',
+                    description: 'Second grouped browser-test item',
+                    state: 'open',
+                    initial_labels: [],
+                    agent_model_override: null,
+                    agent_reasoning_effort_override: null,
+                });
+                const group = await json('/api/projects/demo/work-groups/browser-review/items', {
+                    item_ids: [first.id, second.id],
+                });
+                done(group.item_count === 2 ? 'ok' : JSON.stringify(group));
+            })().catch(error => done(String(error)));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to seed grouped work items")?
+        .convert::<String>()
+        .context("failed to read grouped work-item seed result")?;
+    assert_that!(result).is_equal_to("ok".to_owned());
+    Ok(())
 }
 
 async fn create_project(driver: &WebDriver) -> Result<(), Report> {
@@ -2531,6 +2602,448 @@ async fn assert_settings_response_omits_refinement_policy(
         .convert::<String>()
         .context("failed to read project settings API field check")?;
     assert_that!(result).is_equal_to("absent".to_owned());
+    Ok(())
+}
+
+async fn assert_automation_bundle_controls(driver: &WebDriver) -> Result<(), Report> {
+    find(driver, By::Css("[data-testid='automation-bundles']")).await?;
+    find(driver, By::Css(".automation-bundle-yaml")).await?;
+    let bundle_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../examples/automation/engineering-review.yaml")
+        .canonicalize()
+        .context("failed to canonicalize the example automation bundle path")?;
+    find(driver, By::Css("[data-testid='automation-bundle-file']"))
+        .await?
+        .send_keys(bundle_path.to_string_lossy().as_ref())
+        .await
+        .context("failed to choose an automation bundle YAML file")?;
+    let loaded = wait_for_bundle_editor(driver, "bundle_key: engineering-review").await?;
+    assert_that!(loaded).contains("created_items_share_group: true");
+    find(
+        driver,
+        By::Css(".automation-bundle-actions input[type='checkbox']"),
+    )
+    .await?;
+    set_input_value(
+        driver,
+        ".automation-bundle-yaml",
+        "schema_version: 1\nbundle_key: browser-test\ndisplay_name: Browser test\n",
+    )
+    .await?;
+    find(
+        driver,
+        By::XPath("//*[@data-testid='automation-bundles']//button[normalize-space()='Validate']"),
+    )
+    .await?
+    .click()
+    .await
+    .context("failed to validate bundle through automation UI")?;
+    let validation = wait_for_bundle_result(driver, "manifest_hash").await?;
+    assert_that!(validation).contains("browser-test");
+
+    find(
+        driver,
+        By::XPath("//*[@data-testid='automation-bundles']//button[normalize-space()='Diff']"),
+    )
+    .await?
+    .click()
+    .await
+    .context("failed to diff bundle through automation UI")?;
+    let diff = wait_for_bundle_result(driver, "objects").await?;
+    assert_that!(diff).contains("browser-test");
+
+    find(
+        driver,
+        By::XPath("//*[@data-testid='automation-bundles']//button[normalize-space()='Apply']"),
+    )
+    .await?
+    .click()
+    .await
+    .context("failed to apply bundle through automation UI")?;
+    let apply = wait_for_bundle_result(driver, "apply_id").await?;
+    assert_that!(apply).contains("\"status\": \"applied\"");
+    wait_for_bundle_inventory(driver, "browser-test", true).await?;
+    let remove = find(
+        driver,
+        By::Css("[data-bundle-key='browser-test'] button.danger"),
+    )
+    .await?;
+    remove
+        .click()
+        .await
+        .context("failed to arm bundle removal")?;
+    assert_that!(
+        remove
+            .text()
+            .await
+            .context("failed to read removal button")?
+    )
+    .is_equal_to("Confirm removal".to_owned());
+    remove
+        .click()
+        .await
+        .context("failed to confirm bundle removal")?;
+    let removal = wait_for_bundle_result(driver, "\"status\": \"removed\"").await?;
+    assert_that!(removal).contains("\"status\": \"removed\"");
+    wait_for_bundle_inventory(driver, "browser-test", false).await?;
+    Ok(())
+}
+
+async fn wait_for_bundle_editor(driver: &WebDriver, expected: &str) -> Result<String, Report> {
+    Ok(driver
+        .execute_async(
+            r#"
+            const expected = arguments[0];
+            const done = arguments[1];
+            const deadline = Date.now() + 5000;
+            function check() {
+                const value = document.querySelector('.automation-bundle-yaml')?.value ?? '';
+                if (value.includes(expected) || Date.now() > deadline) {
+                    done(value);
+                    return;
+                }
+                setTimeout(check, 100);
+            }
+            check();
+            "#,
+            vec![expected.into()],
+        )
+        .await
+        .context("failed to wait for selected bundle YAML")?
+        .convert::<String>()
+        .context("failed to read selected bundle YAML")?)
+}
+
+async fn wait_for_bundle_inventory(
+    driver: &WebDriver,
+    bundle_key: &str,
+    present: bool,
+) -> Result<(), Report> {
+    let result = driver
+        .execute_async(
+            r#"
+            const key = arguments[0];
+            const present = arguments[1];
+            const done = arguments[2];
+            const deadline = Date.now() + 5000;
+            function check() {
+                const found = Boolean(document.querySelector(`[data-bundle-key="${key}"]`));
+                if (found === present) {
+                    done('ok');
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    done(`found=${found}; present=${present}`);
+                    return;
+                }
+                setTimeout(check, 100);
+            }
+            check();
+            "#,
+            vec![bundle_key.into(), present.into()],
+        )
+        .await
+        .context("failed to wait for installed bundle inventory")?
+        .convert::<String>()
+        .context("failed to read installed bundle inventory result")?;
+    assert_that!(result).is_equal_to("ok".to_owned());
+    Ok(())
+}
+
+async fn wait_for_bundle_result(driver: &WebDriver, expected: &str) -> Result<String, Report> {
+    Ok(driver
+        .execute_async(
+            r#"
+            const expected = arguments[0];
+            const done = arguments[1];
+            const deadline = Date.now() + 5000;
+            function check() {
+                const text = document.querySelector('.automation-bundle-result')?.textContent ?? '';
+                if (text.includes(expected) || text.includes('failed:')) {
+                    done(text);
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    done(`timeout: ${text}`);
+                    return;
+                }
+                setTimeout(check, 100);
+            }
+            check();
+            "#,
+            vec![expected.into()],
+        )
+        .await
+        .context("failed to wait for automation bundle result")?
+        .convert::<String>()
+        .context("failed to read automation bundle result")?)
+}
+
+async fn assert_structured_automation_configuration_editors(
+    driver: &WebDriver,
+) -> Result<(), Report> {
+    click(
+        driver,
+        By::Css("section.automation-triggers .crudkit-automation-triggers .crud-nav button"),
+    )
+    .await?;
+    find(
+        driver,
+        By::Css(".postconditions-editor[data-postconditions-editor='structured']"),
+    )
+    .await?;
+    let consuming_summary = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const section = (heading) => Array.from(document.querySelectorAll('section.automation-triggers'))
+                .find(section => section.querySelector('h2')?.textContent?.trim() === heading
+                    && section.querySelector('.crudkit-automation-triggers'));
+            const change = (element, value) => {
+                element.value = value;
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+
+            (async () => {
+                const consuming = section('Work-consuming automations');
+                const selectorEditor = consuming?.querySelector('[data-condition-editor="structured"], [data-lane-filter-editor="structured"]');
+                consuming?.querySelector('[data-postconditions-add-outcome="true"]')?.click();
+                await frame();
+                change(consuming.querySelector('[data-postcondition-disposition="true"]'), 'finished');
+                await frame();
+                consuming.querySelector('[data-postcondition-add-label="true"]')?.click();
+                await frame();
+                consuming.querySelector('[data-postcondition-add-created-items="true"]')?.click();
+                await frame();
+
+                done([
+                    `selector=${Boolean(selectorEditor)}`,
+                    `outcome=${Boolean(consuming?.querySelector('[data-postcondition-outcome="0"]'))}`,
+                    `label=${Boolean(consuming?.querySelector('[data-postcondition-label="0"]'))}`,
+                    `created=${Boolean(consuming?.querySelector('[data-postcondition-created-items="true"]'))}`,
+                    `createdSelector=${Boolean(consuming?.querySelector('[data-postcondition-created-items="true"] [data-condition-editor="structured"]'))}`,
+                ].join(';'));
+            })().catch(error => done(`error:${error.stack ?? error}`));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to exercise structured postcondition editor")?
+        .convert::<String>()
+        .context("failed to read structured postcondition editor summary")?;
+    assert_that!(consuming_summary).is_equal_to(
+        "selector=true;outcome=true;label=true;created=true;createdSelector=true".to_owned(),
+    );
+
+    click(
+        driver,
+        By::Css(
+            "section.automation-triggers + section.automation-triggers .crudkit-automation-triggers .crud-nav button",
+        ),
+    )
+    .await?;
+    find(
+        driver,
+        By::Css(".produced-work-editor[data-produced-work-editor='structured']"),
+    )
+    .await?;
+    let produced_summary = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const producing = Array.from(document.querySelectorAll('section.automation-triggers'))
+                .find(section => section.querySelector('h2')?.textContent?.trim() === 'Work-producing automations'
+                    && section.querySelector('.crudkit-automation-triggers'));
+            const input = (element, value) => {
+                element.value = value;
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+            };
+            const change = (element, value) => {
+                element.value = value;
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+
+            (async () => {
+                input(producing.querySelector('[data-produced-title="true"]'), 'Browser-produced item');
+                await frame();
+                input(producing.querySelector('[data-produced-state="true"]'), 'queued');
+                await frame();
+                change(producing.querySelector('[data-produced-deduplication="true"]'), 'while_unfinished_for_key');
+                await frame();
+                input(producing.querySelector('[data-produced-deduplication-key="true"]'), 'browser-campaign');
+                await frame();
+                producing.querySelector('[data-produced-add-label="true"]')?.click();
+                await frame();
+                done([
+                    `produced=${Boolean(producing?.querySelector('[data-produced-work-editor="structured"]'))}`,
+                    `dedupKey=${producing?.querySelector('[data-produced-deduplication-key="true"]')?.value ?? ''}`,
+                    `initialLabel=${Boolean(producing?.querySelector('[data-produced-label="0"]'))}`,
+                ].join(';'));
+            })().catch(error => done(`error:${error.stack ?? error}`));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to exercise structured produced-work editor")?
+        .convert::<String>()
+        .context("failed to read structured produced-work editor summary")?;
+    assert_that!(produced_summary)
+        .is_equal_to("produced=true;dedupKey=browser-campaign;initialLabel=true".to_owned());
+    Ok(())
+}
+
+async fn assert_personality_revision_restore(driver: &WebDriver) -> Result<(), Report> {
+    let personality_id = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const input = {
+                key: 'browser-personality',
+                name: 'Browser personality',
+                description: 'Revision one',
+            };
+            (async () => {
+                const created = await fetch('/operator/api/projects/demo/automation/personalities', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(input),
+                });
+                const body = await created.json();
+                if (!created.ok) {
+                    done(`error:create:${JSON.stringify(body)}`);
+                    return;
+                }
+                const updated = await fetch(`/operator/api/projects/demo/automation/personalities/${body.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...input, description: 'Revision two' }),
+                });
+                if (!updated.ok) {
+                    done(`error:update:${await updated.text()}`);
+                    return;
+                }
+                done(String(body.id));
+            })().catch(error => done(`error:${error.stack ?? error}`));
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to seed personality revisions through operator API")?
+        .convert::<String>()
+        .context("failed to read seeded personality ID")?;
+    if personality_id.starts_with("error:") {
+        bail!("failed to seed personality revisions: {personality_id}");
+    }
+
+    let automation_url = driver
+        .current_url()
+        .await
+        .context("failed to read Automation page URL")?;
+    driver
+        .goto(automation_url.as_str())
+        .await
+        .context("failed to reload Automation page after seeding personality revisions")?;
+    let selected = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 5000;
+            function select() {
+                const row = [...document.querySelectorAll('#personalities leptonic-table-row')]
+                    .find(candidate => candidate.textContent.includes('Browser personality'));
+                if (row) {
+                    row.click();
+                    done('ok');
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    done(`timeout:${document.querySelector('#personalities')?.textContent ?? ''}`);
+                    return;
+                }
+                setTimeout(select, 100);
+            }
+            select();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to select browser-test personality")?
+        .convert::<String>()
+        .context("failed to read browser-test personality selection state")?;
+    assert_that!(selected).is_equal_to("ok".to_owned());
+    find(
+        driver,
+        By::Css("[data-testid='automation-personality-inspector']"),
+    )
+    .await?;
+    let restore_started = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 5000;
+            function restore() {
+                const inspector = document.querySelector('[data-testid="automation-personality-inspector"]');
+                const button = [...(inspector?.querySelectorAll('button') ?? [])]
+                    .find(candidate => candidate.textContent.trim() === 'Restore');
+                if (button) {
+                    button.click();
+                    done('ok');
+                    return;
+                }
+                if (!inspector) {
+                    const row = [...document.querySelectorAll('#personalities leptonic-table-row')]
+                        .find(candidate => candidate.textContent.includes('Browser personality'));
+                    row?.click();
+                }
+                if (Date.now() > deadline) {
+                    done(`timeout:${inspector?.textContent ?? ''}`);
+                    return;
+                }
+                setTimeout(restore, 100);
+            }
+            restore();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to restore browser-test personality revision")?
+        .convert::<String>()
+        .context("failed to read personality restore state")?;
+    assert_that!(restore_started).is_equal_to("ok".to_owned());
+    let restored = driver
+        .execute_async(
+            r#"
+            const done = arguments[0];
+            const deadline = Date.now() + 5000;
+            function check() {
+                const inspector = document.querySelector('[data-testid="automation-personality-inspector"]');
+                const text = inspector?.textContent ?? '';
+                if (text.includes('Revision 3') && text.includes('Current')) {
+                    done('ok');
+                    return;
+                }
+                if (!inspector) {
+                    const row = [...document.querySelectorAll('#personalities leptonic-table-row')]
+                        .find(candidate => candidate.textContent.includes('Browser personality'));
+                    row?.click();
+                }
+                if (Date.now() > deadline) {
+                    done(`timeout:${text}`);
+                    return;
+                }
+                setTimeout(check, 100);
+            }
+            check();
+            "#,
+            Vec::new(),
+        )
+        .await
+        .context("failed to wait for restored personality revision")?
+        .convert::<String>()
+        .context("failed to read restored personality state")?;
+    assert_that!(restored).is_equal_to("ok".to_owned());
     Ok(())
 }
 

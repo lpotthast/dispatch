@@ -177,6 +177,7 @@ mod tests {
         WorkItemModel {
             id: 7,
             project_id: 3,
+            work_group_id: None,
             title: "Existing title".to_owned(),
             description: "Existing description".to_owned(),
             claimed_by: None,

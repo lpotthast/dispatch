@@ -10,7 +10,7 @@ mod run_log;
 mod runs;
 
 pub use api_docs::{ApiDocsPage, PageApiDocs};
-pub use automation::{PageTriggers, TriggersPage};
+pub use automation::{AutomationRuleInspectorView, PageTriggers, TriggersPage};
 pub(crate) use board::memory_event_ref_label;
 pub use board::{BoardItemsSection, BoardPage, PageBoard};
 pub(crate) use codex::format_number;

@@ -112,6 +112,9 @@ pub(crate) fn agent_environment(
     );
     env.insert("DISPATCH_PROJECT".to_owned(), project_name.to_owned());
     env.insert("DISPATCH_AGENT_ID".to_owned(), agent_id.to_owned());
+    if let Some(run_id) = crate::backend::agent_ids::parse_dispatch_run_agent_id(agent_id) {
+        env.insert("DISPATCH_AGENT_RUN_ID".to_owned(), run_id.to_string());
+    }
     if let Some(item_id) = claimed_item_id {
         env.insert("DISPATCH_CLAIMED_ITEM_ID".to_owned(), item_id.to_string());
     }

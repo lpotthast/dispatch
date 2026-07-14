@@ -1,3 +1,7 @@
+use super::automation_configuration::{
+    postconditions_field_renderer, produced_work_field_renderer,
+};
+use super::swim_lane_filter::condition_field_renderer;
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -128,6 +132,29 @@ fn automation_triggers_crudkit_config(
             },
         ),
         Header::showing(
+            ReadAutomationTriggerField::Exclusive,
+            HeaderOptions {
+                display_name: "Exclusive".into(),
+                min_width: true,
+                ..Default::default()
+            },
+        ),
+        Header::showing(
+            ReadAutomationTriggerField::ManagedBundleKey,
+            HeaderOptions {
+                display_name: "Managed bundle".into(),
+                ..Default::default()
+            },
+        ),
+        Header::showing(
+            ReadAutomationTriggerField::CurrentRevisionId,
+            HeaderOptions {
+                display_name: "Revision".into(),
+                min_width: true,
+                ..Default::default()
+            },
+        ),
+        Header::showing(
             ReadAutomationTriggerField::EvaluationCount,
             HeaderOptions {
                 display_name: "Evaluations".into(),
@@ -213,6 +240,13 @@ fn automation_triggers_crudkit_config(
     ];
     if matches!(kind, AutomationTableKind::Consuming) {
         create_children.push(Elem::create_field(
+            CreateAutomationTriggerField::Exclusive,
+            FieldOptions {
+                label: Some(Label::new("Exclusive routing")),
+                ..Default::default()
+            },
+        ));
+        create_children.push(Elem::create_field(
             CreateAutomationTriggerField::PersonalityId,
             FieldOptions {
                 label: Some(Label::new("Personality")),
@@ -233,7 +267,59 @@ fn automation_triggers_crudkit_config(
                 ..Default::default()
             },
         ));
+        create_children.push(Elem::create_field(
+            CreateAutomationTriggerField::PostconditionsJson,
+            FieldOptions {
+                label: Some(Label::new("Semantic postconditions")),
+                ..Default::default()
+            },
+        ));
+    } else {
+        create_children.push(Elem::create_field(
+            CreateAutomationTriggerField::ProducedWorkSpecJson,
+            FieldOptions {
+                label: Some(Label::new("Produced work")),
+                ..Default::default()
+            },
+        ));
     }
+    create_children.extend([
+        Elem::create_field(
+            CreateAutomationTriggerField::ModelOverride,
+            FieldOptions {
+                label: Some(Label::new("Model override")),
+                ..Default::default()
+            },
+        ),
+        Elem::create_field(
+            CreateAutomationTriggerField::ReasoningEffortOverride,
+            FieldOptions {
+                label: Some(Label::new("Reasoning effort override")),
+                ..Default::default()
+            },
+        ),
+        Elem::create_field(
+            CreateAutomationTriggerField::TimeoutSeconds,
+            FieldOptions {
+                label: Some(Label::new("Timeout seconds")),
+                ..Default::default()
+            },
+        ),
+        Elem::create_field(
+            CreateAutomationTriggerField::MaxConcurrentRuns,
+            FieldOptions {
+                label: Some(Label::new("Maximum concurrent runs")),
+                ..Default::default()
+            },
+        ),
+        Elem::create_field(
+            CreateAutomationTriggerField::ConcurrencyGroup,
+            FieldOptions {
+                label: Some(Label::new("Concurrency group")),
+                ..Default::default()
+            },
+        ),
+    ]);
     create_children.push(Elem::create_field(
         CreateAutomationTriggerField::Prompt,
         FieldOptions {
@@ -289,6 +375,13 @@ fn automation_triggers_crudkit_config(
     ];
     if matches!(kind, AutomationTableKind::Consuming) {
         update_children.push(Elem::field(
+            AutomationTriggerField::Exclusive,
+            FieldOptions {
+                label: Some(Label::new("Exclusive routing")),
+                ..Default::default()
+            },
+        ));
+        update_children.push(Elem::field(
             AutomationTriggerField::PersonalityId,
             FieldOptions {
                 label: Some(Label::new("Personality")),
@@ -309,7 +402,59 @@ fn automation_triggers_crudkit_config(
                 ..Default::default()
             },
         ));
+        update_children.push(Elem::field(
+            AutomationTriggerField::PostconditionsJson,
+            FieldOptions {
+                label: Some(Label::new("Semantic postconditions")),
+                ..Default::default()
+            },
+        ));
+    } else {
+        update_children.push(Elem::field(
+            AutomationTriggerField::ProducedWorkSpecJson,
+            FieldOptions {
+                label: Some(Label::new("Produced work")),
+                ..Default::default()
+            },
+        ));
     }
+    update_children.extend([
+        Elem::field(
+            AutomationTriggerField::ModelOverride,
+            FieldOptions {
+                label: Some(Label::new("Model override")),
+                ..Default::default()
+            },
+        ),
+        Elem::field(
+            AutomationTriggerField::ReasoningEffortOverride,
+            FieldOptions {
+                label: Some(Label::new("Reasoning effort override")),
+                ..Default::default()
+            },
+        ),
+        Elem::field(
+            AutomationTriggerField::TimeoutSeconds,
+            FieldOptions {
+                label: Some(Label::new("Timeout seconds")),
+                ..Default::default()
+            },
+        ),
+        Elem::field(
+            AutomationTriggerField::MaxConcurrentRuns,
+            FieldOptions {
+                label: Some(Label::new("Maximum concurrent runs")),
+                ..Default::default()
+            },
+        ),
+        Elem::field(
+            AutomationTriggerField::ConcurrencyGroup,
+            FieldOptions {
+                label: Some(Label::new("Concurrency group")),
+                ..Default::default()
+            },
+        ),
+    ]);
     update_children.push(Elem::field(
         AutomationTriggerField::Prompt,
         FieldOptions {
@@ -345,6 +490,18 @@ fn automation_triggers_crudkit_config(
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(
+                CreateAutomationTriggerField::ProducedWorkSpecJson,
+                produced_work_field_renderer::<DynCreateField>(),
+            )
+            .register(
+                CreateAutomationTriggerField::PostconditionsJson,
+                postconditions_field_renderer::<DynCreateField>(),
+            )
+            .register(
+                CreateAutomationTriggerField::WorkItemSelector,
+                condition_field_renderer::<DynCreateField>(),
+            )
+            .register(
                 CreateAutomationTriggerField::Activation,
                 activation_field_renderer::<DynCreateField>(kind.activation_choices()),
             )
@@ -365,6 +522,18 @@ fn automation_triggers_crudkit_config(
             )
             .build(),
         update_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                AutomationTriggerField::ProducedWorkSpecJson,
+                produced_work_field_renderer::<DynUpdateField>(),
+            )
+            .register(
+                AutomationTriggerField::PostconditionsJson,
+                postconditions_field_renderer::<DynUpdateField>(),
+            )
+            .register(
+                AutomationTriggerField::WorkItemSelector,
+                condition_field_renderer::<DynUpdateField>(),
+            )
             .register(
                 AutomationTriggerField::Activation,
                 activation_field_renderer::<DynUpdateField>(kind.activation_choices()),

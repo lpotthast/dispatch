@@ -55,6 +55,18 @@ pub struct Model {
     #[ck_update_model(exclude)]
     pub trigger_name: Option<String>,
 
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub trigger_revision_id: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub personality_revision_id: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub system_prompt_event_id: Option<i64>,
+
     pub tool_name: String,
 
     #[serde(default = "default_mutability_storage")]
@@ -112,6 +124,18 @@ pub struct Model {
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
+    pub effective_input_sha256: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub effective_timeout_seconds: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub effective_concurrency_group: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
     pub input_tokens: Option<i64>,
 
     #[ck_create_model(exclude)]
@@ -153,6 +177,14 @@ pub struct Model {
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
     pub result_summary: String,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub semantic_postcondition_status: String,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub semantic_postcondition_failures: String,
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]

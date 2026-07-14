@@ -38,6 +38,7 @@ use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_use::use_interval_fn;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 const BOARD_ITEMS_REFRESH_INTERVAL_MS: u64 = 30_000;
 
@@ -814,11 +815,8 @@ fn board_view(
                 .cloned()
                 .collect::<Vec<_>>();
             sort_lane_items(&mut lane_items, lane.item_order);
-            let cards = lane_items
-                .into_iter()
-                .map(|item| item_card(project.clone(), item))
-                .collect::<Vec<_>>();
-            let count = cards.len();
+            let count = lane_items.len();
+            let cards = lane_cards(project.clone(), lane_items);
             let create_state = state_identifier_from_lane_filter(&lane.filter);
             let add_button = if lane.can_create_items {
                 create_state
@@ -897,6 +895,48 @@ fn board_view(
             {warning}
         </div>
     }
+}
+
+fn lane_cards(project: String, items: Vec<WorkItemView>) -> Vec<AnyView> {
+    let mut rendered_groups = BTreeSet::new();
+    let mut cards = Vec::new();
+    for item in &items {
+        let Some(group) = item.work_group.clone() else {
+            cards.push(item_card(project.clone(), item.clone()).into_any());
+            continue;
+        };
+        if !rendered_groups.insert(group.id) {
+            continue;
+        }
+        let grouped_items = items
+            .iter()
+            .filter(|candidate| {
+                candidate.work_group.as_ref().map(|group| group.id) == Some(group.id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let group_count = grouped_items.len();
+        let group_cards = grouped_items
+            .into_iter()
+            .map(|item| item_card(project.clone(), item))
+            .collect::<Vec<_>>();
+        cards.push(
+            view! {
+                <section class="work-item-card-group" data-work-group-key=group.key.clone()>
+                    <header>
+                        <div>
+                            <strong>{group.name}</strong>
+                            <code>{group.key.clone()}</code>
+                        </div>
+                        <span>{format!("{group_count} in this lane")}</span>
+                    </header>
+                    <div class="work-item-card-group-items">{group_cards}</div>
+                </section>
+            }
+            .into_any(),
+        );
+    }
+    cards
 }
 
 fn lane_edit_href(project: &str, lane_id: i64) -> String {

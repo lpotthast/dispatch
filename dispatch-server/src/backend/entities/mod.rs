@@ -6,13 +6,19 @@
 
 pub mod agent_run;
 pub mod agent_tool;
+pub mod automation_bundle_apply;
+pub mod automation_evaluation;
 pub mod automation_trigger;
+pub mod automation_trigger_revision;
 pub mod comment;
 pub mod personality;
+pub mod personality_revision;
 pub mod project;
 pub mod swim_lane;
 pub mod work_item;
 pub mod work_item_event;
+pub mod work_item_group;
 pub mod work_item_label;
+pub mod work_item_origin;
 pub mod work_item_relationship;
 pub mod work_item_state;

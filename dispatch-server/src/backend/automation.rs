@@ -19,6 +19,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
     QuerySelect,
 };
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
     sync::watch,
@@ -38,11 +39,17 @@ use crate::{
             read_run_token_usage, thread_event_output_piece, update_response_candidates,
             write_run_output_log,
         },
+        automation_postconditions,
         automation_prompt::{AutomationPrompt, PromptContext, build_prompt},
         automation_runtime::{self, GitRuntimeFiles},
         automation_workspace::{self, WorkspacePlan},
         codex_app_server,
-        entities::agent_run::{self, AgentRun, AgentRunActiveModel, AgentRunModel},
+        entities::{
+            agent_run::{self, AgentRun, AgentRunActiveModel, AgentRunModel},
+            work_item::{self, WorkItem},
+            work_item_event,
+            work_item_origin::{self, WorkItemOrigin},
+        },
         events, item_claims, items, personalities,
         process_sessions::{ProcessSessionRegistry, ProcessSessionStart},
         projects,
@@ -51,9 +58,11 @@ use crate::{
     shared::view_models::{
         AgentCommitOutcome, AgentReasoningEffort, AgentRunCleanupStatus, AgentRunOutputKind,
         AgentRunOutputPiece, AgentRunStatus, AgentRunTokenUsageView, AgentRunView,
-        AgentSandboxMode, AgentToolName, AutomationRunMutability, AutomationStatusView,
-        DEFAULT_STATE_LABEL, ProjectMemoryEventRefView, ProjectSettingsView, ProjectView,
-        RecoveredClaimView, RunLogView, WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
+        AgentSandboxMode, AgentToolName, AutomationExecutionPolicy, AutomationPostconditions,
+        AutomationRunMutability, AutomationStatusView, DEFAULT_STATE_LABEL,
+        PostconditionFailureView, ProjectMemoryEventRefView, ProjectSettingsView, ProjectView,
+        RecoveredClaimView, RunLogView, SemanticPostconditionStatus, WorkItemSummaryView,
+        WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -76,12 +85,15 @@ pub struct StartAutomation {
     pub mutability: Option<AutomationRunMutability>,
     pub personality_id: Option<i64>,
     pub trigger: Option<AutomationTriggerOrigin>,
+    pub execution: AutomationExecutionPolicy,
+    pub postconditions: Option<AutomationPostconditions>,
 }
 
 #[derive(Clone, Debug)]
 pub struct AutomationTriggerOrigin {
     pub trigger_id: i64,
     pub trigger_name: String,
+    pub trigger_revision_id: Option<i64>,
 }
 
 struct LaunchDetails {
@@ -96,6 +108,9 @@ struct LaunchDetails {
     agent_reasoning_effort: Option<AgentReasoningEffort>,
     commit_required: bool,
     pr_requested: bool,
+    system_prompt_event_id: Option<i64>,
+    effective_input_sha256: String,
+    effective_timeout_seconds: u64,
 }
 
 struct PreparedAutomationLaunch {
@@ -187,6 +202,7 @@ struct AgentProcessStart {
     agent_sandbox_mode: AgentSandboxMode,
     agent_extra_writable_roots: Vec<String>,
     mutability: AutomationRunMutability,
+    timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -432,8 +448,34 @@ async fn begin_automation_run(
         .unwrap_or(AutomationRunMutability::Mutating);
     let tool = start.tool.unwrap_or(settings.default_agent_tool);
     ensure_tool_supports_mutability(tool, mutability)?;
-    automation_admission::enforce_start_allowed(store, project_name, &settings, mutability).await?;
-    let run = create_run(store, project.id, tool, mutability, start.trigger.as_ref()).await?;
+    automation_admission::enforce_rule_start_allowed(
+        store,
+        project_name,
+        &settings,
+        mutability,
+        start.trigger.as_ref().map(|trigger| trigger.trigger_id),
+        &start.execution,
+    )
+    .await?;
+    let timeout_seconds = start
+        .execution
+        .timeout_seconds
+        .unwrap_or(AGENT_PROCESS_TIMEOUT.as_secs());
+    let personality_revision_id =
+        personalities::personality_revision_id(store, project.id, start.personality_id).await?;
+    let run = create_run(
+        store,
+        project.id,
+        CreateRunConfig {
+            tool,
+            mutability,
+            trigger: start.trigger.as_ref(),
+            personality_revision_id,
+            effective_timeout_seconds: timeout_seconds,
+            effective_concurrency_group: start.execution.concurrency_group.as_deref(),
+        },
+    )
+    .await?;
 
     Ok(StartedAutomationRun {
         project_name: project_name.to_owned(),
@@ -678,7 +720,7 @@ async fn complete_started_automation_run(
 
     let output = run_agent_process(process_start, sessions, cancellation).await;
     match output {
-        Ok(output) => {
+        Ok(mut output) => {
             run = update_run_process_id(store, run, output.process_id).await?;
             if let Some(token_usage) = output.token_usage {
                 run = update_run_token_usage(store, run, token_usage).await?;
@@ -708,6 +750,62 @@ async fn complete_started_automation_run(
                         .as_deref()
                         .unwrap_or("no new commit was created")
                 );
+            }
+            let semantic = match automation_postconditions::evaluate(
+                store,
+                &project_name,
+                run.id,
+                claimed_item.as_ref(),
+                start.postconditions.as_ref(),
+                commit_evaluation.outcome,
+            )
+            .await
+            {
+                Ok(semantic) => semantic,
+                Err(error) => automation_postconditions::SemanticEvaluation {
+                    status: SemanticPostconditionStatus::Failed,
+                    failures: vec![PostconditionFailureView {
+                        outcome_index: 0,
+                        assertion: "evaluation".to_owned(),
+                        expected: "valid semantic postconditions".to_owned(),
+                        actual: error.to_string(),
+                    }],
+                },
+            };
+            run = update_run_semantic_postconditions(store, run, &semantic).await?;
+            if semantic.status == SemanticPostconditionStatus::Failed {
+                success = false;
+                let detail = semantic
+                    .failures
+                    .iter()
+                    .map(|failure| {
+                        format!(
+                            "outcome {} {} expected {}, found {}",
+                            failure.outcome_index,
+                            failure.assertion,
+                            failure.expected,
+                            failure.actual
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                result_summary =
+                    format!("{result_summary}; semantic postconditions failed: {detail}");
+                output.output.push(new_output_piece(
+                    output.output.len() as u64 + 1,
+                    AgentRunOutputKind::Error,
+                    claimed_item.as_ref().map(|item| item.id.to_string()),
+                    "semantic postconditions failed",
+                    detail,
+                    serde_json::to_value(&semantic.failures)
+                        .unwrap_or_else(|_| serde_json::json!([])),
+                ));
+                write_run_output_log(&log_path, &output.output).context_with(|| {
+                    format!(
+                        "failed to append semantic failure to {}",
+                        log_path.display()
+                    )
+                })?;
             }
             if success && pr_requested_for_run(&settings, run_mutability) {
                 match create_pull_request(Path::new(&run.working_dir)).await {
@@ -879,8 +977,9 @@ async fn prepare_automation_launch(
             format!("Failed to prepare Codex diagnostics: {err:#}"),
         ));
     }
-    let agent_model = effective_agent_model(settings, claimed_item);
-    let agent_reasoning_effort = effective_agent_reasoning_effort(settings, claimed_item);
+    let agent_model = effective_agent_model(settings, claimed_item, &start.execution);
+    let agent_reasoning_effort =
+        effective_agent_reasoning_effort(settings, claimed_item, &start.execution);
     if let Err(err) = projects::validate_agent_model_reasoning_effort(
         "effective agent model",
         agent_model.as_deref(),
@@ -934,6 +1033,16 @@ async fn prepare_automation_launch(
             ));
         }
     };
+    let system_prompt_event_id =
+        match projects::latest_system_prompt_event_id(store, project.id).await {
+            Ok(system_prompt_event_id) => system_prompt_event_id,
+            Err(err) => {
+                return Err(LaunchPreparationFailure::new(
+                    run,
+                    format!("Failed to resolve project system-prompt event: {err:#}"),
+                ));
+            }
+        };
     let personality_description = match personalities::personality_description_for_prompt(
         store,
         project.id,
@@ -977,6 +1086,7 @@ async fn prepare_automation_launch(
             ));
         }
     };
+    let effective_input_sha256 = effective_input_sha256(&prompt);
     if let Err(err) = fs::write(&developer_instructions_path, &prompt.developer_instructions)
         .context_with(|| {
             format!(
@@ -1020,6 +1130,12 @@ async fn prepare_automation_launch(
             agent_reasoning_effort,
             commit_required,
             pr_requested,
+            system_prompt_event_id,
+            effective_input_sha256,
+            effective_timeout_seconds: start
+                .execution
+                .timeout_seconds
+                .unwrap_or(AGENT_PROCESS_TIMEOUT.as_secs()),
         },
     )
     .await
@@ -1053,6 +1169,12 @@ async fn prepare_automation_launch(
         agent_sandbox_mode: settings.agent_sandbox_mode,
         agent_extra_writable_roots: settings.agent_extra_writable_roots.clone(),
         mutability: run_mutability,
+        timeout: Duration::from_secs(
+            start
+                .execution
+                .timeout_seconds
+                .unwrap_or(AGENT_PROCESS_TIMEOUT.as_secs()),
+        ),
     };
 
     Ok(PreparedAutomationLaunch {
@@ -1304,6 +1426,8 @@ pub async fn read_run_log(store: &Store, project_name: &str, run_id: i64) -> Res
         }
         None => None,
     };
+    let created_items = run_item_summaries(store, run.id, true).await?;
+    let modified_items = run_item_summaries(store, run.id, false).await?;
     Ok(RunLogView {
         run,
         active: false,
@@ -1311,7 +1435,71 @@ pub async fn read_run_log(store: &Store, project_name: &str, run_id: i64) -> Res
         developer_instructions,
         user_prompt,
         output,
+        created_items,
+        modified_items,
     })
+}
+
+async fn run_item_summaries(
+    store: &Store,
+    run_id: i64,
+    created: bool,
+) -> Result<Vec<WorkItemSummaryView>> {
+    let item_ids = if created {
+        WorkItemOrigin::find()
+            .filter(work_item_origin::Column::AgentRunId.eq(run_id))
+            .all(store.db().as_ref())
+            .await
+            .context("failed to load items created by run")?
+            .into_iter()
+            .map(|origin| origin.work_item_id)
+            .collect::<Vec<_>>()
+    } else {
+        let created_ids = WorkItemOrigin::find()
+            .filter(work_item_origin::Column::AgentRunId.eq(run_id))
+            .all(store.db().as_ref())
+            .await
+            .context("failed to load run-created items")?
+            .into_iter()
+            .map(|origin| origin.work_item_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        work_item_event::Entity::find()
+            .filter(work_item_event::Column::AgentRunId.eq(run_id))
+            .all(store.db().as_ref())
+            .await
+            .context("failed to load items modified by run")?
+            .into_iter()
+            .filter_map(|event| event.work_item_id)
+            .filter(|item_id| !created_ids.contains(item_id))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    if item_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let models = WorkItem::find()
+        .filter(work_item::Column::Id.is_in(item_ids))
+        .order_by_asc(work_item::Column::Id)
+        .all(store.db().as_ref())
+        .await
+        .context("failed to load run item summaries")?;
+    let mut summaries = Vec::with_capacity(models.len());
+    for model in models {
+        let view = items::get_item(
+            store,
+            &projects::project_name_by_id(store, model.project_id).await?,
+            model.id,
+        )
+        .await?;
+        summaries.push(WorkItemSummaryView {
+            id: view.id,
+            title: view.title,
+            state: view.state,
+            updated_at: view.updated_at,
+        });
+    }
+    Ok(summaries)
 }
 
 pub async fn read_run_log_with_active_session(
@@ -1402,22 +1590,34 @@ pub async fn recover_configured_stale_claims(store: &Store) -> Result<Vec<Recove
     Ok(recovered)
 }
 
+struct CreateRunConfig<'a> {
+    tool: AgentToolName,
+    mutability: AutomationRunMutability,
+    trigger: Option<&'a AutomationTriggerOrigin>,
+    personality_revision_id: Option<i64>,
+    effective_timeout_seconds: u64,
+    effective_concurrency_group: Option<&'a str>,
+}
+
 async fn create_run(
     store: &Store,
     project_id: i64,
-    tool: AgentToolName,
-    mutability: AutomationRunMutability,
-    trigger: Option<&AutomationTriggerOrigin>,
+    config: CreateRunConfig<'_>,
 ) -> Result<AgentRunModel> {
     let now = utc_now();
     let run = AgentRunActiveModel {
         project_id: Set(project_id),
         work_item_id: Set(None),
         memory_event_id: Set(None),
-        trigger_id: Set(trigger.map(|trigger| trigger.trigger_id)),
-        trigger_name: Set(trigger.map(|trigger| trigger.trigger_name.clone())),
-        tool_name: Set(tool.as_storage().to_owned()),
-        mutability: Set(mutability.as_storage().to_owned()),
+        trigger_id: Set(config.trigger.map(|trigger| trigger.trigger_id)),
+        trigger_name: Set(config.trigger.map(|trigger| trigger.trigger_name.clone())),
+        trigger_revision_id: Set(config
+            .trigger
+            .and_then(|trigger| trigger.trigger_revision_id)),
+        personality_revision_id: Set(config.personality_revision_id),
+        system_prompt_event_id: Set(None),
+        tool_name: Set(config.tool.as_storage().to_owned()),
+        mutability: Set(config.mutability.as_storage().to_owned()),
         status: Set(AgentRunStatus::Running.as_storage().to_owned()),
         command: Set(String::new()),
         working_dir: Set(String::new()),
@@ -1430,6 +1630,9 @@ async fn create_run(
         user_prompt_path: Set(None),
         agent_model: Set(None),
         agent_reasoning_effort: Set(None),
+        effective_input_sha256: Set(None),
+        effective_timeout_seconds: Set(Some(config.effective_timeout_seconds as i64)),
+        effective_concurrency_group: Set(config.effective_concurrency_group.map(ToOwned::to_owned)),
         input_tokens: Set(None),
         cached_input_tokens: Set(None),
         output_tokens: Set(None),
@@ -1441,6 +1644,10 @@ async fn create_run(
         cleanup_status: Set(AgentRunCleanupStatus::NotApplicable.as_storage().to_owned()),
         worktree_cleaned_at: Set(None),
         result_summary: Set(String::new()),
+        semantic_postcondition_status: Set(SemanticPostconditionStatus::NotConfigured
+            .as_storage()
+            .to_owned()),
+        semantic_postcondition_failures: Set("[]".to_owned()),
         started_at: Set(Some(now.clone())),
         finished_at: Set(None),
         created_at: Set(now.clone()),
@@ -1477,6 +1684,9 @@ async fn update_run_launch_details(
     active.agent_reasoning_effort = Set(details
         .agent_reasoning_effort
         .map(|effort| effort.as_storage().to_owned()));
+    active.system_prompt_event_id = Set(details.system_prompt_event_id);
+    active.effective_input_sha256 = Set(Some(details.effective_input_sha256));
+    active.effective_timeout_seconds = Set(Some(details.effective_timeout_seconds as i64));
     active.commit_required = Set(details.commit_required);
     active.pr_requested = Set(details.pr_requested);
     active.cleanup_status = Set(if has_worktree {
@@ -1583,6 +1793,24 @@ async fn update_run_commit_outcome(
     Ok(updated)
 }
 
+async fn update_run_semantic_postconditions(
+    store: &Store,
+    run: AgentRunModel,
+    evaluation: &automation_postconditions::SemanticEvaluation,
+) -> Result<AgentRunModel> {
+    let mut active: AgentRunActiveModel = run.into();
+    active.semantic_postcondition_status = Set(evaluation.status.as_storage().to_owned());
+    active.semantic_postcondition_failures = Set(serde_json::to_string(&evaluation.failures)
+        .context("failed to encode semantic postcondition failures")?);
+    active.updated_at = Set(utc_now());
+    let updated = active
+        .update(store.db().as_ref())
+        .await
+        .context("failed to update run semantic postconditions")?;
+    publish_run_model_event(store, &updated).await;
+    Ok(updated)
+}
+
 async fn publish_run_model_event(store: &Store, run: &AgentRunModel) {
     match projects::project_name_by_id(store, run.project_id).await {
         Ok(project_name) => {
@@ -1600,17 +1828,30 @@ async fn publish_run_model_event(store: &Store, run: &AgentRunModel) {
 fn effective_agent_model(
     settings: &ProjectSettingsView,
     item: Option<&WorkItemView>,
+    execution: &AutomationExecutionPolicy,
 ) -> Option<String> {
     item.and_then(|item| item.agent_model_override.clone())
+        .or_else(|| execution.model.clone())
         .or_else(|| settings.default_agent_model.clone())
 }
 
 fn effective_agent_reasoning_effort(
     settings: &ProjectSettingsView,
     item: Option<&WorkItemView>,
+    execution: &AutomationExecutionPolicy,
 ) -> Option<AgentReasoningEffort> {
     item.and_then(|item| item.agent_reasoning_effort_override)
+        .or(execution.reasoning_effort)
         .or(settings.default_agent_reasoning_effort)
+}
+
+fn effective_input_sha256(prompt: &AutomationPrompt) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"developer_instructions\0");
+    hasher.update(prompt.developer_instructions.as_bytes());
+    hasher.update(b"\0user_prompt\0");
+    hasher.update(prompt.user_prompt.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn commit_required_for_policy(settings: &ProjectSettingsView) -> bool {
@@ -1684,8 +1925,10 @@ async fn run_agent_process_inner(
     session_cancellation: Option<watch::Receiver<bool>>,
     external_cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentProcessOutput> {
+    let process_timeout = start.timeout;
     run_agent_process_turn_with_cancellation(
         run_codex_app_server_turn(start, sessions),
+        process_timeout,
         session_cancellation,
         external_cancellation,
     )
@@ -1694,10 +1937,11 @@ async fn run_agent_process_inner(
 
 async fn run_agent_process_turn_with_cancellation(
     turn: impl std::future::Future<Output = Result<AgentProcessOutput>>,
+    process_timeout: Duration,
     session_cancellation: Option<watch::Receiver<bool>>,
     external_cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentProcessOutput> {
-    let turn = timeout(AGENT_PROCESS_TIMEOUT, turn);
+    let turn = timeout(process_timeout, turn);
 
     if session_cancellation.is_some() || external_cancellation.is_some() {
         tokio::select! {
@@ -2395,6 +2639,9 @@ fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
         memory_event_id: run.memory_event_id,
         trigger_id: run.trigger_id,
         trigger_name: projects::normalize_optional(run.trigger_name),
+        trigger_revision_id: run.trigger_revision_id,
+        personality_revision_id: run.personality_revision_id,
+        system_prompt_event_id: run.system_prompt_event_id,
         tool_name: AgentToolName::from_str(&run.tool_name)?,
         mutability: AutomationRunMutability::from_str(&run.mutability)?,
         status: AgentRunStatus::from_str(&run.status)?,
@@ -2413,6 +2660,12 @@ fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
             .as_deref()
             .map(str::parse::<AgentReasoningEffort>)
             .transpose()?,
+        effective_input_sha256: run.effective_input_sha256,
+        effective_timeout_seconds: run
+            .effective_timeout_seconds
+            .map(|value| u64::try_from(value).context("invalid effective automation timeout"))
+            .transpose()?,
+        effective_concurrency_group: projects::normalize_optional(run.effective_concurrency_group),
         token_usage: token_usage_from_columns(
             run.input_tokens,
             run.cached_input_tokens,
@@ -2426,6 +2679,13 @@ fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
         cleanup_status: AgentRunCleanupStatus::from_str(&run.cleanup_status)?,
         worktree_cleaned_at: run.worktree_cleaned_at,
         result_summary: run.result_summary,
+        semantic_postcondition_status: SemanticPostconditionStatus::from_str(
+            &run.semantic_postcondition_status,
+        )?,
+        semantic_postcondition_failures: serde_json::from_str::<Vec<PostconditionFailureView>>(
+            &run.semantic_postcondition_failures,
+        )
+        .context("invalid semantic postcondition failure details")?,
         started_at: run.started_at,
         finished_at: run.finished_at,
         created_at: run.created_at,
@@ -2532,9 +2792,14 @@ mod tests {
         let run = create_run(
             &store,
             project.id,
-            AgentToolName::Codex,
-            AutomationRunMutability::Mutating,
-            None,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::Mutating,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+            },
         )
         .await
         .unwrap();
@@ -2576,6 +2841,9 @@ mod tests {
                 agent_reasoning_effort: None,
                 commit_required: false,
                 pr_requested: false,
+                system_prompt_event_id: None,
+                effective_input_sha256: String::new(),
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
             },
         )
         .await
@@ -2630,18 +2898,28 @@ mod tests {
         let mutating = create_run(
             &store,
             project.id,
-            AgentToolName::Codex,
-            AutomationRunMutability::Mutating,
-            None,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::Mutating,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+            },
         )
         .await
         .unwrap();
         let read_only = create_run(
             &store,
             project.id,
-            AgentToolName::Codex,
-            AutomationRunMutability::ReadOnly,
-            None,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::ReadOnly,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+            },
         )
         .await
         .unwrap();
@@ -2686,9 +2964,14 @@ mod tests {
         create_run(
             &store,
             project.id,
-            AgentToolName::Codex,
-            AutomationRunMutability::ReadOnly,
-            None,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::ReadOnly,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+            },
         )
         .await
         .unwrap();
@@ -2731,6 +3014,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rule_caps_and_project_scoped_concurrency_groups_compose() {
+        let (_temp, store) = test_store().await;
+        let project = get_project(&store, "demo").await.unwrap();
+        let origin = AutomationTriggerOrigin {
+            trigger_id: 101,
+            trigger_name: "group-holder".to_owned(),
+            trigger_revision_id: None,
+        };
+        let run = create_run(
+            &store,
+            project.id,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::ReadOnly,
+                trigger: Some(&origin),
+                personality_revision_id: None,
+                effective_timeout_seconds: 90,
+                effective_concurrency_group: Some("shared-validation"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(run.effective_timeout_seconds, Some(90));
+        assert_eq!(
+            run.effective_concurrency_group.as_deref(),
+            Some("shared-validation")
+        );
+        let settings = get_settings(&store, "demo").await.unwrap();
+
+        let cap_error = automation_admission::enforce_rule_start_allowed(
+            &store,
+            "demo",
+            &settings,
+            AutomationRunMutability::ReadOnly,
+            Some(origin.trigger_id),
+            &AutomationExecutionPolicy {
+                max_concurrent_runs: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(cap_error.to_string().contains("rule already has 1"));
+
+        let group_error = automation_admission::enforce_rule_start_allowed(
+            &store,
+            "demo",
+            &settings,
+            AutomationRunMutability::ReadOnly,
+            Some(202),
+            &AutomationExecutionPolicy {
+                concurrency_group: Some("shared-validation".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            group_error
+                .to_string()
+                .contains("concurrency group 'shared-validation'")
+        );
+    }
+
+    #[tokio::test]
     async fn effective_agent_settings_prefer_item_overrides() {
         let (_temp, store) = test_store().await;
         let settings = update_settings(
@@ -2760,12 +3108,35 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            effective_agent_model(&settings, Some(&item)).as_deref(),
+            effective_agent_model(
+                &settings,
+                Some(&item),
+                &AutomationExecutionPolicy::default()
+            )
+            .as_deref(),
             Some("gpt-5.6-terra")
         );
         assert_eq!(
-            effective_agent_reasoning_effort(&settings, Some(&item)),
+            effective_agent_reasoning_effort(
+                &settings,
+                Some(&item),
+                &AutomationExecutionPolicy::default(),
+            ),
             Some(AgentReasoningEffort::Medium)
+        );
+
+        let rule = AutomationExecutionPolicy {
+            model: Some("gpt-5.6-rule".to_owned()),
+            reasoning_effort: Some(AgentReasoningEffort::Low),
+            ..Default::default()
+        };
+        assert_eq!(
+            effective_agent_model(&settings, None, &rule).as_deref(),
+            Some("gpt-5.6-rule")
+        );
+        assert_eq!(
+            effective_agent_reasoning_effort(&settings, None, &rule),
+            Some(AgentReasoningEffort::Low)
         );
     }
 
@@ -2928,6 +3299,7 @@ mod tests {
         let (cancel, cancellation) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(run_agent_process_turn_with_cancellation(
             std::future::pending::<Result<AgentProcessOutput>>(),
+            AGENT_PROCESS_TIMEOUT,
             None,
             Some(cancellation),
         ));
@@ -2946,6 +3318,7 @@ mod tests {
     async fn non_retryable_turn_error_still_fails() {
         let err = run_agent_process_turn_with_cancellation(
             async { bail!("permanent Codex SDK failure") },
+            AGENT_PROCESS_TIMEOUT,
             None,
             None,
         )
@@ -2977,9 +3350,14 @@ mod tests {
         let run = create_run(
             &store,
             project.id,
-            AgentToolName::Codex,
-            AutomationRunMutability::Mutating,
-            None,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::Mutating,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+            },
         )
         .await
         .unwrap();
@@ -3007,6 +3385,9 @@ mod tests {
                 agent_reasoning_effort: None,
                 commit_required: false,
                 pr_requested: false,
+                system_prompt_event_id: None,
+                effective_input_sha256: String::new(),
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
             },
         )
         .await

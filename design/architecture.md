@@ -6,6 +6,7 @@ Dispatch is a local-first Rust application with a server-rendered and hydrated L
 
 - `dispatch-server` is the only process that opens the SQLite database.
 - `dispatch-cli` resolves context, validates command shape, and calls `dispatch-api-client`.
+- `dispatch-operator` is the operator-facing HTTP client for automation administration and bundle reconciliation.
 - `dispatch-api-client` contains typed HTTP calls and error handling.
 - `dispatch-types` contains shared DTOs, enum types, and request payloads.
 - Launched agents never receive a database path and never use a database-opening CLI.
@@ -19,14 +20,14 @@ The server crate contains:
 - the Axum and Leptos application;
 - SeaORM entities and migrations;
 - storage initialization and database path handling;
-- project, item, comment, automation, and event services;
+- project, item, work-group, comment, automation, and event services;
 - custom JSON API endpoints;
 - CrudKit-backed admin endpoints;
 - automation process launch and log capture;
 - Dispatch-managed Codex homes, per-project Codex config/rules, and run-specific tool shims;
 - the trusted server/operator CLI.
 
-The operator CLI in this crate may accept `--database` because it is part of the trusted server surface. It is not the agent-facing CLI.
+The legacy server CLI may accept `--database` because it is part of the trusted server surface. The standalone `dispatch-operator` binary never opens SQLite; it uses `/operator/api/...` endpoints and is not placed on launched-agent `PATH`.
 
 The hydrated frontend is organized by route under `dispatch-server/src/frontend/pages/`, with one module per operator page. The root application module only mounts the application shell and root providers. Shared UI behavior lives in focused modules under `frontend/components/`.
 
@@ -48,6 +49,10 @@ This crate provides typed HTTP methods for the custom JSON API. It is used by `d
 
 This crate builds the `dispatch` binary used by agents. It is intentionally small: parse command arguments, resolve context from flags and environment variables, call the typed API client, and print human or JSON output.
 
+### `dispatch-operator`
+
+This crate builds the operator-only automation administration client. It consumes YAML files for rule and personality writes and manages bundles, revisions, scheduling, routing diagnostics, and analytics through HTTP.
+
 ## Storage
 
 Dispatch persists data in SQLite through the server crate. The default database path is under the user's Dispatch data directory, while repository development recipes pass `.dispatch/dispatch.sqlite3` explicitly.
@@ -64,13 +69,14 @@ Every spawned Codex app-server has an owned process lifetime. Dispatch starts th
 
 ## Server Routes
 
-The server exposes three classes of routes:
+The server exposes four classes of routes:
 
 - Leptos UI routes for operators.
 - Custom Dispatch JSON API routes under `/api/projects/...`.
+- Operator automation JSON routes under `/operator/api/...`.
 - CrudKit-generated API routes under `/api` for ordinary admin resources.
 
-Custom Dispatch workflow endpoints are not CrudKit endpoints. CrudKit remains an admin accelerator for records such as projects, work item states, swim-lanes, personalities, and automation rules, not the authority for claim, finish, release, request feedback, automation, or live workflow behavior.
+The operator prefix is an intentional supported-interface boundary, not an authentication boundary in this local-first release. Custom Dispatch workflow endpoints are not CrudKit endpoints. CrudKit remains an admin accelerator, but its automation and personality hooks use the same revision service as operator writes.
 
 ## Development Commands
 
@@ -83,7 +89,8 @@ just test
 just clippy
 just verify
 just serve
-just cli -- item list --json
+just cli item list --json
+just operator automation rule list --project demo
 just browser-test
 ```
 

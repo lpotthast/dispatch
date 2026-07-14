@@ -436,6 +436,7 @@ mod tests {
         WorkItemView {
             id: 42,
             project_id: 1,
+            work_group: None,
             title: "Implement API\nrelay".to_owned(),
             description: "<p>Switch <code>dispatch</code> calls through HTTP.</p>".to_owned(),
             state: Some("in_progress".to_owned()),
@@ -470,6 +471,7 @@ mod tests {
             created_at: "2026-06-14T00:00:00Z".to_owned(),
             updated_at: "2026-06-14T00:00:00Z".to_owned(),
             comment_count: 0,
+            origin: None,
         }
     }
 

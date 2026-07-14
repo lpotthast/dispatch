@@ -15,6 +15,7 @@ use crate::backend::migrations::Migrator;
 pub struct Store {
     db: Arc<DatabaseConnection>,
     path: Arc<PathBuf>,
+    automation_production_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Store {
@@ -44,6 +45,7 @@ impl Store {
         Ok(Self {
             db: Arc::new(db),
             path: Arc::new(path),
+            automation_production_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -53,6 +55,15 @@ impl Store {
 
     pub fn path(&self) -> &Path {
         self.path.as_ref().as_path()
+    }
+
+    /// Serializes the producer deduplication read and item creation transaction.
+    ///
+    /// Dispatch has one owning server process for a database. SQLite deferred transactions do not
+    /// acquire a write lock until the first write, so concurrent producer evaluations otherwise
+    /// could both observe no unfinished item before either inserts its origin row.
+    pub(crate) async fn lock_automation_production(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.automation_production_lock.lock().await
     }
 }
 
@@ -244,7 +255,9 @@ mod tests {
             .unwrap();
         }
 
-        Migrator::down(&db, Some(1)).await.unwrap();
+        // Step through the workflow-support and work-group migrations before rolling back the
+        // role-separated prompt migration itself.
+        Migrator::down(&db, Some(3)).await.unwrap();
 
         let rows = db
             .query_all(Statement::from_string(
@@ -557,6 +570,8 @@ mod tests {
             "m20260618_000035_add_work_item_relationships",
             "m20260619_000036_add_automation_personalities",
             "m20260710_000037_separate_automation_run_inputs",
+            "m20260713_000038_add_automation_workflow_support",
+            "m20260714_000039_add_work_item_groups",
         ];
 
         assert_eq!(names.as_slice(), expected.as_slice());

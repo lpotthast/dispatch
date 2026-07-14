@@ -601,6 +601,14 @@ pub async fn latest_memory_event_id(store: &Store, project_id: i64) -> Result<Op
     )
 }
 
+pub async fn latest_system_prompt_event_id(store: &Store, project_id: i64) -> Result<Option<i64>> {
+    Ok(
+        change_events::latest_system_prompt_event(store.db().as_ref(), project_id)
+            .await?
+            .map(|event| event.id),
+    )
+}
+
 pub async fn snapshot_current_memory_event(
     store: &Store,
     project_name: &str,

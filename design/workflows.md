@@ -113,6 +113,8 @@ Their prompts tell agents not to implement the work and not to call `dispatch it
 
 Review-style work that should not run automatically is modeled as work-producing automation: a manual evaluation creates a review item with the expensive prompt, and a work-consuming automation can later run an agent against that item.
 
+When one run creates several items that form one human-visible unit, it creates a stable project work group and submits all created item ids in one atomic assignment. Grouping does not imply ordering or dependency and does not replace relationships. The board renders same-group items together within each lane, and the item detail exposes the group key/name. A group may span lanes as its items move through independent states.
+
 For Codex-backed launches, Dispatch prepares a project-specific Codex home before the run starts. The project home contains generated Codex config and rules derived from project settings, while shared Codex auth and skills are linked from Dispatch's shared managed Codex home when present. The run sets `CODEX_HOME` and `CODEX_SQLITE_HOME` to that project home so settings, rules, logs, sessions, and SQLite state are isolated per project.
 
 Immediately before an actual Codex-backed run, Dispatch performs one minimal readiness probe that reads account and rate-limit state but not the optional token-activity summary. This is the authoritative pre-claim check. Starting the project automation scheduler does not perform an additional probe, and Dispatch does not poll readiness while idle. The probe app-server exits before run preparation continues; the app-server used for the agent turn exits when that run or recovery attempt ends.
@@ -120,6 +122,24 @@ Immediately before an actual Codex-backed run, Dispatch performs one minimal rea
 Codex app-server stream transport interruptions that are consistent with host sleep, reconnect, broken pipe, or timeout behavior are recoverable. Dispatch keeps the run in `running`, keeps any claimed work item claimed, appends a concise recovery note to the active run output, and restarts Codex against the same persisted thread before asking it to continue. Recovery is bounded by an explicit retry limit. Explicit operator cancellation, project automation stop, server shutdown cancellation, the automation timeout, and non-retryable Codex turn failures remain terminal and continue to use the existing cancellation or failure release behavior.
 
 Dispatch repairs stale shared-asset symlinks in a project Codex home before launch. During each app-server run, Dispatch captures a bounded stderr diagnostic alongside the structured run log. When launch or execution fails, the run summary and automatic claim-release comment put the root cause reported by Codex first, followed by the SDK and transport details; a generic transport closure must not hide an available process error.
+
+### Produced work
+
+Before production, Dispatch validates the complete produced-work specification and records an evaluation at the current trigger revision. Deduplication and item creation occur in the same transaction. A duplicate evaluation records `skipped_duplicate` and the reused unfinished item without modifying it. New items atomically receive state, labels, item execution overrides, immutable origin, and `ItemCreated` attribution.
+
+### Routing and admission
+
+Ordinary matching rules retain fairness scoring. Routing is exclusive per item: if any due and admission-eligible exclusive rule matches an item, all non-exclusive matches for that item are suppressed. Exclusive rules use numeric priority first, then fairness and stable id for equal-priority ties. A candidate that becomes stale before claim is skipped while scanning continues.
+
+Project mutating/read-only limits apply first, followed by per-rule caps and project-scoped concurrency-group mutexes. Routing explanation reports selector clauses, due/admission state, fairness, exclusive suppression, blockers, current winner, and bounded match examples for unsaved rules.
+
+### Semantic postconditions
+
+Dispatch captures item/label state, event and created-item lineage, workspace baseline, and configured revision before launch. After the process exits and commit validation runs—but before automatic release—it evaluates only events and item origins attributed to that run. Any complete alternative outcome set passes.
+
+A semantic failure marks the run failed, persists each failed assertion, appends a readable log error, and preserves all item, Git, workspace, and metadata changes. If the item remains claimed, normal failed-run release/blocking applies. Dispatch never rewrites a finish, release, or feedback transition the agent already completed. Commit policy and semantic outcomes remain independently visible.
+
+The optional engineering-review fixture makes the planner create exactly one item for each of six named lenses, assign all six to one group, and finish only when a postcondition verifies the exact total, each lens-specific selector, and shared non-empty group membership. Scout-created candidates inherit that human-visible grouping through explicit agent assignment; Dispatch itself does not understand review lenses or candidate semantics.
 
 ## Automation Concurrency
 

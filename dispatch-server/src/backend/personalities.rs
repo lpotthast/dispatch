@@ -6,6 +6,7 @@ use sea_orm::{
 
 use crate::{
     backend::{
+        automation_revisions::{self, RevisionActor},
         entities::{
             automation_trigger,
             personality::{self, Personality, PersonalityActiveModel, PersonalityModel},
@@ -13,7 +14,7 @@ use crate::{
         projects,
         storage::{Store, utc_now},
     },
-    shared::view_models::PersonalityView,
+    shared::view_models::{AutomationPersonalityInput, PersonalityView, RevisionChangeOperation},
 };
 
 pub(crate) const DEFAULT_PERSONALITY_NAME: &str = "Default";
@@ -25,6 +26,9 @@ impl From<PersonalityModel> for PersonalityView {
             project_id: personality.project_id,
             name: personality.name,
             personality_description: personality.personality_description,
+            current_revision_id: personality.current_revision_id,
+            managed_bundle_key: personality.managed_bundle_key,
+            managed_object_key: personality.managed_object_key,
             created_at: personality.created_at,
             updated_at: personality.updated_at,
         }
@@ -43,6 +47,138 @@ pub(crate) async fn list_personalities(
         .await
         .context("failed to list personalities")?;
     Ok(personalities.into_iter().map(Into::into).collect())
+}
+
+pub(crate) async fn get_personality(
+    store: &Store,
+    project_name: &str,
+    id_or_key: &str,
+) -> Result<PersonalityView> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let mut condition = sea_orm::Condition::any()
+        .add(personality::Column::Name.eq(id_or_key))
+        .add(personality::Column::ManagedObjectKey.eq(id_or_key));
+    if let Ok(id) = id_or_key.parse::<i64>() {
+        condition = condition.add(personality::Column::Id.eq(id));
+    }
+    Personality::find()
+        .filter(personality::Column::ProjectId.eq(project_id))
+        .filter(condition)
+        .one(store.db().as_ref())
+        .await
+        .context("failed to load personality")?
+        .map(Into::into)
+        .ok_or_else(|| report!("personality '{id_or_key}' does not exist in this project"))
+}
+
+pub(crate) async fn create_personality(
+    store: &Store,
+    project_name: &str,
+    input: AutomationPersonalityInput,
+) -> Result<PersonalityView> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let name = normalize_name(input.name)?;
+    ensure_personality_name_available(store, project_id, &name, None).await?;
+    let now = utc_now();
+    let personality = PersonalityActiveModel {
+        project_id: Set(project_id),
+        name: Set(name),
+        personality_description: Set(normalize_description(input.description)),
+        current_revision_id: Set(None),
+        managed_bundle_key: Set(None),
+        managed_object_key: Set(None),
+        created_at: Set(now.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(store.db().as_ref())
+    .await
+    .context("failed to create personality")?;
+    automation_revisions::record_personality_revision_in_conn(
+        store.db().as_ref(),
+        &personality,
+        RevisionChangeOperation::Create,
+        &RevisionActor::default(),
+    )
+    .await?;
+    get_personality(store, project_name, &personality.id.to_string()).await
+}
+
+pub(crate) async fn update_personality(
+    store: &Store,
+    project_name: &str,
+    personality_id: i64,
+    input: AutomationPersonalityInput,
+) -> Result<PersonalityView> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let existing = validate_personality_for_project(store, project_id, personality_id).await?;
+    if existing.managed_bundle_key.is_some() {
+        bail!("bundle-managed personalities must be detached before individual editing");
+    }
+    let name = normalize_name(input.name)?;
+    ensure_personality_name_available(store, project_id, &name, Some(personality_id)).await?;
+    let mut active: PersonalityActiveModel = existing.into();
+    active.name = Set(name);
+    active.personality_description = Set(normalize_description(input.description));
+    active.updated_at = Set(utc_now());
+    let personality = active
+        .update(store.db().as_ref())
+        .await
+        .context("failed to update personality")?;
+    automation_revisions::record_personality_revision_in_conn(
+        store.db().as_ref(),
+        &personality,
+        RevisionChangeOperation::Update,
+        &RevisionActor::default(),
+    )
+    .await?;
+    get_personality(store, project_name, &personality_id.to_string()).await
+}
+
+pub(crate) async fn delete_personality(
+    store: &Store,
+    project_name: &str,
+    personality_id: i64,
+) -> Result<()> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let model = validate_personality_for_project(store, project_id, personality_id).await?;
+    if model.managed_bundle_key.is_some() {
+        bail!("bundle-managed personalities cannot be deleted individually");
+    }
+    validate_personality_delete(store, &model).await?;
+    Personality::delete_by_id(personality_id)
+        .exec(store.db().as_ref())
+        .await
+        .context("failed to delete personality")?;
+    Ok(())
+}
+
+pub(crate) async fn detach_personality(
+    store: &Store,
+    project_name: &str,
+    personality_id: i64,
+) -> Result<PersonalityView> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let existing = validate_personality_for_project(store, project_id, personality_id).await?;
+    if existing.managed_bundle_key.is_none() {
+        bail!("personality is not bundle-managed");
+    }
+    let mut active: PersonalityActiveModel = existing.into();
+    active.managed_bundle_key = Set(None);
+    active.managed_object_key = Set(None);
+    active.updated_at = Set(utc_now());
+    let personality = active
+        .update(store.db().as_ref())
+        .await
+        .context("failed to detach personality from bundle")?;
+    automation_revisions::record_personality_revision_in_conn(
+        store.db().as_ref(),
+        &personality,
+        RevisionChangeOperation::Detach,
+        &RevisionActor::default(),
+    )
+    .await?;
+    get_personality(store, project_name, &personality_id.to_string()).await
 }
 
 pub(crate) fn normalize_name(name: String) -> Result<String> {
@@ -76,7 +212,7 @@ where
     }
 
     let now = utc_now();
-    Ok(PersonalityActiveModel {
+    let personality = PersonalityActiveModel {
         project_id: Set(project_id),
         name: Set(DEFAULT_PERSONALITY_NAME.to_owned()),
         personality_description: Set(String::new()),
@@ -86,7 +222,19 @@ where
     }
     .insert(conn)
     .await
-    .context("failed to create default personality")?)
+    .context("failed to create default personality")?;
+    automation_revisions::record_personality_revision_in_conn(
+        conn,
+        &personality,
+        RevisionChangeOperation::Create,
+        &RevisionActor::default(),
+    )
+    .await?;
+    Personality::find_by_id(personality.id)
+        .one(conn)
+        .await
+        .context("failed to reload default personality")?
+        .ok_or_else(|| report!("created default personality disappeared"))
 }
 
 pub(crate) async fn ensure_default_personality_for_project_id(
@@ -137,6 +285,22 @@ pub(crate) async fn personality_description_for_prompt(
     let personality = validate_personality_for_project(store, project_id, personality_id).await?;
     let description = personality.personality_description;
     Ok((!description.trim().is_empty()).then_some(description))
+}
+
+pub(crate) async fn personality_revision_id(
+    store: &Store,
+    project_id: i64,
+    personality_id: Option<i64>,
+) -> Result<Option<i64>> {
+    let Some(personality_id) = personality_id else {
+        return Ok(None);
+    };
+    Ok(Some(
+        validate_personality_for_project(store, project_id, personality_id)
+            .await?
+            .current_revision_id
+            .ok_or_else(|| report!("personality {personality_id} has no current revision"))?,
+    ))
 }
 
 pub(crate) async fn ensure_personality_name_available(

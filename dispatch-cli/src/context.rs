@@ -10,6 +10,7 @@ pub(crate) struct ContextOverrides {
     pub api_url: Option<String>,
     pub project: Option<String>,
     pub agent_id: Option<String>,
+    pub agent_run_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,12 +18,14 @@ pub(crate) struct ResolvedContext {
     api_url: String,
     project: Option<String>,
     agent_id: Option<String>,
+    agent_run_id: Option<i64>,
     claimed_item_id: Option<i64>,
 }
 
 impl ResolvedContext {
     pub(crate) fn client(&self) -> DispatchClient {
         DispatchClient::new(self.api_url.clone())
+            .with_agent_context(self.agent_id.clone(), self.agent_run_id)
     }
 
     pub(crate) fn project(&self) -> Result<&str> {
@@ -37,6 +40,10 @@ impl ResolvedContext {
             .agent_id
             .as_deref()
             .context("missing Dispatch agent id; pass --agent or set DISPATCH_AGENT_ID")?)
+    }
+
+    pub(crate) fn agent_run_id(&self) -> Option<i64> {
+        self.agent_run_id
     }
 
     pub(crate) fn item_id(&self, explicit: Option<i64>) -> Result<i64> {
@@ -67,6 +74,16 @@ pub(crate) fn resolve_context(
         ),
         _ => None,
     };
+    let agent_run_id = match overrides.agent_run_id {
+        Some(run_id) => Some(run_id),
+        None => match env_value("DISPATCH_AGENT_RUN_ID").ok() {
+            Some(raw) if !raw.trim().is_empty() => Some(
+                raw.parse::<i64>()
+                    .context_with(|| format!("invalid DISPATCH_AGENT_RUN_ID '{raw}'"))?,
+            ),
+            _ => None,
+        },
+    };
 
     Ok(ResolvedContext {
         api_url,
@@ -78,6 +95,7 @@ pub(crate) fn resolve_context(
             .agent_id
             .clone()
             .or_else(|| env_value("DISPATCH_AGENT_ID").ok()),
+        agent_run_id,
         claimed_item_id,
     })
 }
@@ -106,6 +124,7 @@ mod tests {
                 ("DISPATCH_API_URL", "http://127.0.0.1:4100"),
                 ("DISPATCH_PROJECT", "demo"),
                 ("DISPATCH_AGENT_ID", "dispatch-run-1"),
+                ("DISPATCH_AGENT_RUN_ID", "1"),
                 ("DISPATCH_CLAIMED_ITEM_ID", "42"),
             ]),
         )
@@ -114,6 +133,7 @@ mod tests {
         assert_eq!(context.api_url, "http://127.0.0.1:4100");
         assert_eq!(context.project.as_deref(), Some("demo"));
         assert_eq!(context.agent_id.as_deref(), Some("dispatch-run-1"));
+        assert_eq!(context.agent_run_id, Some(1));
         assert_eq!(context.claimed_item_id, Some(42));
     }
 
@@ -124,6 +144,7 @@ mod tests {
                 api_url: Some("http://127.0.0.1:5000".to_owned()),
                 project: Some("override".to_owned()),
                 agent_id: Some("human".to_owned()),
+                agent_run_id: Some(9),
             },
             env_from(&[
                 ("DISPATCH_API_URL", "http://127.0.0.1:4100"),
@@ -136,6 +157,7 @@ mod tests {
         assert_eq!(context.api_url, "http://127.0.0.1:5000");
         assert_eq!(context.project.as_deref(), Some("override"));
         assert_eq!(context.agent_id.as_deref(), Some("human"));
+        assert_eq!(context.agent_run_id, Some(9));
     }
 
     #[test]
@@ -144,6 +166,7 @@ mod tests {
             api_url: DEFAULT_API_URL.to_owned(),
             project: Some("demo".to_owned()),
             agent_id: Some("dispatch-run-1".to_owned()),
+            agent_run_id: Some(1),
             claimed_item_id: Some(42),
         };
 

@@ -12,6 +12,7 @@ use utoipa::ToSchema;
 
 use crate::{
     backend::{
+        automation_revisions::{self, RevisionActor},
         automation_triggers,
         entities::{
             agent_run, agent_tool, automation_trigger, comment, personality, project, swim_lane,
@@ -26,7 +27,8 @@ use crate::{
     shared::view_models::{
         AgentReasoningEffort, AgentSandboxMode, AgentToolName, AutomationActivation,
         AutomationEffect, AutomationRunMutability, CodexAgentModel, DEFAULT_STATE_LABEL,
-        RevertStrategy, WorkItemEventType, WorkspaceMode, WorktreeCleanupPolicy,
+        RevertStrategy, RevisionChangeOperation, WorkItemEventType, WorkspaceMode,
+        WorktreeCleanupPolicy,
     },
 };
 
@@ -1246,6 +1248,14 @@ impl CrudLifetime<CrudPersonalityResource> for PersonalityLifetime {
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        automation_revisions::record_personality_revision_in_conn(
+            context.store.db().as_ref(),
+            model,
+            RevisionChangeOperation::Create,
+            &RevisionActor::default(),
+        )
+        .await
+        .map_err(|err| personality_unprocessable_error(err.to_string()))?;
         publish_automation_project_event(&context.store, model.project_id).await;
         Ok(data)
     }
@@ -1258,6 +1268,12 @@ impl CrudLifetime<CrudPersonalityResource> for PersonalityLifetime {
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        if existing.managed_bundle_key.is_some() {
+            return Err(personality_unprocessable_error(
+                "bundle-managed personalities must be detached before individual editing"
+                    .to_owned(),
+            ));
+        }
         update_model.name = personalities::normalize_name(std::mem::take(&mut update_model.name))
             .map_err(|err| personality_unprocessable_error(err.to_string()))?;
         update_model.personality_description = personalities::normalize_description(
@@ -1282,6 +1298,14 @@ impl CrudLifetime<CrudPersonalityResource> for PersonalityLifetime {
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        automation_revisions::record_personality_revision_in_conn(
+            context.store.db().as_ref(),
+            model,
+            RevisionChangeOperation::Update,
+            &RevisionActor::default(),
+        )
+        .await
+        .map_err(|err| personality_unprocessable_error(err.to_string()))?;
         publish_automation_project_event(&context.store, model.project_id).await;
         Ok(data)
     }
@@ -1293,6 +1317,11 @@ impl CrudLifetime<CrudPersonalityResource> for PersonalityLifetime {
         _request: RequestContext<NoAuth>,
         data: (),
     ) -> Result<(), HookError<Self::Error>> {
+        if model.managed_bundle_key.is_some() {
+            return Err(personality_unprocessable_error(
+                "bundle-managed personalities cannot be deleted individually".to_owned(),
+            ));
+        }
         personalities::validate_personality_delete(&context.store, model)
             .await
             .map_err(|err| personality_unprocessable_error(err.to_string()))?;
@@ -1435,6 +1464,17 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
             normalize_required_schedule(std::mem::take(&mut create_model.schedule))?;
         let activation = parse_activation(&create_model.activation)?;
         let effect = parse_effect(&create_model.effect)?;
+        automation_triggers::validate_extended_trigger_configuration(
+            effect,
+            create_model.produced_work_spec_json.as_deref(),
+            create_model.postconditions_json.as_deref(),
+            create_model.model_override.as_deref(),
+            create_model.reasoning_effort_override.as_deref(),
+            create_model.timeout_seconds,
+            create_model.max_concurrent_runs,
+            create_model.concurrency_group.as_deref(),
+        )
+        .map_err(|error| trigger_unprocessable_error(error.to_string()))?;
         create_model.mutability = parse_mutability(&create_model.mutability)?
             .as_storage()
             .to_owned();
@@ -1475,7 +1515,15 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         _request: RequestContext<NoAuth>,
         data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
-        apply_trigger_hook_data(context, model, data.clone()).await?;
+        let model = apply_trigger_hook_data(context, model, data.clone()).await?;
+        automation_revisions::record_trigger_revision_in_conn(
+            context.store.db().as_ref(),
+            &model,
+            RevisionChangeOperation::Create,
+            &RevisionActor::default(),
+        )
+        .await
+        .map_err(trigger_internal_error)?;
         publish_automation_project_event(&context.store, model.project_id).await;
         Ok(data)
     }
@@ -1488,11 +1536,27 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         _request: RequestContext<NoAuth>,
         _data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
+        if existing.managed_bundle_key.is_some() {
+            return Err(trigger_unprocessable_error(
+                "bundle-managed automations must be detached before individual editing".to_owned(),
+            ));
+        }
         update_model.schedule =
             normalize_required_schedule(std::mem::take(&mut update_model.schedule))?;
         let previous_activation = parse_activation(&existing.activation)?;
         let activation = parse_activation(&update_model.activation)?;
         let effect = parse_effect(&update_model.effect)?;
+        automation_triggers::validate_extended_trigger_configuration(
+            effect,
+            update_model.produced_work_spec_json.as_deref(),
+            update_model.postconditions_json.as_deref(),
+            update_model.model_override.as_deref(),
+            update_model.reasoning_effort_override.as_deref(),
+            update_model.timeout_seconds,
+            update_model.max_concurrent_runs,
+            update_model.concurrency_group.as_deref(),
+        )
+        .map_err(|error| trigger_unprocessable_error(error.to_string()))?;
         update_model.mutability = parse_mutability(&update_model.mutability)?
             .as_storage()
             .to_owned();
@@ -1533,18 +1597,31 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         _request: RequestContext<NoAuth>,
         data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
-        apply_trigger_hook_data(context, model, data.clone()).await?;
+        let model = apply_trigger_hook_data(context, model, data.clone()).await?;
+        automation_revisions::record_trigger_revision_in_conn(
+            context.store.db().as_ref(),
+            &model,
+            RevisionChangeOperation::Update,
+            &RevisionActor::default(),
+        )
+        .await
+        .map_err(trigger_internal_error)?;
         publish_automation_project_event(&context.store, model.project_id).await;
         Ok(data)
     }
 
     async fn before_delete(
-        _model: &automation_trigger::Model,
+        model: &automation_trigger::Model,
         _delete_request: &DeleteRequest<CrudAutomationTriggerResource>,
         _context: &AutomationTriggerResourceContext,
         _request: RequestContext<NoAuth>,
         data: AutomationTriggerHookData,
     ) -> Result<AutomationTriggerHookData, HookError<Self::Error>> {
+        if model.managed_bundle_key.is_some() {
+            return Err(trigger_unprocessable_error(
+                "bundle-managed automations cannot be deleted individually".to_owned(),
+            ));
+        }
         Ok(data)
     }
 
@@ -1771,16 +1848,16 @@ async fn apply_trigger_hook_data(
     context: &AutomationTriggerResourceContext,
     model: &automation_trigger::Model,
     data: AutomationTriggerHookData,
-) -> Result<(), HookError<AutomationTriggerHookError>> {
+) -> Result<automation_trigger::Model, HookError<AutomationTriggerHookError>> {
     let mut active: automation_trigger::ActiveModel = model.clone().into();
     active.next_evaluation_at = Set(data.next_evaluation_at);
     active.last_event_id = Set(data.last_event_id);
     active.updated_at = Set(utc_now());
-    active
+    let model = active
         .update(context.store.db().as_ref())
         .await
         .map_err(trigger_internal_error)?;
-    Ok(())
+    Ok(model)
 }
 
 fn trigger_unprocessable_error(reason: String) -> HookError<AutomationTriggerHookError> {

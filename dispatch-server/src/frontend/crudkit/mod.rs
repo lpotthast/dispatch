@@ -8,6 +8,7 @@ use crate::{
             tiptap_content_to_string,
         },
         types::{
+            AutomationPersonalityInspectorView,
             agent_tool::{
                 AgentTool, AgentToolField, CreateAgentTool, CreateAgentToolField,
                 CrudAgentToolResource, ReadAgentTool, ReadAgentToolField,
@@ -72,6 +73,7 @@ use leptos::prelude::*;
 use serde::Deserialize;
 
 mod agent_tools;
+mod automation_configuration;
 mod automation_triggers;
 mod personalities;
 mod projects;
@@ -89,10 +91,18 @@ pub(crate) use work_item_states::WorkItemStatesPanel;
 pub(crate) use work_items::{WorkItemsPanel, work_items_crudkit_config_for_view};
 
 pub(crate) fn selected_trigger_id_from_context(context: CrudInstanceContext) -> Option<i64> {
+    selected_entity_id_from_context(context)
+}
+
+fn selected_entity_id_from_context(context: CrudInstanceContext) -> Option<i64> {
     match context.view.get() {
         SerializableCrudView::Read(id) | SerializableCrudView::Edit(id) => serializable_i64_id(&id),
         SerializableCrudView::List | SerializableCrudView::Create => None,
     }
+}
+
+fn selected_personality_id_from_context(context: CrudInstanceContext) -> Option<i64> {
+    selected_entity_id_from_context(context)
 }
 
 fn serializable_i64_id(id: &SerializableId) -> Option<i64> {

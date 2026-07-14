@@ -8,6 +8,7 @@ name = "dispatch"
 path = "src/main.rs"
 
 [dependencies]
+crudkit-core = { path = "../crudkit/crudkit-core" }
 clap = { version = "4", features = ["derive", "env"] }
 dispatch-api-client = { path = "../dispatch-api-client" }
 dispatch-types = { path = "../dispatch-types" }

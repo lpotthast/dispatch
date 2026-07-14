@@ -137,7 +137,7 @@ struct FilterEditorContext {
     value_changed: Callback<Result<Value, std::sync::Arc<dyn std::error::Error>>>,
 }
 
-pub(super) fn swim_lane_filter_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+pub(super) fn condition_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
     FieldRenderer::new(
         move |_signals, _field: F, field_mode, field_options, value, value_changed| {
             let current = Signal::derive(move || filter_string_from_value(&value.value.get()));
@@ -175,6 +175,51 @@ pub(super) fn swim_lane_filter_field_renderer<F: TypeErasedField>() -> FieldRend
             }
         },
     )
+}
+
+pub(super) fn swim_lane_filter_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+    condition_field_renderer()
+}
+
+pub(super) fn condition_editor_view(
+    raw: String,
+    disabled: bool,
+    on_change: Callback<String>,
+) -> AnyView {
+    let value_signal = RwSignal::new(if raw.trim().is_empty() {
+        Value::Null
+    } else {
+        Value::String(raw)
+    });
+    let value_changed = Callback::new(
+        move |result: Result<Value, std::sync::Arc<dyn std::error::Error>>| {
+            if let Ok(value) = result {
+                let raw = filter_string_from_value(&value);
+                value_signal.set(value);
+                on_change.run(raw);
+            }
+        },
+    );
+    let raw_mode = RwSignal::new(false);
+    let context = FilterEditorContext {
+        disabled,
+        value_signal,
+        value_changed,
+    };
+
+    view! {
+        <div class="swim-lane-filter-editor nested-condition-editor" data-condition-editor="structured">
+            {move || {
+                let raw = filter_string_from_value(&value_signal.get());
+                match parse_filter_draft(&raw) {
+                    Ok(draft) if !raw_mode.get() => structured_filter_view(draft, raw_mode, context),
+                    Ok(_) => raw_filter_view(raw, None, raw_mode, context),
+                    Err(error) => raw_filter_view(raw, Some(error), raw_mode, context),
+                }
+            }}
+        </div>
+    }
+    .into_any()
 }
 
 fn structured_filter_view(

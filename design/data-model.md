@@ -41,6 +41,7 @@ Core fields include:
 - claim expiration timestamp;
 - finish timestamp;
 - optional agent model and reasoning effort overrides;
+- optional project-scoped work-group membership;
 - comment count and timestamps.
 
 Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Non-state labels can be edited by human operators and agents. The `state` label is Dispatch's built-in workflow hook for claim, finish, release, and default automation transitions; it is managed through item create, item state update, and workflow transitions rather than generic label add, update, or delete operations.
@@ -52,6 +53,8 @@ Dispatch also uses hardcoded workflow labels. `dispatch:claimed-from-state=<stat
 Work item relationships are directed, project-scoped links between two different work items. Each relationship stores a source work item, a target work item, a free-form `kind` string, and timestamps. Relationship kinds are trimmed and must not be empty, but Dispatch does not define a fixed vocabulary. Exact duplicates for the same project, source item, target item, and kind are rejected; different kinds between the same pair and separately directed reverse relationships are allowed. Source and target items must both exist in the same project. Deleting either work item cascades to delete touching relationships so API, CLI, and UI readers do not see orphaned links.
 
 Relationship create, update-kind, and delete operations are Dispatch-owned workflow mutations, not label edits and not CrudKit-only CRUD. Mutations touch both source and target work items by incrementing their versions and updating their `updated_at` values, record item events for both sides, and publish item-change notifications for both item detail views.
+
+Work-item groups are project-scoped records with a stable lowercase key, display name, creation attribution, and timestamps. An item belongs to at most one group. Agents may create a group idempotently and atomically assign several same-project item ids; assigning an item that already belongs to another group rejects the complete assignment. Membership updates increment item versions and create attributed `ItemUpdated` events. Groups are display organization, not dependency semantics: relationships remain the directed semantic link mechanism.
 
 Work item states are project-scoped records with an identifier, display name, and position. They define the authored values that operators should use for the `state` label. New projects start with `idea`, `open`, `in_progress`, and `done` states.
 
@@ -153,6 +156,22 @@ The refiner and verifier prompts instruct agents to update item title, descripti
 Migrations default existing automation triggers and existing agent runs to `mutating`. Dispatch must not infer `read_only` from trigger names, selectors, labels, or prompt text; operators opt existing custom automation into read-only behavior explicitly.
 
 Migrations create the `personalities` table for existing databases, seed one empty `Default` personality per project, and backfill existing automation rules to reference their project default. New project seeding creates the default personality before default automation rules so those rules can reference it.
+
+### Automation provenance, revisions, and bundles
+
+Every automation rule and personality has an immutable revision stream. Revisions store a monotonic number, canonical configuration or personality snapshot, SHA-256 fingerprint, change operation, actor attribution, and timestamp. Create, update, restore, detach, and bundle apply create a revision; restore never mutates history. Runs capture trigger/personality revision ids, the current system-prompt event id, and a SHA-256 fingerprint of the final role-separated developer instructions and user prompt.
+
+`automation_evaluations` records queued or due evaluations that create work, skip a duplicate, start a run, or fail. Idle polling checks create no row. `work_item_origins` stores one immutable origin for every item: historical, operator, producing automation, agent run, or system. Origin snapshots retain run/actor, trigger/revision/evaluation, bundle, deduplication, and display names after source objects are deleted or renamed.
+
+Existing rules and personalities receive revision 1 during migration, and existing items receive historical origins. Older runs retain null provenance fields where attribution cannot be reconstructed safely.
+
+Produce-work rules may define item title, initial state and labels, item model/effort overrides, and deduplication: always create, reuse an unfinished item from the same trigger, or reuse an unfinished item with a project-scoped key. Absence preserves legacy production behavior.
+
+Consume-work rules may be exclusive, override model/effort, set a positive timeout, cap their own active runs, join a project-scoped mutex group, and declare typed semantic postconditions. Postconditions are alternatives of all-of assertions over disposition, run-attributed events, label transitions, one or more created-item count/selectors, optional shared created-item group membership, and workspace change policy. Existing rules remain non-exclusive, use the legacy 12-hour timeout, and have no extra cap/group or semantic postconditions.
+
+Effective model and reasoning effort precedence is work-item override, then consuming-rule override, then project default. Produced-work overrides are stored on the created item and participate in the same precedence when later consumed. Token usage remains observational analytics rather than an enforceable ceiling.
+
+Bundle ownership is identified by `(project, bundle_key, object_key)`. `automation_bundle_applies` records canonical manifest hashes, applied/removal diffs, actor/status metadata, and timestamps. The latest apply-history status determines whether a bundle is installed. Removing an installed bundle transactionally deletes only its managed rules and then its managed personalities, records `removed`, and permits a clean later reinstall. Managed objects cannot be individually edited or deleted until detached.
 
 ## Settings
 

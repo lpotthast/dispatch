@@ -1,0 +1,323 @@
+schema_version: 1
+bundle_key: engineering-review
+display_name: Engineering review
+
+personalities:
+  - key: reviewer
+    name: Engineering reviewer
+    description: |
+      Inspect the repository carefully, prefer evidence over assumptions, and report focused,
+      actionable findings. Use Dispatch labels and created work items to make routing explicit.
+  - key: implementer
+    name: Approved-change implementer
+    description: |
+      Implement only the approved change represented by the claimed item. Preserve unrelated work,
+      verify the real top-level command, and finish with a concise evidence-backed report.
+
+automations:
+  - key: campaign
+    name: Start engineering review campaign
+    enabled: true
+    activation: manual
+    effect: produce_work
+    schedule: "@every 15s"
+    mutability: mutating
+    prompt_markdown: |
+      Plan an engineering review of the current repository. Create one scan item for each review
+      lens: architecture, correctness, failure-recovery, contracts-data, testing, and simplification.
+    produced_work:
+      title: Plan engineering review
+      state: open
+      initial_labels:
+        - key: review.role
+          value: planner
+        - key: review.bundle
+          value: engineering-review
+      deduplication:
+        policy: while_unfinished_for_key
+        key: engineering-review.campaign
+
+  - key: planner
+    name: Engineering review planner
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 200
+    exclusive: true
+    prompt_markdown: |
+      Inspect the repository map and create exactly six focused scan items: one each for
+      architecture, correctness, failure-recovery, contracts-data, testing, and simplification.
+      Label every item with review.role=scan and the corresponding review.lens value.
+
+      Create a work group with key `engineering-review-PLANNER_ITEM_ID` and name
+      `Engineering review #PLANNER_ITEM_ID`, replacing `PLANNER_ITEM_ID` with this claimed planner
+      item's numeric id. Use `dispatch group create`, record every created item id, then assign all
+      six atomically with one `dispatch group assign --key ... --item ...` command. Finish the
+      planner item only after all six items are in the group.
+    selector:
+      All:
+        - column_name: review.role
+          operator: "="
+          value:
+            String: planner
+    execution:
+      reasoning_effort: high
+      timeout_seconds: 7200
+      max_concurrent_runs: 1
+      concurrency_group: review-planning
+    postconditions:
+      any_of:
+        - disposition: finished
+          attributed_events: [item_finished]
+          created_items:
+            count: 6
+          created_item_assertions:
+            -
+              count: 1
+              selector:
+                All:
+                  - { column_name: review.role, operator: "=", value: { String: scan } }
+                  - { column_name: review.lens, operator: "=", value: { String: architecture } }
+            -
+              count: 1
+              selector:
+                All:
+                  - { column_name: review.role, operator: "=", value: { String: scan } }
+                  - { column_name: review.lens, operator: "=", value: { String: correctness } }
+            -
+              count: 1
+              selector:
+                All:
+                  - { column_name: review.role, operator: "=", value: { String: scan } }
+                  - { column_name: review.lens, operator: "=", value: { String: failure-recovery } }
+            -
+              count: 1
+              selector:
+                All:
+                  - { column_name: review.role, operator: "=", value: { String: scan } }
+                  - { column_name: review.lens, operator: "=", value: { String: contracts-data } }
+            -
+              count: 1
+              selector:
+                All:
+                  - { column_name: review.role, operator: "=", value: { String: scan } }
+                  - { column_name: review.lens, operator: "=", value: { String: testing } }
+            -
+              count: 1
+              selector:
+                All:
+                  - { column_name: review.role, operator: "=", value: { String: scan } }
+                  - { column_name: review.lens, operator: "=", value: { String: simplification } }
+          created_items_share_group: true
+          workspace_changes: none
+
+  - key: architecture-scout
+    name: Architecture scout
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 100
+    exclusive: true
+    prompt_markdown: |
+      Review ownership boundaries, coupling, data flow, and architectural drift. Create candidate
+      items for material findings with review.role=candidate. Read this scan's work_group key from
+      `dispatch item show --json` and assign every candidate to that group before finishing.
+    selector:
+      All:
+        - column_name: review.role
+          operator: "="
+          value: { String: scan }
+        - column_name: review.lens
+          operator: "="
+          value: { String: architecture }
+    execution: &scout_execution
+      reasoning_effort: high
+      timeout_seconds: 7200
+      max_concurrent_runs: 1
+      concurrency_group: review-validation
+    postconditions: &scan_postconditions
+      any_of:
+        - disposition: finished
+          attributed_events: [item_finished]
+          workspace_changes: none
+
+  - key: correctness-scout
+    name: Correctness scout
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 100
+    exclusive: true
+    prompt_markdown: |
+      Find concrete correctness defects, invalid assumptions, races, and invariant violations.
+      Create candidate items with review.role=candidate, assign them to this scan's work_group,
+      and finish the scan.
+    selector:
+      All:
+        - { column_name: review.role, operator: "=", value: { String: scan } }
+        - { column_name: review.lens, operator: "=", value: { String: correctness } }
+    execution: *scout_execution
+    postconditions: *scan_postconditions
+
+  - key: failure-recovery-scout
+    name: Failure and recovery scout
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 100
+    exclusive: true
+    prompt_markdown: |
+      Review failure paths, retries, cancellation, partial writes, cleanup, and diagnostic quality.
+      Create candidate items with review.role=candidate, assign them to this scan's work_group,
+      and finish the scan.
+    selector:
+      All:
+        - { column_name: review.role, operator: "=", value: { String: scan } }
+        - { column_name: review.lens, operator: "=", value: { String: failure-recovery } }
+    execution: *scout_execution
+    postconditions: *scan_postconditions
+
+  - key: contracts-data-scout
+    name: Contracts and data scout
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 100
+    exclusive: true
+    prompt_markdown: |
+      Review API, CLI, schema, migration, compatibility, and provenance contracts. Create candidate
+      items with review.role=candidate, assign them to this scan's work_group, and finish the scan.
+    selector:
+      All:
+        - { column_name: review.role, operator: "=", value: { String: scan } }
+        - { column_name: review.lens, operator: "=", value: { String: contracts-data } }
+    execution: *scout_execution
+    postconditions: *scan_postconditions
+
+  - key: testing-scout
+    name: Testing scout
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 100
+    exclusive: true
+    prompt_markdown: |
+      Review test coverage at behavioral boundaries, false confidence, and missing end-to-end
+      verification. Create candidate items with review.role=candidate, assign them to this scan's
+      work_group, and finish the scan.
+    selector:
+      All:
+        - { column_name: review.role, operator: "=", value: { String: scan } }
+        - { column_name: review.lens, operator: "=", value: { String: testing } }
+    execution: *scout_execution
+    postconditions: *scan_postconditions
+
+  - key: simplification-scout
+    name: Simplification scout
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 100
+    exclusive: true
+    prompt_markdown: |
+      Find meaningful simplifications that reduce coupling or duplicated policy without flattening
+      useful domain boundaries. Create candidate items with review.role=candidate, assign them to
+      this scan's work_group, and finish the scan.
+    selector:
+      All:
+        - { column_name: review.role, operator: "=", value: { String: scan } }
+        - { column_name: review.lens, operator: "=", value: { String: simplification } }
+    execution: *scout_execution
+    postconditions: *scan_postconditions
+
+  - key: candidate-verifier
+    name: Adversarial candidate verifier
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: read_only
+    personality: reviewer
+    priority: 300
+    exclusive: true
+    prompt_markdown: |
+      Attempt to disprove the candidate using code and tests. If confirmed, add
+      review.disposition=approved and finish. If disproved, add review.disposition=rejected and
+      finish. If evidence is insufficient, request feedback.
+    selector:
+      All:
+        - column_name: review.role
+          operator: "="
+          value: { String: candidate }
+    execution:
+      reasoning_effort: high
+      timeout_seconds: 7200
+      max_concurrent_runs: 1
+      concurrency_group: review-validation
+    postconditions:
+      any_of:
+        - disposition: finished
+          labels:
+            - assertion: added
+              key: review.disposition
+              value: approved
+          workspace_changes: none
+        - disposition: finished
+          labels:
+            - assertion: added
+              key: review.disposition
+              value: rejected
+          workspace_changes: none
+        - disposition: feedback_requested
+          attributed_events: [feedback_requested]
+          workspace_changes: none
+
+  - key: approved-implementer
+    name: Approved item implementer
+    enabled: true
+    activation: work_item
+    effect: consume_work
+    schedule: "@every 15s"
+    mutability: mutating
+    personality: implementer
+    priority: 400
+    exclusive: true
+    prompt_markdown: |
+      Implement the confirmed finding, run proportionate verification including the relevant
+      top-level command, and finish the item with the evidence.
+    selector:
+      All:
+        - column_name: review.disposition
+          operator: "="
+          value: { String: approved }
+    execution:
+      reasoning_effort: high
+      timeout_seconds: 14400
+      max_concurrent_runs: 1
+      concurrency_group: review-implementation
+    postconditions:
+      any_of:
+        - disposition: finished
+          attributed_events: [item_finished]
+          workspace_changes: required

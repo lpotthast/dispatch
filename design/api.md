@@ -80,7 +80,18 @@ Automation endpoints:
 GET /api/projects/{project}/automation/runs
 GET /api/projects/{project}/automation/runs/{run_id}/log
 GET /api/projects/{project}/automation/sessions
+GET /api/projects/{project}/automation/triggers
+GET /api/projects/{project}/automation/triggers/{id_or_key}
+POST /api/projects/{project}/automation/routing/explain
+POST /api/projects/{project}/items/search
+GET  /api/projects/{project}/work-groups
+POST /api/projects/{project}/work-groups
+POST /api/projects/{project}/work-groups/{group_key}/items
 ```
+
+Item search returns `WorkItemPage { items, next_cursor }`, defaults to 50 rows, caps pages at 200, and uses a stable updated-time/id cursor. Filters cover states, label conditions/selectors, title/description text, finished state, creating run, producing trigger, relationship kind, and update time. Existing item-list behavior is unchanged.
+
+Agent-context requests send `X-Dispatch-Agent-Id` and `X-Dispatch-Agent-Run-Id`. The server validates that the run belongs to the addressed project and derives the same agent id, then cross-checks legacy body agent identifiers. Requests without attribution headers remain operator/user requests. Work-group create and assignment use the same attribution validation; multi-item assignment is atomic and rejects cross-project items or implicit moves from another group.
 
 Automation run responses use `AgentRunView`, which includes run mutability (`mutating` or `read_only`), separate developer-instructions and user-prompt paths, and reported Codex token usage for the run when available. Usage is reported as input tokens, cached input tokens, output tokens, and a derived total. Run-log responses expose developer instructions and the user prompt as separate fields, include active in-memory session output while a run is still ongoing, and fall back to the persisted output log when no active session is present.
 
@@ -90,6 +101,12 @@ Event endpoints:
 GET /api/projects/{project}/events
 GET /api/projects/{project}/items/{item_id}/events
 ```
+
+Operator automation endpoints live under `/operator/api/...` and cover rule/personality CRUD, manual scheduling, revision list/restore/analytics, evaluation history, routing explanation, and bundle validate/diff/apply/export/list/remove. This prefix defines supported authority separation and does not add authentication in the local-first release.
+
+Bundle apply reconciles only objects managed by the same project and bundle key, rejects unmanaged name conflicts, deletes rules before personalities, and commits the complete diff transactionally against an expected current hash. Installed-bundle list returns only bundle keys whose latest history entry is `applied`, with managed object counts and the current hash. Removal requires that hash, deletes only same-bundle managed objects in rule-before-personality order, records a `removed` history entry, and aborts atomically when an outside rule still references a managed personality. Validate, diff, and list never mutate.
+
+Portable bundles use strict YAML schema version 1 with stable lowercase bundle/object keys made from letters, digits, `.`, `_`, and `-`. Selectors are native YAML `Condition` structures and prompts are Markdown. Import renders normalized CommonMark into stored rich text; export crosses the existing rich-text-to-Markdown boundary and hashes the canonical typed manifest so formatting-only differences do not cause drift. Unknown versions/fields, invalid selectors/models/efforts/postconditions, incompatible activation/effect fields, and unknown personality references are rejected before mutation.
 
 ## Workflow Semantics
 

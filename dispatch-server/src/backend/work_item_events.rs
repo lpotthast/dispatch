@@ -22,6 +22,14 @@ pub(crate) struct EventAttribution<'a> {
     pub agent_run_id: Option<i64>,
 }
 
+pub(crate) fn agent_event_attribution(agent_id: &str) -> EventAttribution<'_> {
+    EventAttribution {
+        actor_type: Some(AuthorType::Agent),
+        actor_id: Some(agent_id),
+        agent_run_id: crate::backend::agent_ids::parse_dispatch_run_agent_id(agent_id),
+    }
+}
+
 pub(crate) async fn record_event_in_tx<C>(
     conn: &C,
     project_id: i64,

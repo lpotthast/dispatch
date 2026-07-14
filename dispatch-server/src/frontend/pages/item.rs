@@ -238,6 +238,46 @@ mod content {
         let finished = item.finished_at.clone().map(|finished_at| {
             view! { <span>"finished " {finished_at}</span> }
         });
+        let work_group = item.work_group.clone().map(|group| {
+            view! {
+                <span class="item-work-group" data-work-group-key=group.key.clone()>
+                    "group " <strong>{group.name}</strong> <code>{group.key.clone()}</code>
+                </span>
+            }
+        });
+        let item_origin = item.origin.clone().map(|origin| {
+            let run_link = origin.agent_run_id.map(|run_id| {
+                let href = format!(
+                    "/projects/{}/automation/runs/{run_id}/log",
+                    encode_path(&project)
+                );
+                view! { <a href=href>"run #" {run_id}</a> }
+            });
+            let automation_link = origin.trigger_name.clone().map(|name| {
+                let href = format!("/automation?project={}", encode_path(&project));
+                view! { <a href=href>{name}</a> }
+            });
+            view! {
+                <section class="item-origin panel" data-testid="item-origin">
+                    <h2>"Origin"</h2>
+                    <dl>
+                        <dt>"kind"</dt>
+                        <dd>{origin.kind.as_storage()}</dd>
+                        {run_link.map(|link| view! { <><dt>"run"</dt><dd>{link}</dd></> })}
+                        {automation_link.map(|link| view! { <><dt>"automation"</dt><dd>{link}</dd></> })}
+                        {origin.trigger_revision_id.map(|id| view! {
+                            <><dt>"trigger revision"</dt><dd>"#" {id}</dd></>
+                        })}
+                        {origin.producing_evaluation_id.map(|id| view! {
+                            <><dt>"evaluation"</dt><dd>"#" {id}</dd></>
+                        })}
+                        {origin.bundle_key.map(|key| view! {
+                            <><dt>"bundle"</dt><dd>{key}</dd></>
+                        })}
+                    </dl>
+                </section>
+            }
+        });
         let automation_run_views = automation_runs_view(&project, automation_runs);
         let comment_views = comments
             .into_iter()
@@ -282,11 +322,13 @@ mod content {
                         <span>"v" {item.version}</span>
                         {claim}
                         {finished}
+                        {work_group}
                     </section>
                     <section class="item-settings panel">
                         <h2>"Item details"</h2>
                         {item_editor}
                     </section>
+                    {item_origin}
                     {labels}
                     {relationship_views}
                     {automation_run_views}

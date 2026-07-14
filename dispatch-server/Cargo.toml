@@ -48,6 +48,7 @@ hydrate = [
     "dep:urlencoding",
     "dep:uuid",
     "dep:wasm-bindgen-futures",
+    "dep:web-sys",
     "leptos/hydrate",
     "leptonic/hydrate",
 ]
@@ -70,10 +71,12 @@ ssr = [
     "dep:leptos_axum",
     "dep:paste",
     "dep:rootcause",
+    "dep:pulldown-cmark",
     "dep:sea-orm",
     "dep:sea-orm-migration",
     "dep:serde",
     "dep:serde_json",
+    "dep:sha2",
     "dep:time",
     "dep:tokio",
     "dep:tokio-process-tools",
@@ -81,6 +84,7 @@ ssr = [
     "dep:typetag",
     "dep:utoipa",
     "dep:urlencoding",
+    "dep:yaml_serde",
     "leptos/ssr",
     "leptos-use/ssr",
     "leptos_meta/ssr",
@@ -115,11 +119,13 @@ leptos_router = "=0.8.11"
 paste = { version = "1", optional = true }
 dispatch-types = { path = "../dispatch-types" }
 rootcause = { version = "0.13.0", optional = true }
+pulldown-cmark = { version = "0.13", optional = true }
 sea-orm = { version = "0.12.15", features = ["macros", "runtime-tokio-rustls", "sqlx-sqlite", "with-json", "with-time"], optional = true }
 shlex = "2"
 sea-orm-migration = { version = "0.12.15", features = ["runtime-tokio-rustls", "sqlx-sqlite"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
 time = { version = "=0.3.47", features = ["formatting", "macros", "parsing", "serde", "serde-well-known"], optional = true }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"], optional = true }
 tokio-process-tools = { version = "0.11.2", optional = true }
@@ -128,6 +134,7 @@ tracing-subscriber = { version = "0.3", features = ["json"], optional = true }
 typetag = { version = "0.2", optional = true }
 utoipa = { version = "5", optional = true }
 urlencoding = { version = "2", optional = true }
+yaml_serde = { version = "0.10", optional = true }
 uuid = { version = "1.19.0", features = ["js", "v4", "serde"], optional = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = { version = "0.4", optional = true }
@@ -141,6 +148,7 @@ tempfile = "3"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+web-sys = { version = "0.3", optional = true, features = ["Blob", "File", "FileList", "HtmlInputElement"] }
 
 [profile.wasm-release]
 inherits = "release"

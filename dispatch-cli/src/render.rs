@@ -37,6 +37,9 @@ pub(crate) fn write_item_detail(output: &mut dyn Write, item: &WorkItemView) -> 
     if let Some(agent) = &item.claimed_by {
         writeln!(output, "claimed by: {agent}")?;
     }
+    if let Some(group) = &item.work_group {
+        writeln!(output, "group: {} ({})", group.name, group.key)?;
+    }
     if !item.labels.is_empty() {
         writeln!(
             output,
@@ -363,6 +366,8 @@ mod tests {
             created_at: "2026-06-18T00:00:00Z".to_owned(),
             updated_at: "2026-06-18T00:00:00Z".to_owned(),
             comment_count: 0,
+            work_group: None,
+            origin: None,
         }
     }
 
@@ -397,6 +402,9 @@ mod tests {
             memory_event_id: None,
             trigger_id: None,
             trigger_name: None,
+            trigger_revision_id: None,
+            personality_revision_id: None,
+            system_prompt_event_id: None,
             tool_name: AgentToolName::Codex,
             mutability: AutomationRunMutability::Mutating,
             status: AgentRunStatus::Completed,
@@ -411,6 +419,9 @@ mod tests {
             user_prompt_path: None,
             agent_model: None,
             agent_reasoning_effort: None,
+            effective_input_sha256: None,
+            effective_timeout_seconds: None,
+            effective_concurrency_group: None,
             token_usage: Some(AgentRunTokenUsageView {
                 input_tokens: 1234,
                 cached_input_tokens: 1000,
@@ -425,6 +436,8 @@ mod tests {
             cleanup_status: AgentRunCleanupStatus::NotApplicable,
             worktree_cleaned_at: None,
             result_summary: "Done".to_owned(),
+            semantic_postcondition_status: Default::default(),
+            semantic_postcondition_failures: Vec::new(),
             started_at: None,
             finished_at: None,
             created_at: "2026-06-18T00:00:00Z".to_owned(),
@@ -495,6 +508,8 @@ mod tests {
                 body: "cargo test".to_owned(),
                 metadata: json!({ "output": { "status": "ok" } }),
             }],
+            created_items: Vec::new(),
+            modified_items: Vec::new(),
         };
 
         let output = text_output(|output| write_run_log(output, &log));

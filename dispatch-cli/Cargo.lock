@@ -192,6 +192,7 @@ name = "dispatch-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crudkit-core",
  "dispatch-api-client",
  "dispatch-types",
  "rootcause",

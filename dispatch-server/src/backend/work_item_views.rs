@@ -9,11 +9,13 @@ use crate::{
         entities::{
             agent_run::{self, AgentRun, AgentRunModel},
             work_item::WorkItemModel,
+            work_item_origin::{self, WorkItemOrigin},
         },
-        projects, work_item_comments, work_item_labels, workflow_labels,
+        projects, work_item_comments, work_item_groups, work_item_labels, workflow_labels,
     },
     shared::view_models::{
-        AgentReasoningEffort, WorkItemClaimSourceView, WorkItemLabelView, WorkItemView,
+        AgentReasoningEffort, WorkItemClaimSourceView, WorkItemGroupSummaryView, WorkItemLabelView,
+        WorkItemOriginKind, WorkItemOriginView, WorkItemView,
     },
 };
 
@@ -35,21 +37,32 @@ pub(crate) async fn models_to_views(
         work_item_comments::counts_for_items(store.db().as_ref(), &item_ids).await?;
     let mut claim_sources =
         claim_sources_for_items(store.db().as_ref(), project_id, &items).await?;
+    let mut origins = origins_for_items(store.db().as_ref(), project_id, &item_ids).await?;
+    let groups = work_item_groups::summaries_for_items(
+        store,
+        project_id,
+        items.iter().filter_map(|item| item.work_group_id),
+    )
+    .await?;
 
     let mut views = Vec::with_capacity(items.len());
     for item in items {
         let item_id = item.id;
+        let work_group = item.work_group_id.and_then(|id| groups.get(&id).cloned());
         views.push(to_view(
             item,
             labels.remove(&item_id).unwrap_or_default(),
             comment_counts.remove(&item_id).unwrap_or(0),
             claim_sources.remove(&item_id),
+            work_group,
+            origins.remove(&item_id),
         )?);
     }
     Ok(views)
 }
 
 pub(crate) async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemView> {
+    let work_group_id = item.work_group_id;
     let labels = work_item_labels::for_item(store.db().as_ref(), item.project_id, item.id).await?;
     let comment_count = work_item_comments::counts_for_items(store.db().as_ref(), &[item.id])
         .await?
@@ -62,7 +75,58 @@ pub(crate) async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<
     )
     .await?;
     let claim_source = claim_sources.remove(&item.id);
-    to_view(item, labels, comment_count, claim_source)
+    let origin = origins_for_items(store.db().as_ref(), item.project_id, &[item.id])
+        .await?
+        .remove(&item.id);
+    let work_group = work_item_groups::summaries_for_items(store, item.project_id, work_group_id)
+        .await?
+        .remove(&work_group_id.unwrap_or_default());
+    to_view(
+        item,
+        labels,
+        comment_count,
+        claim_source,
+        work_group,
+        origin,
+    )
+}
+
+async fn origins_for_items<C>(
+    conn: &C,
+    project_id: i64,
+    item_ids: &[i64],
+) -> Result<BTreeMap<i64, WorkItemOriginView>>
+where
+    C: ConnectionTrait,
+{
+    if item_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let origins = WorkItemOrigin::find()
+        .filter(work_item_origin::Column::ProjectId.eq(project_id))
+        .filter(work_item_origin::Column::WorkItemId.is_in(item_ids.iter().copied()))
+        .all(conn)
+        .await
+        .context("failed to load work item origins")?;
+    origins
+        .into_iter()
+        .map(|origin| {
+            Ok((
+                origin.work_item_id,
+                WorkItemOriginView {
+                    kind: origin.origin_kind.parse::<WorkItemOriginKind>()?,
+                    actor_id: origin.actor_id,
+                    agent_run_id: origin.agent_run_id,
+                    producing_evaluation_id: origin.producing_evaluation_id,
+                    trigger_id: origin.trigger_id,
+                    trigger_revision_id: origin.trigger_revision_id,
+                    trigger_name: origin.trigger_name,
+                    bundle_key: origin.bundle_key,
+                    created_at: origin.created_at,
+                },
+            ))
+        })
+        .collect()
 }
 
 async fn claim_sources_for_items<C>(
@@ -119,6 +183,8 @@ fn to_view(
     labels: Vec<WorkItemLabelView>,
     comment_count: i64,
     claim_source: Option<WorkItemClaimSourceView>,
+    work_group: Option<WorkItemGroupSummaryView>,
+    origin: Option<WorkItemOriginView>,
 ) -> Result<WorkItemView> {
     let state = workflow_labels::current_state(&labels);
 
@@ -144,5 +210,7 @@ fn to_view(
         created_at: item.created_at,
         updated_at: item.updated_at,
         comment_count,
+        work_group,
+        origin,
     })
 }

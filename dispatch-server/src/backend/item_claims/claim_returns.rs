@@ -244,12 +244,13 @@ async fn return_claim_to_source_state(
     }
 
     let event_body = mode.event_body(agent_id, &release_state);
-    work_item_events::record_event_in_tx(
+    work_item_events::record_event_with_attribution_in_tx(
         &txn,
         project_id,
         Some(item_id),
         mode.event_type(),
         event_body.as_str(),
+        work_item_events::agent_event_attribution(agent_id),
     )
     .await?;
     txn.commit().await.context(mode.commit_context())?;

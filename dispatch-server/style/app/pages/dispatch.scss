@@ -1359,6 +1359,48 @@ button.link-danger {
   scrollbar-gutter: stable;
 }
 
+.work-item-card-group {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba($accent, 0.28);
+  border-radius: 10px;
+  background: rgba($accent, 0.045);
+
+  > header {
+    display: flex;
+    gap: 8px;
+    align-items: start;
+    justify-content: space-between;
+    padding: 1px 2px;
+    color: $ink-soft;
+    font-size: 12px;
+
+    > div {
+      display: grid;
+      min-width: 0;
+      gap: 2px;
+    }
+
+    strong {
+      color: $ink;
+      font-size: 13px;
+    }
+
+    code {
+      overflow: hidden;
+      color: $muted;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+}
+
+.work-item-card-group-items {
+  display: grid;
+  gap: 8px;
+}
+
 .lane-add {
   min-height: 28px;
   padding: 4px 8px;
@@ -1937,6 +1979,233 @@ a.claim-badge {
 .panel-heading {
   display: grid;
   gap: 4px;
+}
+
+.automation-bundles {
+  display: grid;
+  gap: 14px;
+
+  label {
+    display: grid;
+    gap: 6px;
+  }
+}
+
+.automation-bundle-yaml,
+.automation-bundle-result {
+  width: 100%;
+  min-height: 120px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.automation-installed-bundles {
+  display: grid;
+  gap: 8px;
+
+  h3,
+  p {
+    margin: 0;
+  }
+
+  ul {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+}
+
+.automation-installed-bundle {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px;
+  border: 1px solid $border;
+  border-radius: 8px;
+  background: $surface-raised;
+
+  > div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  code {
+    color: $ink-soft;
+  }
+}
+
+.automation-installed-bundle-actions,
+.automation-bundle-file-picker {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.automation-bundle-file-picker {
+  color: $muted;
+  font-size: 12px;
+}
+
+.automation-managed-badge {
+    display: inline-flex;
+    margin-inline: 0.5rem;
+    padding: 0.15rem 0.45rem;
+    border-radius: 999px;
+    background: var(--color-primary-container, #e6eefc);
+    font-size: 0.8rem;
+}
+
+.automation-inspector-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: 1rem;
+}
+
+.automation-analytics {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 0.75rem;
+}
+
+.automation-analytics dd {
+    margin: 0;
+}
+
+.automation-revision-list,
+.automation-evaluation-list {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0;
+    list-style: none;
+}
+
+.automation-revision-heading,
+.automation-evaluation-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.automation-personality-inspector {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid $border;
+}
+
+.automation-personality-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.automation-revision-heading code {
+    max-width: 12rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.automation-route-explain pre,
+.automation-revision-list pre {
+    max-height: 24rem;
+    overflow: auto;
+}
+
+.automation-bundle-actions,
+.automation-bundle-export {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.automation-bundle-actions label {
+  display: inline-flex;
+  grid-auto-flow: column;
+  align-items: center;
+}
+
+.automation-config-editor,
+.automation-config-structured,
+.automation-config-list,
+.postcondition-outcome,
+.postcondition-events,
+.postcondition-created-items {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.automation-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+
+.automation-config-grid > label,
+.postcondition-created-selector {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.automation-config-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.postcondition-labels .automation-config-row {
+  grid-template-columns: minmax(11rem, 0.8fr) minmax(10rem, 1fr) minmax(10rem, 1fr) auto;
+}
+
+.automation-config-checkboxes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.35rem 0.75rem;
+}
+
+.automation-config-checkbox {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.automation-config-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.automation-config-help,
+.automation-config-empty {
+  color: $muted;
+  margin: 0;
+}
+
+.automation-config-error {
+  color: $danger;
+}
+
+.automation-config-raw-panel {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.automation-config-raw {
+  min-height: 10rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.nested-condition-editor .lane-filter-group {
+  margin-top: 0.35rem;
 }
 
 .panel,
@@ -2943,7 +3212,9 @@ dd {
   .relationship-add-form,
   .relationship-kind-form,
   .label-row form,
-  .initial-label-row {
+  .initial-label-row,
+  .automation-config-row,
+  .postcondition-labels .automation-config-row {
     grid-template-columns: 1fr;
   }
 

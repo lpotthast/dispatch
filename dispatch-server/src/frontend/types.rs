@@ -1,3 +1,12 @@
+use dispatch_types::{PersonalityRevisionView, PersonalityView};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct AutomationPersonalityInspectorView {
+    pub personality: PersonalityView,
+    pub revisions: Vec<PersonalityRevisionView>,
+}
+
 pub mod automation_trigger {
     use crudkit_leptos::prelude::*;
     use serde::{Deserialize, Serialize};
@@ -18,6 +27,14 @@ pub mod automation_trigger {
         pub prompt: String,
         pub work_item_selector: Option<String>,
         pub priority: i64,
+        pub exclusive: bool,
+        pub produced_work_spec_json: Option<String>,
+        pub postconditions_json: Option<String>,
+        pub model_override: Option<String>,
+        pub reasoning_effort_override: Option<String>,
+        pub timeout_seconds: Option<i64>,
+        pub max_concurrent_runs: Option<i64>,
+        pub concurrency_group: Option<String>,
     }
 
     #[derive(Clone, PartialEq, Eq, Debug, CkField, Serialize, Deserialize)]
@@ -35,6 +52,14 @@ pub mod automation_trigger {
         pub prompt: String,
         pub work_item_selector: Option<String>,
         pub priority: i64,
+        pub exclusive: bool,
+        pub produced_work_spec_json: Option<String>,
+        pub postconditions_json: Option<String>,
+        pub model_override: Option<String>,
+        pub reasoning_effort_override: Option<String>,
+        pub timeout_seconds: Option<i64>,
+        pub max_concurrent_runs: Option<i64>,
+        pub concurrency_group: Option<String>,
     }
 
     impl Default for CreateAutomationTrigger {
@@ -55,6 +80,14 @@ pub mod automation_trigger {
                         .to_owned(),
                 ),
                 priority: 0,
+                exclusive: false,
+                produced_work_spec_json: None,
+                postconditions_json: None,
+                model_override: None,
+                reasoning_effort_override: None,
+                timeout_seconds: None,
+                max_concurrent_runs: None,
+                concurrency_group: None,
             }
         }
     }
@@ -76,6 +109,17 @@ pub mod automation_trigger {
         pub prompt: String,
         pub work_item_selector: Option<String>,
         pub priority: i64,
+        pub exclusive: bool,
+        pub produced_work_spec_json: Option<String>,
+        pub postconditions_json: Option<String>,
+        pub model_override: Option<String>,
+        pub reasoning_effort_override: Option<String>,
+        pub timeout_seconds: Option<i64>,
+        pub max_concurrent_runs: Option<i64>,
+        pub concurrency_group: Option<String>,
+        pub current_revision_id: Option<i64>,
+        pub managed_bundle_key: Option<String>,
+        pub managed_object_key: Option<String>,
         pub evaluation_count: i64,
         pub pending_evaluation_count: i64,
         pub last_evaluation_queued_at: Option<String>,
@@ -101,6 +145,14 @@ pub mod automation_trigger {
                 prompt: read.prompt,
                 work_item_selector: read.work_item_selector,
                 priority: read.priority,
+                exclusive: read.exclusive,
+                produced_work_spec_json: read.produced_work_spec_json,
+                postconditions_json: read.postconditions_json,
+                model_override: read.model_override,
+                reasoning_effort_override: read.reasoning_effort_override,
+                timeout_seconds: read.timeout_seconds,
+                max_concurrent_runs: read.max_concurrent_runs,
+                concurrency_group: read.concurrency_group,
             }
         }
     }
@@ -187,6 +239,9 @@ pub mod personality {
         pub project_id: i64,
         pub name: String,
         pub personality_description: String,
+        pub current_revision_id: Option<i64>,
+        pub managed_bundle_key: Option<String>,
+        pub managed_object_key: Option<String>,
         pub created_at: String,
         pub updated_at: String,
         pub has_validation_errors: bool,

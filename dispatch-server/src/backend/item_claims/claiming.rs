@@ -317,12 +317,13 @@ where
     .await?;
     let comment_body = format!("Claimed by {agent_id}");
     work_item_comments::insert_system_in_tx(conn, item_id, comment_body.as_str()).await?;
-    work_item_events::record_event_in_tx(
+    work_item_events::record_event_with_attribution_in_tx(
         conn,
         project_id,
         Some(item_id),
         WorkItemEventType::ItemClaimed,
         comment_body.as_str(),
+        work_item_events::agent_event_attribution(agent_id),
     )
     .await?;
     work_items::get(conn, project_id, item_id).await

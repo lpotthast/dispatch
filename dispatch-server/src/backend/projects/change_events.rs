@@ -177,6 +177,20 @@ where
     )
 }
 
+pub(super) async fn latest_system_prompt_event<C>(
+    conn: &C,
+    project_id: i64,
+) -> Result<Option<work_item_event::Model>>
+where
+    C: ConnectionTrait,
+{
+    Ok(
+        latest_project_text_event(conn, project_id, SYSTEM_PROMPT_CHANGED_EVENT_TYPE)
+            .await
+            .context("failed to load latest project system prompt event")?,
+    )
+}
+
 pub(super) async fn memory_event_exists<C>(
     conn: &C,
     project_id: i64,

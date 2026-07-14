@@ -141,6 +141,16 @@ fn run_log_content(
     let memory_event = run_log.memory_event.as_ref().map(memory_event_ref_label);
     let token_usage = run_token_usage_text(&run_log.run);
     let commit_outcome = run_commit_outcome_label(&run_log.run);
+    let trigger_revision = run_log.run.trigger_revision_id;
+    let personality_revision = run_log.run.personality_revision_id;
+    let system_prompt_event = run_log.run.system_prompt_event_id;
+    let input_hash = run_log.run.effective_input_sha256.clone();
+    let timeout_seconds = run_log.run.effective_timeout_seconds;
+    let concurrency_group = run_log.run.effective_concurrency_group.clone();
+    let semantic_status = run_log.run.semantic_postcondition_status.as_storage();
+    let semantic_failures = run_log.run.semantic_postcondition_failures.clone();
+    let created_items = run_item_links(&project, run_log.created_items.clone());
+    let modified_items = run_item_links(&project, run_log.modified_items.clone());
     let cancel_action = if run_log.active {
         let action = format!(
             "/projects/{}/automation/runs/{}/cancel",
@@ -217,6 +227,26 @@ fn run_log_content(
                         <dd>{token_usage}</dd>
                         <dt>"commit"</dt>
                         <dd>{commit_outcome}</dd>
+                        <dt>"semantic postconditions"</dt>
+                        <dd>{semantic_status}</dd>
+                        {trigger_revision.map(|id| view! {
+                            <><dt>"trigger revision"</dt><dd>"#" {id}</dd></>
+                        })}
+                        {personality_revision.map(|id| view! {
+                            <><dt>"personality revision"</dt><dd>"#" {id}</dd></>
+                        })}
+                        {system_prompt_event.map(|id| view! {
+                            <><dt>"system prompt event"</dt><dd>"#" {id}</dd></>
+                        })}
+                        {input_hash.map(|hash| view! {
+                            <><dt>"effective input SHA-256"</dt><dd><code>{hash}</code></dd></>
+                        })}
+                        {timeout_seconds.map(|seconds| view! {
+                            <><dt>"timeout"</dt><dd>{seconds} " seconds"</dd></>
+                        })}
+                        {concurrency_group.map(|group| view! {
+                            <><dt>"concurrency group"</dt><dd>{group}</dd></>
+                        })}
                         {memory_event.map(|memory_event| view! {
                             <>
                                 <dt>"memory"</dt>
@@ -226,6 +256,26 @@ fn run_log_content(
                         {pr_url}
                     </dl>
                 </section>
+                {(!semantic_failures.is_empty()).then(|| view! {
+                    <section class="semantic-postcondition-failures">
+                        <h2>"Semantic postcondition failures"</h2>
+                        <ul>
+                            {semantic_failures.into_iter().map(|failure| view! {
+                                <li>
+                                    "Outcome " {failure.outcome_index} ": "
+                                    {failure.assertion} " expected " {failure.expected}
+                                    ", found " {failure.actual}
+                                </li>
+                            }).collect::<Vec<_>>()}
+                        </ul>
+                    </section>
+                })}
+                {(!created_items.is_empty()).then(|| view! {
+                    <section><h2>"Created items"</h2><ul>{created_items}</ul></section>
+                })}
+                {(!modified_items.is_empty()).then(|| view! {
+                    <section><h2>"Modified items"</h2><ul>{modified_items}</ul></section>
+                })}
                 <section>
                     <h2>"Developer instructions"</h2>
                     <pre>{developer_instructions}</pre>
@@ -241,4 +291,17 @@ fn run_log_content(
         </>
     }
     .into_any()
+}
+
+fn run_item_links(
+    project: &str,
+    items: Vec<crate::shared::view_models::WorkItemSummaryView>,
+) -> Vec<AnyView> {
+    items
+        .into_iter()
+        .map(|item| {
+            let href = format!("/projects/{}/items/{}", encode_path(project), item.id);
+            view! { <li><a href=href>"#" {item.id} " " {item.title}</a></li> }.into_any()
+        })
+        .collect()
 }

@@ -39,12 +39,13 @@ pub(crate) async fn progress_item(
         .update(&txn)
         .await
         .context("failed to update item after progress")?;
-    work_item_events::record_event_in_tx(
+    work_item_events::record_event_with_attribution_in_tx(
         &txn,
         project_id,
         Some(item_id),
         WorkItemEventType::ProgressAdded,
         body,
+        work_item_events::agent_event_attribution(agent_id),
     )
     .await?;
     txn.commit()
@@ -91,12 +92,13 @@ pub(crate) async fn finish_item(
         workflow_labels::finish_workflow_label_plan(),
     )
     .await?;
-    work_item_events::record_event_in_tx(
+    work_item_events::record_event_with_attribution_in_tx(
         &txn,
         project_id,
         Some(item_id),
         WorkItemEventType::ItemFinished,
         report,
+        work_item_events::agent_event_attribution(agent_id),
     )
     .await?;
     txn.commit().await.context("failed to commit item finish")?;

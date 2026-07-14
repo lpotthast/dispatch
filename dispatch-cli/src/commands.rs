@@ -19,6 +19,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     agent: Option<String>,
 
+    /// Override the Dispatch agent-run id used for request attribution.
+    #[arg(long)]
+    agent_run: Option<i64>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -29,6 +33,7 @@ impl Cli {
             api_url: self.api_url.clone(),
             project: self.project.clone(),
             agent_id: self.agent.clone(),
+            agent_run_id: self.agent_run,
         }
     }
 
@@ -59,6 +64,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: RelationshipCommand,
     },
+    /// Group related work items for board and swim-lane display.
+    Group {
+        #[command(subcommand)]
+        command: GroupCommand,
+    },
     /// Read and update project memory.
     Memory {
         #[command(subcommand)]
@@ -78,6 +88,8 @@ pub(crate) enum Command {
 pub(crate) enum ItemCommand {
     /// List project work items.
     List(ItemListArgs),
+    /// Search project work items with composable filters and cursor pagination.
+    Search(ItemSearchArgs),
     /// Show one item; defaults to the claimed item.
     Show(ItemIdArgs),
     /// Create a new work item.
@@ -133,6 +145,42 @@ pub(crate) enum RelationshipCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum GroupCommand {
+    /// List project work-item groups.
+    List(JsonArgs),
+    /// Create an idempotent project work-item group.
+    Create(GroupCreateArgs),
+    /// Assign one or more items to an existing group atomically.
+    Assign(GroupAssignArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct GroupCreateArgs {
+    /// Stable project-scoped group key.
+    #[arg(long)]
+    pub(crate) key: String,
+    /// Human-readable group name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct GroupAssignArgs {
+    /// Stable key of the target group.
+    #[arg(long)]
+    pub(crate) key: String,
+    /// Item id to assign; may be repeated.
+    #[arg(long = "item", required = true)]
+    pub(crate) item_ids: Vec<i64>,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum MemoryCommand {
     /// Show current project memory.
     Show(JsonArgs),
@@ -150,6 +198,39 @@ pub(crate) enum AutomationCommand {
     Runs(AutomationRunsArgs),
     /// Show one automation run log.
     Log(AutomationRunLogArgs),
+    /// Inspect configured automation triggers.
+    Triggers {
+        #[command(subcommand)]
+        command: AutomationTriggersCommand,
+    },
+    /// Explain current automation routing for an item.
+    Routing {
+        #[command(subcommand)]
+        command: AutomationRoutingCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AutomationTriggersCommand {
+    /// List automation triggers.
+    List(JsonArgs),
+    /// Show one automation trigger by id or managed key.
+    Show(AutomationTriggerShowArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AutomationRoutingCommand {
+    /// Explain matching, exclusivity, fairness, and admission blockers.
+    Explain(AutomationRoutingExplainArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AutomationRoutingExplainArgs {
+    /// Item id; defaults to the claimed item when available.
+    pub(crate) item_id: Option<i64>,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -165,6 +246,58 @@ pub(crate) struct ItemListArgs {
     #[arg(long)]
     pub(crate) state: Option<String>,
 
+    /// Print JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ItemSearchArgs {
+    /// Filter by state; may be repeated.
+    #[arg(long = "state")]
+    pub(crate) states: Vec<String>,
+    /// Filter by label key or key=value; may be repeated.
+    #[arg(long = "label", value_name = "KEY[=VALUE]")]
+    pub(crate) labels: Vec<String>,
+    /// Additional CrudKit Condition selector as JSON.
+    #[arg(long)]
+    pub(crate) selector_json: Option<String>,
+    /// Search title and description.
+    #[arg(long)]
+    pub(crate) text: Option<String>,
+    /// Return only finished items.
+    #[arg(long, conflicts_with = "unfinished")]
+    pub(crate) finished: bool,
+    /// Return only unfinished items.
+    #[arg(long, conflicts_with = "finished")]
+    pub(crate) unfinished: bool,
+    /// Filter items created by an attributed run.
+    #[arg(long)]
+    pub(crate) created_by_run: Option<i64>,
+    /// Filter items produced by an automation trigger.
+    #[arg(long)]
+    pub(crate) produced_by_trigger: Option<i64>,
+    /// Filter items touching a relationship of this kind.
+    #[arg(long)]
+    pub(crate) relationship_kind: Option<String>,
+    /// Filter by an RFC3339 lower bound.
+    #[arg(long)]
+    pub(crate) updated_since: Option<String>,
+    /// Page size, from 1 through 200.
+    #[arg(long)]
+    pub(crate) limit: Option<u64>,
+    /// Opaque cursor from a previous search page.
+    #[arg(long)]
+    pub(crate) cursor: Option<String>,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AutomationTriggerShowArgs {
+    /// Automation trigger id, managed object key, or name.
+    pub(crate) id_or_key: String,
     /// Print JSON instead of text.
     #[arg(long)]
     pub(crate) json: bool,
@@ -583,6 +716,7 @@ mod tests {
         assert!(root.contains("Read and add item comments"));
         assert!(root.contains("Manage work item labels"));
         assert!(root.contains("Manage directed relationships between work items"));
+        assert!(root.contains("Group related work items for board and swim-lane display"));
         assert!(root.contains("Read and update project memory"));
         assert!(root.contains("Inspect automation runs and logs"));
         assert!(root.contains("Override the Dispatch API URL"));
@@ -617,6 +751,11 @@ mod tests {
         assert!(relationship.contains("Create a relationship from an item to a target item"));
         assert!(relationship.contains("Update a relationship kind"));
         assert!(relationship.contains("Delete a relationship"));
+
+        let group = help_output(&["dispatch", "group", "--help"]);
+        assert!(group.contains("List project work-item groups"));
+        assert!(group.contains("Create an idempotent project work-item group"));
+        assert!(group.contains("Assign one or more items to an existing group atomically"));
 
         let memory = help_output(&["dispatch", "memory", "--help"]);
         assert!(memory.contains("Show current project memory"));
@@ -702,6 +841,31 @@ mod tests {
                 );
             }
             command => panic!("expected item create command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn group_assign_accepts_repeated_item_options() {
+        let cli = Cli::parse_from([
+            "dispatch",
+            "group",
+            "assign",
+            "--key",
+            "review-42",
+            "--item",
+            "41",
+            "--item",
+            "42",
+        ]);
+
+        match cli.into_command() {
+            Command::Group {
+                command: GroupCommand::Assign(args),
+            } => {
+                assert_eq!(args.key, "review-42");
+                assert_eq!(args.item_ids, vec![41, 42]);
+            }
+            command => panic!("expected group assign command, got {command:?}"),
         }
     }
 }

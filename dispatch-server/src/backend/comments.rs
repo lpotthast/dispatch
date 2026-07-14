@@ -19,6 +19,23 @@ pub async fn add_comment(
     item_id: i64,
     create: AddComment,
 ) -> Result<CommentView> {
+    add_comment_with_attribution(
+        store,
+        project_name,
+        item_id,
+        create,
+        work_item_events::EventAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn add_comment_with_attribution(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    create: AddComment,
+    attribution: work_item_events::EventAttribution<'_>,
+) -> Result<CommentView> {
     if create.body.trim().is_empty() {
         bail!("comment body cannot be empty");
     }
@@ -41,12 +58,13 @@ pub async fn add_comment(
             .await?;
     work_items::touch(&txn, item).await?;
 
-    work_item_events::record_event_in_tx(
+    work_item_events::record_event_with_attribution_in_tx(
         &txn,
         project_id,
         Some(item_id),
         WorkItemEventType::CommentAdded,
         "Added comment",
+        attribution,
     )
     .await?;
     txn.commit().await.context("failed to commit comment add")?;

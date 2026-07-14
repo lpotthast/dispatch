@@ -823,6 +823,8 @@ async fn start_automation(
                 mutability,
                 personality_id: None,
                 trigger: None,
+                execution: Default::default(),
+                postconditions: None,
             },
             Some(state.sessions.clone()),
             Some(state.codex_status.clone()),

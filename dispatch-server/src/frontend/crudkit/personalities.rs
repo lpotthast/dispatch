@@ -1,4 +1,8 @@
 use super::*;
+use crate::frontend::services::{
+    detach_automation_personality, load_automation_personality_inspector,
+    restore_automation_personality_revision,
+};
 
 #[component]
 pub(crate) fn PersonalitiesPanel(
@@ -6,36 +10,178 @@ pub(crate) fn PersonalitiesPanel(
     project: String,
     project_id: i64,
 ) -> impl IntoView + 'static {
+    let (context, set_context) = signal(None::<CrudInstanceContext>);
+    let project_for_events = project.clone();
+    reload_crudkit_on_live_event(context, move |event| {
+        event_scopes_named_project(event, Some(project_for_events.as_str()))
+            && matches!(event, UiEvent::AutomationChanged { .. })
+    });
+    let (selected_personality_id, set_selected_personality_id) = signal(None::<i64>);
+    Effect::new(move |_| {
+        if let Some(personality_id) = context.get().and_then(selected_personality_id_from_context) {
+            set_selected_personality_id.set(Some(personality_id));
+        }
+    });
+    let inspector = personality_inspector(project, selected_personality_id);
+
     view! {
         <section id="personalities" class="personalities-admin panel">
             <div class="panel-heading">
                 <h2>"Personalities"</h2>
             </div>
             <div class="crudkit-personalities" data-crudkit-leptos="personalities">
-                {personalities_crudkit_instance(api_base_url, project, project_id)}
+                <CrudInstance
+                    name="personalities"
+                    config=personalities_crudkit_config(api_base_url, project_id)
+                    on_context_created=Callback::new(move |context| set_context.set(Some(context)))
+                />
             </div>
+            {inspector}
         </section>
     }
 }
 
-fn personalities_crudkit_instance(
-    api_base_url: String,
+fn personality_inspector(
     project: String,
-    project_id: i64,
-) -> impl IntoView + 'static {
-    let (context, set_context) = signal(None::<CrudInstanceContext>);
-    reload_crudkit_on_live_event(context, move |event| {
-        event_scopes_named_project(event, Some(project.as_str()))
-            && matches!(event, UiEvent::AutomationChanged { .. })
+    selected_personality_id: ReadSignal<Option<i64>>,
+) -> AnyView {
+    let (inspector, set_inspector) = signal(None::<AutomationPersonalityInspectorView>);
+    let (error, set_error) = signal(None::<String>);
+    let refresh = RwSignal::new(0_u64);
+    let project_for_load = project.clone();
+    Effect::new(move |_| {
+        refresh.get();
+        let personality_id = selected_personality_id.get();
+        set_inspector.set(None);
+        set_error.set(None);
+        if let Some(personality_id) = personality_id {
+            let project = project_for_load.clone();
+            leptos::task::spawn_local(async move {
+                match load_automation_personality_inspector(project, personality_id).await {
+                    Ok(value)
+                        if selected_personality_id.get_untracked() == Some(personality_id) =>
+                    {
+                        set_inspector.set(Some(value));
+                    }
+                    Err(error)
+                        if selected_personality_id.get_untracked() == Some(personality_id) =>
+                    {
+                        set_error.set(Some(error.to_string()));
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+            });
+        }
     });
 
     view! {
-        <CrudInstance
-            name="personalities"
-            config=personalities_crudkit_config(api_base_url, project_id)
-            on_context_created=Callback::new(move |context| set_context.set(Some(context)))
-        />
+        {move || selected_personality_id.get().map(|personality_id| {
+            let content = match inspector.get() {
+                Some(inspector) => personality_inspector_content(
+                    inspector,
+                    project.clone(),
+                    refresh,
+                    set_error,
+                ),
+                None => view! {
+                    <p class="muted">
+                        {error.get().unwrap_or_else(|| "Loading personality revision history…".to_owned())}
+                    </p>
+                }
+                .into_any(),
+            };
+            view! {
+                <section
+                    class="automation-personality-inspector"
+                    data-testid="automation-personality-inspector"
+                    data-personality-id=personality_id.to_string()
+                >
+                    <h3>"Selected personality history"</h3>
+                    {content}
+                </section>
+            }
+        })}
     }
+    .into_any()
+}
+
+fn personality_inspector_content(
+    inspector: AutomationPersonalityInspectorView,
+    project: String,
+    refresh: RwSignal<u64>,
+    set_error: WriteSignal<Option<String>>,
+) -> AnyView {
+    let personality = inspector.personality;
+    let personality_id = personality.id;
+    let current_revision_id = personality.current_revision_id;
+    let managed = personality.managed_bundle_key.is_some();
+    let managed_badge = personality.managed_bundle_key.clone().map(|bundle| {
+        view! { <span class="automation-managed-badge">{"Managed by "}{bundle}</span> }
+    });
+    let detach = managed.then(|| {
+        let project = project.clone();
+        move |_| {
+            let project = project.clone();
+            leptos::task::spawn_local(async move {
+                match detach_automation_personality(project, personality_id).await {
+                    Ok(_) => refresh.update(|value| *value += 1),
+                    Err(error) => set_error.set(Some(format!("Detach failed: {error}"))),
+                }
+            });
+        }
+    });
+    let revisions = inspector
+        .revisions
+        .into_iter()
+        .map(|revision| {
+            let revision_id = revision.id;
+            let current = current_revision_id == Some(revision_id);
+            let project = project.clone();
+            let restore = move |_| {
+                let project = project.clone();
+                leptos::task::spawn_local(async move {
+                    match restore_automation_personality_revision(
+                        project,
+                        personality_id,
+                        revision_id,
+                    )
+                    .await
+                    {
+                        Ok(_) => refresh.update(|value| *value += 1),
+                        Err(error) => set_error.set(Some(format!("Restore failed: {error}"))),
+                    }
+                });
+            };
+            view! {
+                <li>
+                    <div class="automation-revision-heading">
+                        <span>{format!("Revision {} · {:?}", revision.revision_number, revision.operation)}</span>
+                        <code>{revision.sha256}</code>
+                        <button type="button" disabled=current || managed on:click=restore>
+                            {if current { "Current" } else { "Restore" }}
+                        </button>
+                    </div>
+                    <details>
+                        <summary>"Personality text snapshot"</summary>
+                        <strong>{revision.name}</strong>
+                        <pre>{revision.personality_description}</pre>
+                    </details>
+                </li>
+            }
+        })
+        .collect::<Vec<_>>();
+
+    view! {
+        <div class="automation-personality-heading">
+            <strong>{personality.name}</strong>
+            {managed_badge}
+            {detach.map(|detach| view! {
+                <button type="button" on:click=detach>"Detach from bundle"</button>
+            })}
+        </div>
+        <ul class="automation-revision-list">{revisions}</ul>
+    }
+    .into_any()
 }
 
 fn personalities_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
@@ -47,6 +193,21 @@ fn personalities_crudkit_config(api_base_url: String, project_id: i64) -> CrudIn
                 ReadPersonalityField::Name,
                 HeaderOptions {
                     display_name: "Name".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadPersonalityField::ManagedBundleKey,
+                HeaderOptions {
+                    display_name: "Managed bundle".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadPersonalityField::CurrentRevisionId,
+                HeaderOptions {
+                    display_name: "Revision".into(),
+                    min_width: true,
                     ..Default::default()
                 },
             ),

@@ -40,6 +40,7 @@ The standalone CLI resolves context in this order:
 - API URL: `--api-url`, `DISPATCH_API_URL`, `DISPATCH_URL`, then the default local URL.
 - Project: `--project`, then `DISPATCH_PROJECT`.
 - Agent: `--agent`, then `DISPATCH_AGENT_ID`.
+- Agent run: `--agent-run`, then `DISPATCH_AGENT_RUN_ID`.
 - Claimed item: explicit positional item id, then `DISPATCH_CLAIMED_ITEM_ID`.
 
 Commands that choose or create work do not default to the claimed item. This includes:
@@ -134,8 +135,16 @@ Automation commands:
 dispatch automation runs [--limit <n>] [--json]
 dispatch automation log <run-id> [--json]
 dispatch automation triggers list [--json]
-dispatch automation triggers create --name "..." --activation manual|work_item|cron|work_item_created --effect produce_work|consume_work --schedule "@every 15s" [--work-item-selector <json>] [--prompt "..."] [--json]
-dispatch automation triggers schedule <trigger-id> [--json]
+dispatch automation triggers show <id-or-key> [--json]
+dispatch automation routing explain [item-id] [--json]
+```
+
+Work-group commands let an agent organize several created items without assigning dependency semantics:
+
+```text
+dispatch group list [--json]
+dispatch group create --key <stable-key> --name <display-name> [--json]
+dispatch group assign --key <stable-key> --item <id> [--item <id> ...] [--json]
 ```
 
 Global flags:
@@ -144,7 +153,10 @@ Global flags:
 --api-url <url>
 --project <project>
 --agent <agent-id>
+--agent-run <run-id>
 ```
+
+The API client sends resolved agent and run attribution headers on every request. Missing required context fails instead of creating implicit records.
 
 ## CLI Availability And Development Builds
 
@@ -157,3 +169,17 @@ Development runs share that target executable. If CLI source changes between lau
 ## Server Operator CLI
 
 The server crate also contains trusted commands for running the server and operating local state. That surface may accept database paths and perform privileged maintenance. It must not be presented as the normal agent-facing Dispatch interface.
+
+## Standalone Operator CLI
+
+`dispatch-operator` is an HTTP-only operator client. Its supported commands cover automation rule and personality list/show/create/update/delete, manual scheduling, history/restore/detach, routing explanation, evaluation/analytics inspection, and bundle list/validate/diff/apply/export/remove. Rule and personality create/update consume YAML files. Bundle apply prints the server diff and requires `--yes` before deleting managed objects; explicit bundle removal also requires `--yes` and uses the server-reported current hash.
+
+Launched agents receive only `dispatch`. Agent automation commands are read-only:
+
+```text
+dispatch automation triggers list|show
+dispatch automation routing explain [item-id]
+dispatch item search [filters]
+```
+
+The agent CLI intentionally has no trigger create, schedule, bundle, restore, or other automation mutation command.

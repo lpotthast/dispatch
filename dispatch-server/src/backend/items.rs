@@ -1,7 +1,7 @@
 use rootcause::{Result, prelude::*};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
-    Statement, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition as SeaCondition, ConnectionTrait, EntityTrait,
+    QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
 };
 
 use crate::{
@@ -9,19 +9,30 @@ use crate::{
         entities::{
             work_item::{self, WorkItem},
             work_item_event,
+            work_item_origin::{self, WorkItemOrigin},
+            work_item_relationship::{self, WorkItemRelationship},
         },
         events, projects,
+        request_attribution::RequestAttribution,
         storage::{Store, utc_now},
         work_item_creation::{self, CreateWorkItemPlan},
         work_item_events, work_item_labels, work_item_relationships,
         work_item_updates::{self, WorkItemUpdatePlan},
         work_item_views, work_items, workflow_labels,
     },
-    shared::view_models::{STATE_LABEL_KEY, WorkItemEventType, WorkItemEventView, WorkItemView},
+    shared::view_models::{
+        STATE_LABEL_KEY, WorkItemEventType, WorkItemEventView, WorkItemPage, WorkItemSearchRequest,
+        WorkItemView,
+    },
 };
 
 pub use work_item_creation::CreateWorkItem;
 pub use work_item_updates::UpdateWorkItem;
+
+#[cfg(not(test))]
+const SEARCH_SCAN_BATCH_SIZE: u64 = 256;
+#[cfg(test)]
+const SEARCH_SCAN_BATCH_SIZE: u64 = 2;
 
 pub async fn list_items(
     store: &Store,
@@ -56,6 +67,200 @@ pub async fn list_items(
         .await
         .context("failed to list work items")?;
     work_item_views::models_to_views(store, project_id, items).await
+}
+
+pub async fn search_items(
+    store: &Store,
+    project_name: &str,
+    request: WorkItemSearchRequest,
+) -> Result<WorkItemPage> {
+    let project_id = projects::project_id(store, project_name).await?;
+    let limit = request.limit.unwrap_or(50);
+    if limit == 0 || limit > 200 {
+        bail!("item search limit must be between 1 and 200");
+    }
+    if let Some(selector) = &request.labels {
+        crate::backend::label_conditions::validate_condition(selector)?;
+    }
+    if let Some(selector) = &request.selector {
+        crate::backend::label_conditions::validate_condition(selector)?;
+    }
+
+    let mut query = WorkItem::find()
+        .filter(work_item::Column::ProjectId.eq(project_id))
+        .order_by_desc(work_item::Column::UpdatedAt)
+        .order_by_desc(work_item::Column::Id);
+    if let Some(finished) = request.finished {
+        query = if finished {
+            query.filter(work_item::Column::FinishedAt.is_not_null())
+        } else {
+            query.filter(work_item::Column::FinishedAt.is_null())
+        };
+    }
+    if let Some(text) = request
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        let pattern = format!("%{}%", text.replace('%', "\\%").replace('_', "\\_"));
+        query = query.filter(
+            SeaCondition::any()
+                .add(work_item::Column::Title.like(pattern.clone()))
+                .add(work_item::Column::Description.like(pattern)),
+        );
+    }
+    if let Some(updated_since) = request.updated_since.as_deref() {
+        query = query.filter(work_item::Column::UpdatedAt.gte(updated_since));
+    }
+    let mut scan_cursor = request
+        .cursor
+        .as_deref()
+        .map(decode_search_cursor)
+        .transpose()?;
+
+    let mut required_ids: Option<std::collections::BTreeSet<i64>> = None;
+    if request.created_by_run.is_some() || request.produced_by_trigger.is_some() {
+        let mut origins =
+            WorkItemOrigin::find().filter(work_item_origin::Column::ProjectId.eq(project_id));
+        if let Some(run_id) = request.created_by_run {
+            origins = origins.filter(work_item_origin::Column::AgentRunId.eq(run_id));
+        }
+        if let Some(trigger_id) = request.produced_by_trigger {
+            origins = origins.filter(work_item_origin::Column::TriggerId.eq(trigger_id));
+        }
+        required_ids = Some(
+            origins
+                .all(store.db().as_ref())
+                .await
+                .context("failed to filter item search by origin")?
+                .into_iter()
+                .map(|origin| origin.work_item_id)
+                .collect(),
+        );
+    }
+    if let Some(kind) = request.relationship_kind.as_deref() {
+        let kind = kind.trim();
+        if kind.is_empty() {
+            bail!("relationship kind cannot be empty");
+        }
+        let relationship_ids = WorkItemRelationship::find()
+            .filter(work_item_relationship::Column::ProjectId.eq(project_id))
+            .filter(work_item_relationship::Column::Kind.eq(kind))
+            .all(store.db().as_ref())
+            .await
+            .context("failed to filter item search by relationship")?
+            .into_iter()
+            .flat_map(|relationship| {
+                [
+                    relationship.source_work_item_id,
+                    relationship.target_work_item_id,
+                ]
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        required_ids = Some(match required_ids {
+            Some(ids) => ids.intersection(&relationship_ids).copied().collect(),
+            None => relationship_ids,
+        });
+    }
+    if let Some(ids) = &required_ids {
+        if ids.is_empty() {
+            return Ok(WorkItemPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        query = query.filter(work_item::Column::Id.is_in(ids.iter().copied()));
+    }
+
+    let state_filter = request
+        .states
+        .into_iter()
+        .map(workflow_labels::normalize_state_value)
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let labels = request
+        .labels
+        .as_ref()
+        .map(crate::backend::label_conditions::ValidatedLabelCondition::new)
+        .transpose()?;
+    let selector = request
+        .selector
+        .as_ref()
+        .map(crate::backend::label_conditions::ValidatedLabelCondition::new)
+        .transpose()?;
+    let mut views = Vec::with_capacity(limit as usize + 1);
+    while views.len() <= limit as usize {
+        let mut batch_query = query.clone().limit(SEARCH_SCAN_BATCH_SIZE);
+        if let Some((updated_at, id)) = &scan_cursor {
+            batch_query = batch_query.filter(search_after_cursor(updated_at, *id));
+        }
+        let models = batch_query
+            .all(store.db().as_ref())
+            .await
+            .context("failed to search work items")?;
+        let batch_is_full = models.len() == SEARCH_SCAN_BATCH_SIZE as usize;
+        let Some(last_model) = models.last() else {
+            break;
+        };
+        let next_scan_cursor = (last_model.updated_at.clone(), last_model.id);
+        let mut batch = work_item_views::models_to_views(store, project_id, models).await?;
+        batch.retain(|item| {
+            (state_filter.is_empty()
+                || item
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state_filter.contains(state)))
+                && labels
+                    .as_ref()
+                    .is_none_or(|condition| condition.matches(&item.labels))
+                && selector
+                    .as_ref()
+                    .is_none_or(|condition| condition.matches(&item.labels))
+        });
+        views.extend(batch);
+        scan_cursor = Some(next_scan_cursor);
+        if !batch_is_full {
+            break;
+        }
+    }
+    let has_more = views.len() > limit as usize;
+    views.truncate(limit as usize);
+    let next_cursor = has_more
+        .then(|| {
+            views
+                .last()
+                .map(|item| encode_search_cursor(&item.updated_at, item.id))
+        })
+        .flatten();
+    Ok(WorkItemPage {
+        items: views,
+        next_cursor,
+    })
+}
+
+fn search_after_cursor(updated_at: &str, item_id: i64) -> SeaCondition {
+    SeaCondition::any()
+        .add(work_item::Column::UpdatedAt.lt(updated_at.to_owned()))
+        .add(
+            SeaCondition::all()
+                .add(work_item::Column::UpdatedAt.eq(updated_at.to_owned()))
+                .add(work_item::Column::Id.lt(item_id)),
+        )
+}
+
+fn encode_search_cursor(updated_at: &str, item_id: i64) -> String {
+    format!("{}:{}", item_id, updated_at)
+}
+
+fn decode_search_cursor(cursor: &str) -> Result<(String, i64)> {
+    let (id, updated_at) = cursor
+        .split_once(':')
+        .ok_or_else(|| report!("invalid item search cursor"))?;
+    let id = id.parse::<i64>().context("invalid item search cursor id")?;
+    if updated_at.trim().is_empty() {
+        bail!("invalid item search cursor timestamp");
+    }
+    Ok((updated_at.to_owned(), id))
 }
 
 pub async fn count_items_outside_work_item_states(
@@ -104,6 +309,15 @@ pub async fn create_item(
     project_name: &str,
     create: CreateWorkItem,
 ) -> Result<WorkItemView> {
+    create_item_with_attribution(store, project_name, create, &RequestAttribution::default()).await
+}
+
+pub(crate) async fn create_item_with_attribution(
+    store: &Store,
+    project_name: &str,
+    create: CreateWorkItem,
+    attribution: &RequestAttribution,
+) -> Result<WorkItemView> {
     let create = CreateWorkItemPlan::new(create)?;
 
     let project_id = projects::project_id(store, project_name).await?;
@@ -120,7 +334,15 @@ pub async fn create_item(
         .await
         .context("failed to start item create")?;
 
-    let item = work_item_creation::insert_planned_in_tx(&txn, project_id, create, now).await?;
+    let item = work_item_creation::insert_planned_with_origin_in_tx(
+        &txn,
+        project_id,
+        create,
+        now,
+        attribution.item_origin(),
+        attribution.event(),
+    )
+    .await?;
     txn.commit().await.context("failed to commit item create")?;
     events::publish_work_item_changed(project_name, item.id);
 
@@ -132,6 +354,23 @@ pub async fn update_item(
     project_name: &str,
     item_id: i64,
     update: UpdateWorkItem,
+) -> Result<WorkItemView> {
+    update_item_with_attribution(
+        store,
+        project_name,
+        item_id,
+        update,
+        &RequestAttribution::default(),
+    )
+    .await
+}
+
+pub(crate) async fn update_item_with_attribution(
+    store: &Store,
+    project_name: &str,
+    item_id: i64,
+    update: UpdateWorkItem,
+    attribution: &RequestAttribution,
 ) -> Result<WorkItemView> {
     let update = WorkItemUpdatePlan::new(update)?;
 
@@ -157,12 +396,13 @@ pub async fn update_item(
         .await
         .context("failed to update work item")?;
     if applied.record_item_updated_event {
-        work_item_events::record_event_in_tx(
+        work_item_events::record_event_with_attribution_in_tx(
             &txn,
             project_id,
             Some(item_id),
             WorkItemEventType::ItemUpdated,
             "Updated item",
+            attribution.event(),
         )
         .await?;
     }
@@ -175,12 +415,13 @@ pub async fn update_item(
         )
         .await?;
         let event_body = workflow_labels::state_move_event_body(&state);
-        work_item_events::record_event_in_tx(
+        work_item_events::record_event_with_attribution_in_tx(
             &txn,
             project_id,
             Some(item_id),
             WorkItemEventType::ItemMoved,
             &event_body,
+            attribution.event(),
         )
         .await?;
     }
@@ -353,15 +594,21 @@ pub async fn list_events(
 
 #[cfg(test)]
 mod tests {
+    use crudkit_core::condition::{
+        Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
+    };
     use tempfile::TempDir;
 
     use super::*;
     use crate::backend::{
         comments::{AddComment, add_comment},
+        item_claims,
         item_label_service::add_label,
         projects::{CreateProject, create_project},
     };
-    use crate::shared::view_models::{AuthorType, CreateWorkItemLabelRequest};
+    use crate::shared::view_models::{
+        AuthorType, CreateWorkItemLabelRequest, WorkItemSearchRequest,
+    };
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
@@ -440,6 +687,121 @@ mod tests {
             other_lookup
                 .to_string()
                 .contains("does not exist in this project")
+        );
+    }
+
+    #[tokio::test]
+    async fn item_search_pages_stably_across_filtered_batches() {
+        let (_temp, store) = test_store().await;
+        for index in 0..6 {
+            let item = create_item(
+                &store,
+                "demo",
+                CreateWorkItem {
+                    title: format!("Search candidate {index}"),
+                    description: if index == 4 {
+                        "contains unique needle".to_owned()
+                    } else {
+                        "ordinary text".to_owned()
+                    },
+                    state: if index == 0 { "done" } else { "open" }.to_owned(),
+                    agent_model_override: None,
+                    agent_reasoning_effort_override: None,
+                    initial_labels: vec![CreateWorkItemLabelRequest {
+                        key: "bucket".to_owned(),
+                        value: Some(if index % 2 == 0 { "keep" } else { "drop" }.to_owned()),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+            if index == 0 {
+                item_claims::claim_specific_item(&store, "demo", item.id, "agent-search")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                item_claims::finish_item(&store, "demo", item.id, "agent-search", "complete")
+                    .await
+                    .unwrap();
+            }
+        }
+        let keep_selector = Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: "bucket".to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::String("keep".to_owned()),
+        })]);
+        let first = search_items(
+            &store,
+            "demo",
+            WorkItemSearchRequest {
+                labels: Some(keep_selector.clone()),
+                limit: Some(2),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.items.len(), 2);
+        assert!(first.next_cursor.is_some());
+
+        let second = search_items(
+            &store,
+            "demo",
+            WorkItemSearchRequest {
+                labels: Some(keep_selector),
+                limit: Some(2),
+                cursor: first.next_cursor.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.items.len(), 1);
+        assert!(second.next_cursor.is_none());
+        assert!(first.items.iter().all(|first_item| {
+            second
+                .items
+                .iter()
+                .all(|second_item| second_item.id != first_item.id)
+        }));
+
+        let text = search_items(
+            &store,
+            "demo",
+            WorkItemSearchRequest {
+                text: Some("needle".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(text.items.len(), 1);
+        assert_eq!(text.items[0].title, "Search candidate 4");
+
+        let unfinished = search_items(
+            &store,
+            "demo",
+            WorkItemSearchRequest {
+                finished: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(unfinished.items.len(), 5);
+        assert!(
+            search_items(
+                &store,
+                "demo",
+                WorkItemSearchRequest {
+                    limit: Some(201),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("between 1 and 200")
         );
     }
 

@@ -9,6 +9,7 @@ Dispatch coordinates software work across a local project, a server-owned work i
 - The agent-facing CLI calls the Dispatch JSON API and never opens SQLite.
 - Dispatch-launched agents receive a prepared environment and should normally omit repeated project, agent, and claimed item arguments.
 - Server-side workflow rules are authoritative for project scope, ownership claims, item state, and version safety.
+- Automation is policy-neutral: Dispatch supplies typed production, routing, execution, provenance, and semantic-outcome primitives, while domain labels and prompts live in optional bundles that are never auto-applied.
 
 ## Document Map
 
@@ -29,6 +30,7 @@ dispatch-server/       server, SSR app, storage, automation, operator CLI
 dispatch-types/        shared request and response DTOs
 dispatch-api-client/   typed HTTP client
 dispatch-cli/          standalone agent-facing CLI binary named dispatch
+dispatch-operator/     standalone operator-facing automation HTTP client
 crudkit/               local CrudKit submodule dependency
 ```
 
