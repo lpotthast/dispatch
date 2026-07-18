@@ -125,6 +125,7 @@ impl DeleteLabelMutation {
 #[cfg(test)]
 mod tests {
     use crate::shared::view_models::{CLAIMED_FROM_STATE_LABEL_KEY, STATE_LABEL_KEY};
+    use assertr::prelude::*;
 
     use super::*;
 
@@ -145,20 +146,14 @@ mod tests {
         let mutation =
             AddLabelMutation::new(" priority ".to_owned(), Some(" high ".to_owned())).unwrap();
 
-        assert_eq!(
-            mutation,
-            AddLabelMutation {
-                key: "priority".to_owned(),
-                value: Some("high".to_owned()),
-            }
-        );
-        assert_eq!(
-            mutation.added_event(),
-            LabelMutationEvent {
-                event_type: WorkItemEventType::LabelAdded,
-                body: "Added label priority=high".to_owned(),
-            }
-        );
+        assert_that!(&(mutation)).is_equal_to(AddLabelMutation {
+            key: "priority".to_owned(),
+            value: Some("high".to_owned()),
+        });
+        assert_that!(&(mutation.added_event())).is_equal_to(LabelMutationEvent {
+            event_type: WorkItemEventType::LabelAdded,
+            body: "Added label priority=high".to_owned(),
+        });
     }
 
     #[test]
@@ -167,51 +162,42 @@ mod tests {
 
         let applied = mutation.apply_to(&label("priority", Some("high"))).unwrap();
 
-        assert_eq!(
-            applied,
-            AppliedLabelMutation {
-                key: "priority".to_owned(),
-                value: Some("low".to_owned()),
-            }
-        );
-        assert_eq!(
-            applied.updated_event(),
-            LabelMutationEvent {
-                event_type: WorkItemEventType::LabelUpdated,
-                body: "Updated label priority=low".to_owned(),
-            }
-        );
+        assert_that!(&(applied)).is_equal_to(AppliedLabelMutation {
+            key: "priority".to_owned(),
+            value: Some("low".to_owned()),
+        });
+        assert_that!(&(applied.updated_event())).is_equal_to(LabelMutationEvent {
+            event_type: WorkItemEventType::LabelUpdated,
+            body: "Updated label priority=low".to_owned(),
+        });
     }
 
     #[test]
     fn delete_label_mutation_rejects_state_and_keeps_deleted_label_snapshot() {
         let mutation = DeleteLabelMutation::new(&label("priority", Some("high"))).unwrap();
 
-        assert_eq!(mutation.label_id(), 11);
-        assert_eq!(
-            mutation.deleted_event(),
-            LabelMutationEvent {
-                event_type: WorkItemEventType::LabelDeleted,
-                body: "Deleted label priority=high".to_owned(),
-            }
-        );
+        assert_that!(&(mutation.label_id())).is_equal_to(11);
+        assert_that!(&(mutation.deleted_event())).is_equal_to(LabelMutationEvent {
+            event_type: WorkItemEventType::LabelDeleted,
+            body: "Deleted label priority=high".to_owned(),
+        });
 
         let state_err =
             DeleteLabelMutation::new(&label(STATE_LABEL_KEY, Some("open"))).unwrap_err();
-        assert!(state_err.to_string().contains("move the item"));
+        assert_that!(&(state_err.to_string().contains("move the item"))).is_true();
     }
 
     #[test]
     fn state_label_mutations_are_rejected() {
         let add_err =
             AddLabelMutation::new(STATE_LABEL_KEY.to_owned(), Some("open".to_owned())).unwrap_err();
-        assert!(add_err.to_string().contains("move the item"));
+        assert_that!(&(add_err.to_string().contains("move the item"))).is_true();
 
         let update_existing_err = UpdateLabelMutation::new(None, Some(Some("done".to_owned())))
             .unwrap()
             .apply_to(&label(STATE_LABEL_KEY, Some("open")))
             .unwrap_err();
-        assert!(update_existing_err.to_string().contains("move the item"));
+        assert_that!(&(update_existing_err.to_string().contains("move the item"))).is_true();
 
         let update_to_state_err = UpdateLabelMutation::new(
             Some(STATE_LABEL_KEY.to_owned()),
@@ -220,7 +206,7 @@ mod tests {
         .unwrap()
         .apply_to(&label("priority", Some("high")))
         .unwrap_err();
-        assert!(update_to_state_err.to_string().contains("move the item"));
+        assert_that!(&(update_to_state_err.to_string().contains("move the item"))).is_true();
     }
 
     #[test]
@@ -230,17 +216,18 @@ mod tests {
             Some("open".to_owned()),
         )
         .unwrap_err();
-        assert!(add_err.to_string().contains("workflow bookkeeping"));
+        assert_that!(&(add_err.to_string().contains("workflow bookkeeping"))).is_true();
 
         let update_existing_err = UpdateLabelMutation::new(None, Some(Some("done".to_owned())))
             .unwrap()
             .apply_to(&label(CLAIMED_FROM_STATE_LABEL_KEY, Some("open")))
             .unwrap_err();
-        assert!(
-            update_existing_err
+        assert_that!(
+            &(update_existing_err
                 .to_string()
-                .contains("workflow bookkeeping")
-        );
+                .contains("workflow bookkeeping"))
+        )
+        .is_true();
 
         let update_to_private_err = UpdateLabelMutation::new(
             Some(CLAIMED_FROM_STATE_LABEL_KEY.to_owned()),
@@ -249,15 +236,16 @@ mod tests {
         .unwrap()
         .apply_to(&label("priority", Some("high")))
         .unwrap_err();
-        assert!(
-            update_to_private_err
+        assert_that!(
+            &(update_to_private_err
                 .to_string()
-                .contains("workflow bookkeeping")
-        );
+                .contains("workflow bookkeeping"))
+        )
+        .is_true();
 
         let delete_err =
             DeleteLabelMutation::new(&label(CLAIMED_FROM_STATE_LABEL_KEY, Some("open")))
                 .unwrap_err();
-        assert!(delete_err.to_string().contains("workflow bookkeeping"));
+        assert_that!(&(delete_err.to_string().contains("workflow bookkeeping"))).is_true();
     }
 }

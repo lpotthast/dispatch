@@ -215,6 +215,7 @@ fn normalize_kind(kind: String) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     fn relationship() -> WorkItemRelationshipModel {
         WorkItemRelationshipModel {
@@ -232,31 +233,25 @@ mod tests {
     fn create_mutation_normalizes_kind_and_builds_endpoint_events() {
         let mutation = CreateRelationshipMutation::new(42, 18, " follows ".to_owned()).unwrap();
 
-        assert_eq!(mutation.kind(), "follows");
-        assert_eq!(
-            mutation.endpoints(),
-            RelationshipEndpoints {
-                source_work_item_id: 42,
-                target_work_item_id: 18,
-            }
-        );
-        assert_eq!(
-            mutation.created_event(),
-            RelationshipEvent {
-                event_type: WorkItemEventType::RelationshipCreated,
-                source_body: "Created relationship #42 follows #18".to_owned(),
-                target_body: "Created incoming relationship from #42: follows".to_owned(),
-            }
-        );
+        assert_that!(&(mutation.kind())).is_equal_to("follows");
+        assert_that!(&(mutation.endpoints())).is_equal_to(RelationshipEndpoints {
+            source_work_item_id: 42,
+            target_work_item_id: 18,
+        });
+        assert_that!(&(mutation.created_event())).is_equal_to(RelationshipEvent {
+            event_type: WorkItemEventType::RelationshipCreated,
+            source_body: "Created relationship #42 follows #18".to_owned(),
+            target_body: "Created incoming relationship from #42: follows".to_owned(),
+        });
     }
 
     #[test]
     fn create_mutation_rejects_self_link_and_empty_kind() {
         let self_link = CreateRelationshipMutation::new(42, 42, "blocks".to_owned()).unwrap_err();
-        assert!(self_link.to_string().contains("must differ"));
+        assert_that!(&(self_link.to_string().contains("must differ"))).is_true();
 
         let empty_kind = CreateRelationshipMutation::new(42, 18, " ".to_owned()).unwrap_err();
-        assert!(empty_kind.to_string().contains("kind cannot be empty"));
+        assert_that!(&(empty_kind.to_string().contains("kind cannot be empty"))).is_true();
     }
 
     #[test]
@@ -265,48 +260,38 @@ mod tests {
             UpdateRelationshipMutation::new(&relationship(), Some(42), " unblocks ".to_owned())
                 .unwrap();
 
-        assert_eq!(mutation.kind(), "unblocks");
-        assert_eq!(mutation.duplicate_exclusion(), Some(9));
-        assert_eq!(
-            mutation.updated_event(),
-            RelationshipEvent::same(
-                WorkItemEventType::RelationshipUpdated,
-                "Updated relationship #9 kind to unblocks".to_owned(),
-            )
-        );
+        assert_that!(&(mutation.kind())).is_equal_to("unblocks");
+        assert_that!(&(mutation.duplicate_exclusion())).is_equal_to(Some(9));
+        assert_that!(&(mutation.updated_event())).is_equal_to(RelationshipEvent::same(
+            WorkItemEventType::RelationshipUpdated,
+            "Updated relationship #9 kind to unblocks".to_owned(),
+        ));
 
         let err = UpdateRelationshipMutation::new(&relationship(), Some(7), "unblocks".to_owned())
             .unwrap_err();
-        assert!(err.to_string().contains("does not touch item"));
+        assert_that!(&(err.to_string().contains("does not touch item"))).is_true();
     }
 
     #[test]
     fn delete_mutation_keeps_deleted_relationship_snapshot_for_events() {
         let mutation = DeleteRelationshipMutation::new(&relationship(), Some(18)).unwrap();
 
-        assert_eq!(
-            mutation.deleted_event(),
-            RelationshipEvent::same(
-                WorkItemEventType::RelationshipDeleted,
-                "Deleted relationship #9: #42 blocks #18".to_owned(),
-            )
-        );
+        assert_that!(&(mutation.deleted_event())).is_equal_to(RelationshipEvent::same(
+            WorkItemEventType::RelationshipDeleted,
+            "Deleted relationship #9: #42 blocks #18".to_owned(),
+        ));
 
         let err = DeleteRelationshipMutation::new(&relationship(), Some(7)).unwrap_err();
-        assert!(err.to_string().contains("does not touch item"));
+        assert_that!(&(err.to_string().contains("does not touch item"))).is_true();
     }
 
     #[test]
     fn endpoint_direction_is_relative_to_the_requested_item() {
         let endpoints = RelationshipEndpoints::new(42, 18).unwrap();
 
-        assert_eq!(
-            endpoints.direction_for_item(42),
-            WorkItemRelationshipDirection::Outgoing
-        );
-        assert_eq!(
-            endpoints.direction_for_item(18),
-            WorkItemRelationshipDirection::Incoming
-        );
+        assert_that!(&(endpoints.direction_for_item(42)))
+            .is_equal_to(WorkItemRelationshipDirection::Outgoing);
+        assert_that!(&(endpoints.direction_for_item(18)))
+            .is_equal_to(WorkItemRelationshipDirection::Incoming);
     }
 }

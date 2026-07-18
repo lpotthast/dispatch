@@ -75,7 +75,9 @@ pub(crate) fn state_identifier_from_lane_filter(condition: &Condition) -> Option
 
 #[cfg(test)]
 mod tests {
+    use super::Condition;
     use super::*;
+    use assertr::prelude::*;
     use crudkit_leptos::crudkit_core::condition::ConditionClause;
 
     fn state(identifier: &str, name: &str) -> WorkItemStateView {
@@ -111,14 +113,11 @@ mod tests {
             &CreateItemOpenRequest::SingleState("missing".to_owned()),
         );
 
-        assert_eq!(
-            options,
-            vec![CreateItemStateOption {
-                identifier: "done".to_owned(),
-                name: "Done".to_owned(),
-            }]
-        );
-        assert!(missing.is_empty());
+        assert_that!(&(options)).is_equal_to(vec![CreateItemStateOption {
+            identifier: "done".to_owned(),
+            name: "Done".to_owned(),
+        }]);
+        assert_that!(&(missing.is_empty())).is_true();
     }
 
     #[test]
@@ -144,9 +143,9 @@ mod tests {
             },
         ];
 
-        assert_eq!(default_state_identifier(&with_idea), "idea");
-        assert_eq!(default_state_identifier(&non_idea), "open");
-        assert_eq!(default_state_identifier(&[]), "idea");
+        assert_that!(&(default_state_identifier(&with_idea))).is_equal_to("idea");
+        assert_that!(&(default_state_identifier(&non_idea))).is_equal_to("open");
+        assert_that!(&(default_state_identifier(&[]))).is_equal_to("idea");
     }
 
     #[test]
@@ -158,10 +157,8 @@ mod tests {
             state_clause(ConditionClauseValue::Bool(true)),
         ]);
 
-        assert_eq!(
-            state_identifier_from_lane_filter(&condition),
-            Some("open".to_owned())
-        );
+        assert_that!(&(state_identifier_from_lane_filter(&condition)))
+            .is_equal_to(Some("open".to_owned()));
     }
 
     #[test]
@@ -175,6 +172,6 @@ mod tests {
             state_clause(ConditionClauseValue::Bool(true)),
         ]);
 
-        assert_eq!(state_identifier_from_lane_filter(&condition), None);
+        assert_that!(&(state_identifier_from_lane_filter(&condition))).is_equal_to(None);
     }
 }

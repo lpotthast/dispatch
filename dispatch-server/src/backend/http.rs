@@ -377,7 +377,7 @@ async fn delete_project(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
 ) -> Response {
-    match projects::delete_project(&state.store, &project).await {
+    match state.project_deletion.delete_by_name(&project).await {
         Ok(()) => Redirect::to("/projects").into_response(),
         Err(err) => error_response(err).await,
     }
@@ -394,9 +394,11 @@ async fn update_system_prompt(
     Form(form): Form<ProjectTextForm>,
 ) -> Response {
     match projects::update_system_prompt(&state.store, &project, form.body).await {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/project?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }
@@ -406,9 +408,11 @@ async fn compact_system_prompt_events(
     Path(project): Path<String>,
 ) -> Response {
     match projects::compact_system_prompt_events(&state.store, &project).await {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/project?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }
@@ -426,9 +430,11 @@ async fn update_memory(
     )
     .await
     {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/project?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }
@@ -446,9 +452,11 @@ async fn append_memory(
     )
     .await
     {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/project?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }
@@ -458,9 +466,11 @@ async fn compact_memory_events(
     Path(project): Path<String>,
 ) -> Response {
     match projects::compact_memory_events(&state.store, &project).await {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/project?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }
@@ -556,9 +566,11 @@ async fn update_settings(
     )
     .await
     {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/project?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }
@@ -637,9 +649,11 @@ async fn update_commit_policy(
     )
     .await
     {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/automation?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }
@@ -850,9 +864,13 @@ async fn stop_automation(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
 ) -> Response {
+    let project_id = match projects::project_id(&state.store, &project).await {
+        Ok(project_id) => project_id,
+        Err(err) => return error_response(err).await,
+    };
     match state
         .automation_controller
-        .stop_project(&project, &state.sessions)
+        .stop_project(project_id, &project, &state.sessions)
         .await
     {
         Ok(()) => match automation::stop_automation(&state.store, &project).await {
@@ -881,9 +899,11 @@ async fn cleanup_worktrees(
     Path(project): Path<String>,
 ) -> Response {
     match automation::cleanup_worktrees(&state.store, &project, None).await {
-        Ok(_) => {
-            Redirect::to(&format!("/?project={}", urlencoding::encode(&project))).into_response()
-        }
+        Ok(_) => Redirect::to(&format!(
+            "/project?project={}",
+            urlencoding::encode(&project)
+        ))
+        .into_response(),
         Err(err) => error_response(err).await,
     }
 }

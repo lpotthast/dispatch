@@ -37,6 +37,7 @@ where
 {
     entries: Signal<LocalStorageEntries<T>>,
     set_entries: WriteSignal<LocalStorageEntries<T>>,
+    project_lifecycle_epoch: RwSignal<u64>,
 }
 
 impl<T> Clone for LocalStorageCache<T>
@@ -66,6 +67,7 @@ where
         Self {
             entries,
             set_entries,
+            project_lifecycle_epoch: super::project_lifecycle_epoch_signal(),
         }
     }
 
@@ -103,18 +105,32 @@ where
             entries.insert(key, value.clone());
         });
     }
+
+    #[cfg(not(feature = "ssr"))]
+    pub(super) fn clear(self) {
+        self.set_entries.set(LocalStorageEntries::default());
+    }
+
+    pub(super) fn capture_lifecycle_epoch(self) -> u64 {
+        self.project_lifecycle_epoch.get_untracked()
+    }
+
+    pub(super) fn lifecycle_epoch_is(self, expected: u64) -> bool {
+        self.project_lifecycle_epoch.get_untracked() == expected
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::LocalStorageEntries;
+    use assertr::prelude::*;
 
     #[test]
     fn cache_entries_ignore_unchanged_values() {
         let mut entries = LocalStorageEntries::default();
 
-        assert!(entries.insert("project".to_owned(), 1));
-        assert!(!entries.insert("project".to_owned(), 1));
-        assert_eq!(entries.values.get("project"), Some(&1));
+        assert_that!(&(entries.insert("project".to_owned(), 1))).is_true();
+        assert_that!(&(!entries.insert("project".to_owned(), 1))).is_true();
+        assert_that!(&(entries.values.get("project"))).is_equal_to(Some(&1));
     }
 }

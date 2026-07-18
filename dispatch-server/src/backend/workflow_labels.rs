@@ -203,6 +203,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     fn label(key: &str, value: Option<&str>) -> WorkItemLabelView {
         WorkItemLabelView {
@@ -223,56 +224,51 @@ mod tests {
             label(STATE_LABEL_KEY, Some("review")),
         ];
 
-        assert_eq!(current_state(&labels).as_deref(), Some("review"));
-        assert_eq!(current_state(&[]), None);
+        assert_that!(&(current_state(&labels).as_deref())).is_equal_to(Some("review"));
+        assert_that!(&(current_state(&[]))).is_equal_to(None);
     }
 
     #[test]
     fn state_normalization_rejects_empty_or_composite_values() {
-        assert_eq!(normalize_state_value(" review ").unwrap(), "review");
-        assert!(normalize_state_value(" ").is_err());
-        assert!(normalize_state_value("state=open").is_err());
+        assert_that!(&(normalize_state_value(" review ").unwrap())).is_equal_to("review");
+        assert_that!(&(normalize_state_value(" ").is_err())).is_true();
+        assert_that!(&(normalize_state_value("state=open").is_err())).is_true();
     }
 
     #[test]
     fn automation_blocking_recognizes_release_and_feedback_labels() {
-        assert!(is_automation_blocked(&[label(
-            AUTOMATION_BLOCKED_LABEL_KEY,
-            None
-        )]));
-        assert!(is_automation_blocked(&[label(
-            FEEDBACK_REQUESTED_LABEL_KEY,
-            None
-        )]));
-        assert!(!is_automation_blocked(&[label(
-            STATE_LABEL_KEY,
-            Some("open")
-        )]));
+        assert_that!(&(is_automation_blocked(&[label(AUTOMATION_BLOCKED_LABEL_KEY, None)])))
+            .is_true();
+        assert_that!(&(is_automation_blocked(&[label(FEEDBACK_REQUESTED_LABEL_KEY, None)])))
+            .is_true();
+        assert_that!(&(!is_automation_blocked(&[label(STATE_LABEL_KEY, Some("open"))]))).is_true();
     }
 
     #[test]
     fn generic_label_mutability_preserves_workflow_owned_labels() {
         let state_change = ensure_generic_label_can_be_changed(STATE_LABEL_KEY).unwrap_err();
-        assert!(state_change.to_string().contains("move the item"));
+        assert_that!(&(state_change.to_string().contains("move the item"))).is_true();
 
         let state_delete = ensure_generic_label_can_be_deleted(STATE_LABEL_KEY).unwrap_err();
-        assert!(state_delete.to_string().contains("move the item"));
+        assert_that!(&(state_delete.to_string().contains("move the item"))).is_true();
 
         let claim_source_change =
             ensure_generic_label_can_be_changed(CLAIMED_FROM_STATE_LABEL_KEY).unwrap_err();
-        assert!(
-            claim_source_change
+        assert_that!(
+            &(claim_source_change
                 .to_string()
-                .contains("internal workflow bookkeeping")
-        );
+                .contains("internal workflow bookkeeping"))
+        )
+        .is_true();
 
         let claim_source_delete =
             ensure_generic_label_can_be_deleted(CLAIMED_FROM_STATE_LABEL_KEY).unwrap_err();
-        assert!(
-            claim_source_delete
+        assert_that!(
+            &(claim_source_delete
                 .to_string()
-                .contains("internal workflow bookkeeping")
-        );
+                .contains("internal workflow bookkeeping"))
+        )
+        .is_true();
 
         ensure_generic_label_can_be_changed(AUTOMATION_BLOCKED_LABEL_KEY).unwrap();
         ensure_generic_label_can_be_deleted(FEEDBACK_REQUESTED_LABEL_KEY).unwrap();
@@ -286,131 +282,105 @@ mod tests {
             label(STATE_LABEL_KEY, Some("in_progress")),
             label(CLAIMED_FROM_STATE_LABEL_KEY, Some("review")),
         ];
-        assert_eq!(release_state_from_claim_labels(&labels), "review");
+        assert_that!(&(release_state_from_claim_labels(&labels))).is_equal_to("review");
 
         let labels = vec![label(STATE_LABEL_KEY, Some("triage"))];
-        assert_eq!(release_state_from_claim_labels(&labels), "triage");
+        assert_that!(&(release_state_from_claim_labels(&labels))).is_equal_to("triage");
 
-        assert_eq!(release_state_from_claim_labels(&[]), DEFAULT_STATE_LABEL);
+        assert_that!(&(release_state_from_claim_labels(&[]))).is_equal_to(DEFAULT_STATE_LABEL);
     }
 
     #[test]
     fn state_label_plan_updates_only_the_state_label() {
         let plan = state_workflow_label_plan("review");
 
-        assert_eq!(
-            plan.upserts,
-            vec![WorkflowLabelUpsert {
-                key: STATE_LABEL_KEY,
-                value: Some("review"),
-            }]
-        );
-        assert!(plan.delete_keys.is_empty());
-        assert_eq!(state_move_event_body("review"), "Moved item to review");
+        assert_that!(&(plan.upserts)).is_equal_to(vec![WorkflowLabelUpsert {
+            key: STATE_LABEL_KEY,
+            value: Some("review"),
+        }]);
+        assert_that!(&(plan.delete_keys.is_empty())).is_true();
+        assert_that!(&(state_move_event_body("review"))).is_equal_to("Moved item to review");
     }
 
     #[test]
     fn new_claim_label_plan_records_source_state_and_clears_feedback_wait() {
         let plan = new_claim_workflow_label_plan("review");
 
-        assert_eq!(
-            plan.upserts,
-            vec![
-                WorkflowLabelUpsert {
-                    key: CLAIMED_FROM_STATE_LABEL_KEY,
-                    value: Some("review"),
-                },
-                WorkflowLabelUpsert {
-                    key: STATE_LABEL_KEY,
-                    value: Some(CLAIMED_STATE_LABEL),
-                },
-            ]
-        );
-        assert_eq!(plan.delete_keys, [FEEDBACK_REQUESTED_LABEL_KEY]);
+        assert_that!(&(plan.upserts)).is_equal_to(vec![
+            WorkflowLabelUpsert {
+                key: CLAIMED_FROM_STATE_LABEL_KEY,
+                value: Some("review"),
+            },
+            WorkflowLabelUpsert {
+                key: STATE_LABEL_KEY,
+                value: Some(CLAIMED_STATE_LABEL),
+            },
+        ]);
+        assert_that!(&(plan.delete_keys)).is_equal_to([FEEDBACK_REQUESTED_LABEL_KEY]);
     }
 
     #[test]
     fn finish_label_plan_closes_item_and_clears_workflow_bookkeeping() {
         let plan = finish_workflow_label_plan();
 
-        assert_eq!(
-            plan.upserts,
-            vec![WorkflowLabelUpsert {
-                key: STATE_LABEL_KEY,
-                value: Some(FINISHED_STATE_LABEL),
-            }]
-        );
-        assert_eq!(
-            plan.delete_keys,
-            [
-                CLAIMED_FROM_STATE_LABEL_KEY,
-                AUTOMATION_BLOCKED_LABEL_KEY,
-                FEEDBACK_REQUESTED_LABEL_KEY,
-            ]
-        );
+        assert_that!(&(plan.upserts)).is_equal_to(vec![WorkflowLabelUpsert {
+            key: STATE_LABEL_KEY,
+            value: Some(FINISHED_STATE_LABEL),
+        }]);
+        assert_that!(&(plan.delete_keys)).is_equal_to([
+            CLAIMED_FROM_STATE_LABEL_KEY,
+            AUTOMATION_BLOCKED_LABEL_KEY,
+            FEEDBACK_REQUESTED_LABEL_KEY,
+        ]);
     }
 
     #[test]
     fn claim_return_label_plans_capture_release_feedback_and_retry_policy() {
         let claimable =
             claim_return_workflow_label_plan("open", ClaimReturnLabelDisposition::ClaimableRelease);
-        assert_eq!(
-            claimable.upserts,
-            vec![WorkflowLabelUpsert {
-                key: STATE_LABEL_KEY,
-                value: Some("open"),
-            }]
-        );
-        assert_eq!(
-            claimable.delete_keys,
-            [
-                CLAIMED_FROM_STATE_LABEL_KEY,
-                AUTOMATION_BLOCKED_LABEL_KEY,
-                FEEDBACK_REQUESTED_LABEL_KEY,
-            ]
-        );
+        assert_that!(&(claimable.upserts)).is_equal_to(vec![WorkflowLabelUpsert {
+            key: STATE_LABEL_KEY,
+            value: Some("open"),
+        }]);
+        assert_that!(&(claimable.delete_keys)).is_equal_to([
+            CLAIMED_FROM_STATE_LABEL_KEY,
+            AUTOMATION_BLOCKED_LABEL_KEY,
+            FEEDBACK_REQUESTED_LABEL_KEY,
+        ]);
 
         let blocked =
             claim_return_workflow_label_plan("ready", ClaimReturnLabelDisposition::BlockedRelease);
-        assert_eq!(
-            blocked.upserts,
-            vec![
-                WorkflowLabelUpsert {
-                    key: STATE_LABEL_KEY,
-                    value: Some("ready"),
-                },
-                WorkflowLabelUpsert {
-                    key: AUTOMATION_BLOCKED_LABEL_KEY,
-                    value: None,
-                },
-            ]
-        );
-        assert_eq!(
-            blocked.delete_keys,
-            [CLAIMED_FROM_STATE_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY]
-        );
+        assert_that!(&(blocked.upserts)).is_equal_to(vec![
+            WorkflowLabelUpsert {
+                key: STATE_LABEL_KEY,
+                value: Some("ready"),
+            },
+            WorkflowLabelUpsert {
+                key: AUTOMATION_BLOCKED_LABEL_KEY,
+                value: None,
+            },
+        ]);
+        assert_that!(&(blocked.delete_keys))
+            .is_equal_to([CLAIMED_FROM_STATE_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY]);
 
         let feedback = claim_return_workflow_label_plan(
             "triage",
             ClaimReturnLabelDisposition::FeedbackRequest,
         );
-        assert_eq!(
-            feedback.upserts,
-            vec![
-                WorkflowLabelUpsert {
-                    key: STATE_LABEL_KEY,
-                    value: Some("triage"),
-                },
-                WorkflowLabelUpsert {
-                    key: AUTOMATION_BLOCKED_LABEL_KEY,
-                    value: None,
-                },
-                WorkflowLabelUpsert {
-                    key: FEEDBACK_REQUESTED_LABEL_KEY,
-                    value: None,
-                },
-            ]
-        );
-        assert_eq!(feedback.delete_keys, [CLAIMED_FROM_STATE_LABEL_KEY]);
+        assert_that!(&(feedback.upserts)).is_equal_to(vec![
+            WorkflowLabelUpsert {
+                key: STATE_LABEL_KEY,
+                value: Some("triage"),
+            },
+            WorkflowLabelUpsert {
+                key: AUTOMATION_BLOCKED_LABEL_KEY,
+                value: None,
+            },
+            WorkflowLabelUpsert {
+                key: FEEDBACK_REQUESTED_LABEL_KEY,
+                value: None,
+            },
+        ]);
+        assert_that!(&(feedback.delete_keys)).is_equal_to([CLAIMED_FROM_STATE_LABEL_KEY]);
     }
 }

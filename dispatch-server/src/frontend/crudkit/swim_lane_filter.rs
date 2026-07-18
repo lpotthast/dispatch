@@ -505,7 +505,7 @@ fn filter_clause_view(
                     prop:value=join_list_values(&values)
                     placeholder="value list"
                     disabled=context.disabled
-                    on:input=move |event| {
+                    on:change=move |event| {
                         let next_values = split_list_values(&event_target_value(&event));
                         update_filter_draft(context, |draft| {
                             if let Some(clause) = filter_clause_mut(draft, &path_for_values, index)
@@ -860,7 +860,9 @@ impl std::error::Error for FilterEditorError {}
 
 #[cfg(test)]
 mod tests {
+    use super::Condition;
     use super::*;
+    use assertr::prelude::*;
     use serde_json::json;
 
     fn clause(key: &str, mode: FilterClauseMode) -> FilterElementDraft {
@@ -880,14 +882,9 @@ mod tests {
 
     #[test]
     fn empty_filter_parses_as_match_all() {
-        assert_eq!(
-            parse_filter_draft("").unwrap(),
-            FilterGroupDraft::match_all()
-        );
-        assert_eq!(
-            serialized_condition(&FilterGroupDraft::match_all()),
-            Condition::All(Vec::new())
-        );
+        assert_that!(&(parse_filter_draft("").unwrap())).is_equal_to(FilterGroupDraft::match_all());
+        assert_that!(&(serialized_condition(&FilterGroupDraft::match_all())))
+            .is_equal_to(Condition::All(Vec::new()));
     }
 
     #[test]
@@ -895,37 +892,32 @@ mod tests {
         let raw = r#"{"All":[{"column_name":"state","operator":"=","value":{"String":"open"}},{"Any":[{"column_name":"priority","operator":"=","value":{"String":"high"}},{"column_name":"needs-verification","operator":"=","value":{"Bool":true}}]}]}"#;
         let draft = parsed(raw);
 
-        assert_eq!(
-            draft,
-            FilterGroupDraft {
-                kind: FilterGroupKind::All,
-                elements: vec![
-                    clause(
-                        "state",
-                        FilterClauseMode::Equals {
-                            value: "open".to_owned()
-                        }
-                    ),
-                    FilterElementDraft::Group(FilterGroupDraft {
-                        kind: FilterGroupKind::Any,
-                        elements: vec![
-                            clause(
-                                "priority",
-                                FilterClauseMode::Equals {
-                                    value: "high".to_owned()
-                                }
-                            ),
-                            clause("needs-verification", FilterClauseMode::Present),
-                        ],
-                    }),
-                ],
-            }
-        );
+        assert_that!(&(draft)).is_equal_to(FilterGroupDraft {
+            kind: FilterGroupKind::All,
+            elements: vec![
+                clause(
+                    "state",
+                    FilterClauseMode::Equals {
+                        value: "open".to_owned(),
+                    },
+                ),
+                FilterElementDraft::Group(FilterGroupDraft {
+                    kind: FilterGroupKind::Any,
+                    elements: vec![
+                        clause(
+                            "priority",
+                            FilterClauseMode::Equals {
+                                value: "high".to_owned(),
+                            },
+                        ),
+                        clause("needs-verification", FilterClauseMode::Present),
+                    ],
+                }),
+            ],
+        });
 
-        assert_eq!(
-            serialized_condition(&draft),
-            serde_json::from_str::<Condition>(raw).unwrap()
-        );
+        assert_that!(&(serialized_condition(&draft)))
+            .is_equal_to(serde_json::from_str::<Condition>(raw).unwrap());
     }
 
     #[test]
@@ -959,63 +951,57 @@ mod tests {
         };
 
         let condition = serialized_condition(&draft);
-        assert_eq!(
-            condition,
-            Condition::All(vec![
-                ConditionElement::Clause(ConditionClause {
-                    column_name: "state".to_owned(),
-                    operator: Operator::Equal,
-                    value: ConditionClauseValue::String("open".to_owned()),
-                }),
-                ConditionElement::Clause(ConditionClause {
-                    column_name: "priority".to_owned(),
-                    operator: Operator::NotEqual,
-                    value: ConditionClauseValue::String("low".to_owned()),
-                }),
-                ConditionElement::Clause(ConditionClause {
-                    column_name: "needs-verification".to_owned(),
-                    operator: Operator::Equal,
-                    value: ConditionClauseValue::Bool(true),
-                }),
-                ConditionElement::Clause(ConditionClause {
-                    column_name: "dispatch:automation-blocked".to_owned(),
-                    operator: Operator::Equal,
-                    value: ConditionClauseValue::Bool(false),
-                }),
-                ConditionElement::Clause(ConditionClause {
-                    column_name: "flag".to_owned(),
-                    operator: Operator::Equal,
-                    value: ConditionClauseValue::Json(serde_json::Value::Null),
-                }),
-                ConditionElement::Clause(ConditionClause {
-                    column_name: "valued".to_owned(),
-                    operator: Operator::NotEqual,
-                    value: ConditionClauseValue::Json(serde_json::Value::Null),
-                }),
-                ConditionElement::Clause(ConditionClause {
-                    column_name: "severity".to_owned(),
-                    operator: Operator::IsIn,
-                    value: ConditionClauseValue::Json(json!(["critical", "high"])),
-                }),
-            ])
-        );
-        assert_eq!(parsed(&serialize_filter_draft(&draft).unwrap()), draft);
+        assert_that!(&(condition)).is_equal_to(Condition::All(vec![
+            ConditionElement::Clause(ConditionClause {
+                column_name: "state".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String("open".to_owned()),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "priority".to_owned(),
+                operator: Operator::NotEqual,
+                value: ConditionClauseValue::String("low".to_owned()),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "needs-verification".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::Bool(true),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "dispatch:automation-blocked".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::Bool(false),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "flag".to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::Json(serde_json::Value::Null),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "valued".to_owned(),
+                operator: Operator::NotEqual,
+                value: ConditionClauseValue::Json(serde_json::Value::Null),
+            }),
+            ConditionElement::Clause(ConditionClause {
+                column_name: "severity".to_owned(),
+                operator: Operator::IsIn,
+                value: ConditionClauseValue::Json(json!(["critical", "high"])),
+            }),
+        ]));
+        assert_that!(&(parsed(&serialize_filter_draft(&draft).unwrap()))).is_equal_to(draft);
     }
 
     #[test]
     fn bool_not_equal_parses_to_equivalent_presence_modes() {
         let raw = r#"{"All":[{"column_name":"ready","operator":"!=","value":{"Bool":false}},{"column_name":"blocked","operator":"!=","value":{"Bool":true}}]}"#;
 
-        assert_eq!(
-            parsed(raw),
-            FilterGroupDraft {
-                kind: FilterGroupKind::All,
-                elements: vec![
-                    clause("ready", FilterClauseMode::Present),
-                    clause("blocked", FilterClauseMode::Absent),
-                ],
-            }
-        );
+        assert_that!(&(parsed(raw))).is_equal_to(FilterGroupDraft {
+            kind: FilterGroupKind::All,
+            elements: vec![
+                clause("ready", FilterClauseMode::Present),
+                clause("blocked", FilterClauseMode::Absent),
+            ],
+        });
     }
 
     #[test]
@@ -1025,14 +1011,12 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("unsupported operator '>'"));
+        assert_that!(&(error.contains("unsupported operator '>'"))).is_true();
     }
 
     #[test]
     fn list_values_split_on_commas_and_newlines() {
-        assert_eq!(
-            split_list_values("critical, high\nlow,, "),
-            vec!["critical", "high", "low"]
-        );
+        assert_that!(&(split_list_values("critical, high\nlow,, ")))
+            .is_equal_to(vec!["critical", "high", "low"]);
     }
 }

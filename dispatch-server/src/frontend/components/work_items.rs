@@ -49,6 +49,17 @@ pub(crate) fn claim_badge_with_source(
     claimed_at: Option<String>,
     claim_source: Option<WorkItemClaimSourceView>,
 ) -> AnyView {
+    claim_badge_with_source_action(project, agent, status, claimed_at, claim_source, None)
+}
+
+pub(crate) fn claim_badge_with_source_action(
+    project: &str,
+    agent: String,
+    status: &'static str,
+    claimed_at: Option<String>,
+    claim_source: Option<WorkItemClaimSourceView>,
+    on_run_click: Option<Callback<(leptos::ev::MouseEvent, i64)>>,
+) -> AnyView {
     let elapsed = claim_elapsed_timer(claimed_at);
     let source_label = claim_source_label(claim_source.as_ref());
     let run_id = claim_source
@@ -62,7 +73,15 @@ pub(crate) fn claim_badge_with_source(
             run_id
         );
         return view! {
-            <a class="claim-badge" href=href>
+            <a
+                class="claim-badge"
+                href=href
+                on:click=move |event| {
+                    if let Some(on_run_click) = on_run_click {
+                        on_run_click.run((event, run_id));
+                    }
+                }
+            >
                 <span class="claim-dot" aria-hidden="true"></span>
                 <span>{status}</span>
                 <span class="claim-agent">{agent}</span>
@@ -89,7 +108,7 @@ pub(crate) fn claim_badge_with_source(
     .into_any()
 }
 
-fn claim_source_label(source: Option<&WorkItemClaimSourceView>) -> Option<String> {
+pub(crate) fn claim_source_label(source: Option<&WorkItemClaimSourceView>) -> Option<String> {
     source.map(|source| {
         source
             .trigger_name
@@ -101,7 +120,7 @@ fn claim_source_label(source: Option<&WorkItemClaimSourceView>) -> Option<String
     })
 }
 
-fn claim_elapsed_timer(claimed_at: Option<String>) -> AnyView {
+pub(crate) fn claim_elapsed_timer(claimed_at: Option<String>) -> AnyView {
     let Some(claimed_at) = claimed_at else {
         return ().into_any();
     };

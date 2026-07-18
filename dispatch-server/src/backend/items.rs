@@ -594,6 +594,7 @@ pub async fn list_events(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use crudkit_core::condition::{
         Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
     };
@@ -681,13 +682,14 @@ mod tests {
         let demo_items = list_items(&store, "demo", None).await.unwrap();
         let other_lookup = get_item(&store, "other", demo_item.id).await.unwrap_err();
 
-        assert_eq!(demo_items.len(), 1);
-        assert_eq!(demo_items[0].title, "Demo item");
-        assert!(
-            other_lookup
+        assert_that!(&(demo_items.len())).is_equal_to(1);
+        assert_that!(&(demo_items[0].title)).is_equal_to("Demo item");
+        assert_that!(
+            &(other_lookup
                 .to_string()
-                .contains("does not exist in this project")
-        );
+                .contains("does not exist in this project"))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -741,8 +743,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(first.items.len(), 2);
-        assert!(first.next_cursor.is_some());
+        assert_that!(&(first.items.len())).is_equal_to(2);
+        assert_that!(&(first.next_cursor.is_some())).is_true();
 
         let second = search_items(
             &store,
@@ -756,14 +758,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(second.items.len(), 1);
-        assert!(second.next_cursor.is_none());
-        assert!(first.items.iter().all(|first_item| {
-            second
-                .items
-                .iter()
-                .all(|second_item| second_item.id != first_item.id)
-        }));
+        assert_that!(&(second.items.len())).is_equal_to(1);
+        assert_that!(&(second.next_cursor.is_none())).is_true();
+        assert_that!(
+            &(first.items.iter().all(|first_item| {
+                second
+                    .items
+                    .iter()
+                    .all(|second_item| second_item.id != first_item.id)
+            }))
+        )
+        .is_true();
 
         let text = search_items(
             &store,
@@ -775,8 +780,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(text.items.len(), 1);
-        assert_eq!(text.items[0].title, "Search candidate 4");
+        assert_that!(&(text.items.len())).is_equal_to(1);
+        assert_that!(&(text.items[0].title)).is_equal_to("Search candidate 4");
 
         let unfinished = search_items(
             &store,
@@ -788,9 +793,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(unfinished.items.len(), 5);
-        assert!(
-            search_items(
+        assert_that!(&(unfinished.items.len())).is_equal_to(5);
+        assert_that!(
+            &(search_items(
                 &store,
                 "demo",
                 WorkItemSearchRequest {
@@ -801,8 +806,9 @@ mod tests {
             .await
             .unwrap_err()
             .to_string()
-            .contains("between 1 and 200")
-        );
+            .contains("between 1 and 200"))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -829,14 +835,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].project_id, project_id);
-        assert_eq!(events[0].work_item_id, Some(item.id));
-        assert_eq!(events[0].event_type, WorkItemEventType::ItemCreated);
-        assert_eq!(events[0].body, "Created item");
-        assert!(events[0].actor_type.is_none());
-        assert!(events[0].actor_id.is_none());
-        assert!(events[0].agent_run_id.is_none());
+        assert_that!(&(events.len())).is_equal_to(1);
+        assert_that!(&(events[0].project_id)).is_equal_to(project_id);
+        assert_that!(&(events[0].work_item_id)).is_equal_to(Some(item.id));
+        assert_that!(&(events[0].event_type)).is_equal_to(WorkItemEventType::ItemCreated);
+        assert_that!(&(events[0].body)).is_equal_to("Created item");
+        assert_that!(&(events[0].actor_type.is_none())).is_true();
+        assert_that!(&(events[0].actor_id.is_none())).is_true();
+        assert_that!(&(events[0].agent_run_id.is_none())).is_true();
     }
 
     #[tokio::test]
@@ -867,38 +873,47 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(item.state.as_deref(), Some("open"));
-        assert!(item.labels.iter().any(|label| {
-            label.key == STATE_LABEL_KEY && label.value.as_deref() == Some("open")
-        }));
-        assert!(
-            item.labels
+        assert_that!(&(item.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(
+            &(item.labels.iter().any(|label| {
+                label.key == STATE_LABEL_KEY && label.value.as_deref() == Some("open")
+            }))
+        )
+        .is_true();
+        assert_that!(
+            &(item
+                .labels
                 .iter()
-                .any(|label| { label.key == "type" && label.value.as_deref() == Some("feature") })
-        );
-        assert!(
-            item.labels
+                .any(|label| { label.key == "type" && label.value.as_deref() == Some("feature") }))
+        )
+        .is_true();
+        assert_that!(
+            &(item
+                .labels
                 .iter()
-                .any(|label| label.key == "needs-verification" && label.value.is_none())
-        );
+                .any(|label| label.key == "needs-verification" && label.value.is_none()))
+        )
+        .is_true();
 
         let listed = list_items(&store, "demo", None).await.unwrap();
         let listed_item = listed
             .iter()
             .find(|candidate| candidate.id == item.id)
             .unwrap();
-        assert!(
-            listed_item
+        assert_that!(
+            &(listed_item
                 .labels
                 .iter()
-                .any(|label| { label.key == "type" && label.value.as_deref() == Some("feature") })
-        );
-        assert!(
-            listed_item
+                .any(|label| { label.key == "type" && label.value.as_deref() == Some("feature") }))
+        )
+        .is_true();
+        assert_that!(
+            &(listed_item
                 .labels
                 .iter()
-                .any(|label| label.key == "needs-verification" && label.value.is_none())
-        );
+                .any(|label| label.key == "needs-verification" && label.value.is_none()))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -929,8 +944,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("duplicate initial label key"));
-        assert!(list_items(&store, "demo", None).await.unwrap().is_empty());
+        assert_that!(&(err.to_string().contains("duplicate initial label key"))).is_true();
+        assert_that!(&(list_items(&store, "demo", None).await.unwrap().is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -955,8 +970,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("label key cannot contain '='"));
-        assert!(list_items(&store, "demo", None).await.unwrap().is_empty());
+        assert_that!(&(err.to_string().contains("label key cannot contain '='"))).is_true();
+        assert_that!(&(list_items(&store, "demo", None).await.unwrap().is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -981,8 +996,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("use the state selector"));
-        assert!(list_items(&store, "demo", None).await.unwrap().is_empty());
+        assert_that!(&(err.to_string().contains("use the state selector"))).is_true();
+        assert_that!(&(list_items(&store, "demo", None).await.unwrap().is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -1007,11 +1022,13 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("state label value cannot be empty")
-        );
-        assert!(list_items(&store, "demo", None).await.unwrap().is_empty());
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("state label value cannot be empty"))
+        )
+        .is_true();
+        assert_that!(&(list_items(&store, "demo", None).await.unwrap().is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -1090,22 +1107,23 @@ mod tests {
         let first = items.iter().find(|item| item.id == first.id).unwrap();
         let second = items.iter().find(|item| item.id == second.id).unwrap();
 
-        assert_eq!(first.state.as_deref(), Some("open"));
-        assert_eq!(first.comment_count, 2);
-        assert!(
-            first
+        assert_that!(&(first.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(&(first.comment_count)).is_equal_to(2);
+        assert_that!(
+            &(first.labels.iter().any(|label| {
+                label.key == "severity" && label.value.as_deref() == Some("high")
+            }))
+        )
+        .is_true();
+        assert_that!(&(second.state.as_deref())).is_equal_to(Some("ready"));
+        assert_that!(&(second.comment_count)).is_equal_to(1);
+        assert_that!(
+            &(second
                 .labels
                 .iter()
-                .any(|label| { label.key == "severity" && label.value.as_deref() == Some("high") })
-        );
-        assert_eq!(second.state.as_deref(), Some("ready"));
-        assert_eq!(second.comment_count, 1);
-        assert!(
-            second
-                .labels
-                .iter()
-                .any(|label| { label.key == "bug" && label.value.is_none() })
-        );
+                .any(|label| { label.key == "bug" && label.value.is_none() }))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -1184,8 +1202,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(demo_count, 2);
-        assert_eq!(other_count, 1);
+        assert_that!(&(demo_count)).is_equal_to(2);
+        assert_that!(&(other_count)).is_equal_to(1);
     }
 
     #[tokio::test]
@@ -1224,7 +1242,7 @@ mod tests {
             .unwrap();
         let state_label = row.try_get::<Option<String>>("", "state_label").unwrap();
 
-        assert_eq!(state_label.as_deref(), Some("needs_triage"));
+        assert_that!(&(state_label.as_deref())).is_equal_to(Some("needs_triage"));
     }
 
     #[tokio::test]
@@ -1255,8 +1273,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(moved.state.as_deref(), Some("in_progress"));
-        assert_eq!(moved.version, item.version + 1);
+        assert_that!(&(moved.state.as_deref())).is_equal_to(Some("in_progress"));
+        assert_that!(&(moved.version)).is_equal_to(item.version + 1);
     }
 
     #[tokio::test]
@@ -1296,27 +1314,24 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(updated.title, "Updated title");
-        assert_eq!(updated.state.as_deref(), Some("review"));
-        assert_eq!(
-            updated.agent_model_override.as_deref(),
-            Some("gpt-5.6-terra")
-        );
-        assert_eq!(updated.version, item.version + 1);
-        assert_eq!(
-            events
+        assert_that!(&(updated.title)).is_equal_to("Updated title");
+        assert_that!(&(updated.state.as_deref())).is_equal_to(Some("review"));
+        assert_that!(&(updated.agent_model_override.as_deref())).is_equal_to(Some("gpt-5.6-terra"));
+        assert_that!(&(updated.version)).is_equal_to(item.version + 1);
+        assert_that!(
+            &(events
                 .iter()
                 .filter(|event| event.event_type == WorkItemEventType::ItemUpdated)
-                .count(),
-            1
-        );
-        assert_eq!(
-            events
+                .count())
+        )
+        .is_equal_to(1);
+        assert_that!(
+            &(events
                 .iter()
                 .filter(|event| event.event_type == WorkItemEventType::ItemMoved)
-                .count(),
-            1
-        );
+                .count())
+        )
+        .is_equal_to(1);
     }
 
     #[tokio::test]
@@ -1339,8 +1354,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("effective agent model"));
-        assert!(err.to_string().contains("incompatible"));
+        assert_that!(&(err.to_string().contains("effective agent model"))).is_true();
+        assert_that!(&(err.to_string().contains("incompatible"))).is_true();
     }
 
     #[tokio::test]
@@ -1374,8 +1389,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("effective agent model"));
-        assert!(err.to_string().contains("max"));
+        assert_that!(&(err.to_string().contains("effective agent model"))).is_true();
+        assert_that!(&(err.to_string().contains("max"))).is_true();
     }
 
     #[tokio::test]
@@ -1412,7 +1427,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("version conflict"));
+        assert_that!(&(err.to_string().contains("version conflict"))).is_true();
     }
 
     #[tokio::test]
@@ -1438,9 +1453,9 @@ mod tests {
             .unwrap_err();
         let unchanged = get_item(&store, "demo", item.id).await.unwrap();
 
-        assert!(err.to_string().contains("requires at least one field"));
-        assert_eq!(unchanged.version, item.version);
-        assert_eq!(unchanged.updated_at, item.updated_at);
+        assert_that!(&(err.to_string().contains("requires at least one field"))).is_true();
+        assert_that!(&(unchanged.version)).is_equal_to(item.version);
+        assert_that!(&(unchanged.updated_at)).is_equal_to(item.updated_at);
     }
 
     #[tokio::test]
@@ -1463,7 +1478,7 @@ mod tests {
 
         delete_item(&store, "demo", item.id).await.unwrap();
 
-        assert!(list_items(&store, "demo", None).await.unwrap().is_empty());
-        assert!(get_item(&store, "demo", item.id).await.is_err());
+        assert_that!(&(list_items(&store, "demo", None).await.unwrap().is_empty())).is_true();
+        assert_that!(&(get_item(&store, "demo", item.id).await.is_err())).is_true();
     }
 }

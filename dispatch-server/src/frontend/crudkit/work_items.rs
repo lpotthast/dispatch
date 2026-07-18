@@ -12,13 +12,14 @@ pub(crate) fn WorkItemsPanel(
                 <h2>"Work items"</h2>
             </div>
             <div class="crudkit-work-items" data-crudkit-leptos="work-items">
-                {work_items_crudkit_instance(api_base_url, project, project_id)}
+                <WorkItemsCrudkitInstance api_base_url project project_id/>
             </div>
         </section>
     }
 }
 
-fn work_items_crudkit_instance(
+#[component]
+fn WorkItemsCrudkitInstance(
     api_base_url: String,
     project: String,
     project_id: i64,
@@ -28,11 +29,12 @@ fn work_items_crudkit_instance(
         event_scopes_named_project(event, Some(project.as_str()))
             && matches!(event, UiEvent::WorkItemChanged { .. })
     });
+    let config = work_items_crudkit_config(api_base_url, project_id);
 
     view! {
         <CrudInstance
             name="work-items"
-            config=work_items_crudkit_config(api_base_url, project_id)
+            config
             on_context_created=Callback::new(move |context| set_context.set(Some(context)))
         />
     }
@@ -44,8 +46,8 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
     work_items_crudkit_config_for_view(
         api_base_url,
         project_id,
-        SerializableCrudView::List,
-        CrudNavigationConfig::default(),
+        CrudView::table(),
+        CrudBuiltinViewControls::default(),
         default_create_state,
         None,
         empty_label_suggestions,
@@ -55,8 +57,8 @@ fn work_items_crudkit_config(api_base_url: String, project_id: i64) -> CrudInsta
 pub(crate) fn work_items_crudkit_config_for_view(
     api_base_url: String,
     project_id: i64,
-    view: SerializableCrudView,
-    navigation: CrudNavigationConfig,
+    initial_view: CrudView,
+    builtin_view_controls: CrudBuiltinViewControls,
     default_create_state: Signal<String>,
     create_state_options: Option<Signal<Vec<CreateItemStateOption>>>,
     label_suggestions: Signal<Vec<ProjectLabelView>>,
@@ -103,7 +105,7 @@ pub(crate) fn work_items_crudkit_config_for_view(
 
     CrudInstanceConfig {
         api_base_url,
-        view,
+        initial_view,
         list_columns: vec![
             Header::showing(
                 ReadWorkItemField::Id,
@@ -204,7 +206,8 @@ pub(crate) fn work_items_crudkit_config_for_view(
         model_handler: work_item_model_handler(project_id, default_create_state),
         actions: vec![],
         entity_actions: vec![],
-        navigation,
+        builtin_view_controls,
+        view_registry: CrudViewRegistry::default(),
         read_field_renderer: FieldRendererRegistry::builder()
             .register(
                 ReadWorkItemField::AgentModelOverride,
@@ -372,7 +375,9 @@ fn create_item_initial_labels_field_renderer<F: TypeErasedField>(
                                         .into_iter()
                                         .enumerate()
                                         .map(|(index, row)| {
-                                            initial_label_row_view(index, row, row_context)
+                                            view! {
+                                                <InitialLabelRowView index row context=row_context/>
+                                            }
                                         })
                                         .collect::<Vec<_>>()
                                 }}
@@ -395,7 +400,8 @@ fn create_item_initial_labels_field_renderer<F: TypeErasedField>(
     )
 }
 
-fn initial_label_row_view(
+#[component]
+fn InitialLabelRowView(
     index: usize,
     row: InitialLabelRow,
     context: InitialLabelRowContext,

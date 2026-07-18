@@ -1,119 +1,124 @@
-use crate::shared::view_models::{
-    AgentRunView, ProjectGitStatusView, ProjectView, WorkspaceEditorView,
-};
+use crate::frontend::{pages::WorkspaceBarData, services::project_service};
+use crate::shared::view_models::{ProjectGitStatusView, ProjectView, WorkspaceEditorView};
 use leptos::prelude::*;
+use leptos_use::{UseElementSizeReturn, use_element_size};
 
-use super::encode_path;
+use super::{cached_query, selected_project_signal};
 
-pub(crate) fn project_workspace_panel(
-    project: &str,
-    project_view: &ProjectView,
-    workspace_editors: Vec<WorkspaceEditorView>,
-    return_to: String,
-) -> AnyView {
-    workspace_actions(
-        "Path",
-        project_view.path.clone(),
-        Some(project_view.path_exists),
-        project_view.git_status.clone(),
-        Some(format!("/projects/{}/workspace/open", encode_path(project))),
-        workspace_editors,
-        return_to,
-    )
+#[derive(Clone, Copy)]
+struct WorkspaceDockSize {
+    height: RwSignal<Option<f64>>,
 }
 
-pub(crate) fn run_workspace_actions(
-    project: &str,
-    run: &AgentRunView,
-    workspace_editors: Vec<WorkspaceEditorView>,
-    return_to: String,
-) -> AnyView {
-    workspace_actions(
-        "working dir",
-        non_empty_string(run.working_dir.clone()),
-        None,
-        None,
-        Some(format!(
-            "/projects/{}/automation/runs/{}/workspace/open",
-            encode_path(project),
-            run.id
-        )),
-        workspace_editors,
-        return_to,
-    )
+pub(crate) fn provide_workspace_dock_size() {
+    provide_context(WorkspaceDockSize {
+        height: RwSignal::new(None),
+    });
 }
 
-fn workspace_actions(
-    label: &'static str,
-    path: Option<String>,
-    path_exists: Option<bool>,
-    git_status: Option<ProjectGitStatusView>,
-    open_action: Option<String>,
+pub(crate) fn workspace_dock_height() -> RwSignal<Option<f64>> {
+    expect_context::<WorkspaceDockSize>().height
+}
+
+#[component]
+pub(crate) fn WorkspaceBar() -> impl IntoView {
+    let dock_ref = NodeRef::<leptos::html::Footer>::new();
+    let UseElementSizeReturn { height, .. } = use_element_size(dock_ref);
+    let dock_height = workspace_dock_height();
+    Effect::new(move |_| {
+        let height = height.get();
+        if height > 0.0 {
+            dock_height.set(Some(height));
+        }
+    });
+    let selected_project = selected_project_signal();
+    let service = project_service();
+    let initial = service.cached_workspace_bar_untracked(&selected_project.get_untracked());
+    let service_for_cache = service.clone();
+    let service_for_load = service.clone();
+    let result = cached_query(
+        initial,
+        move || selected_project.get(),
+        move |selected_project| service_for_cache.cached_workspace_bar(selected_project),
+        move |selected_project| {
+            let service = service_for_load.clone();
+            let selected_project = selected_project.clone();
+            async move { service.load_workspace_bar(selected_project).await }
+        },
+    );
+    view! {
+        <footer class="workspace-dock" aria-label="Workspace" node_ref=dock_ref>
+            <div class="workspace-bar">
+                <span class="workspace-bar-title">"Workspace"</span>
+                {move || {
+                    result.value.get().map(|data| view! { <WorkspaceBarContent data/> })
+                }}
+            </div>
+        </footer>
+    }
+}
+
+#[component]
+fn WorkspaceBarContent(data: WorkspaceBarData) -> impl IntoView {
+    match data.project {
+        Some(project) => view! {
+            <WorkspaceDockContent project workspace_editors=data.workspace_editors/>
+        }
+        .into_any(),
+        None => view! { <span class="muted">"Choose a project to inspect its workspace."</span> }
+            .into_any(),
+    }
+}
+
+#[component]
+fn WorkspaceDockContent(
+    project: ProjectView,
     workspace_editors: Vec<WorkspaceEditorView>,
-    return_to: String,
-) -> AnyView {
+) -> impl IntoView {
+    let ProjectView {
+        name,
+        path,
+        path_exists,
+        git_status,
+        ..
+    } = project;
     let path = path.and_then(non_empty_string);
     let copy_available = path.is_some();
-    let open_available = copy_available && path_exists.unwrap_or(true);
+    let open_available = copy_available && path_exists;
     let display_path = path.clone().unwrap_or_else(|| "not configured".to_owned());
-    let copy_path = path.clone().unwrap_or_default();
+    let path_for_copy = path.unwrap_or_default();
     let (copy_message, set_copy_message) = signal(None::<String>);
-    let status = path_exists.map(|exists| {
-        view! {
-            <span class=if exists {
-                "workspace-status workspace-status-ok"
-            } else {
-                "workspace-status workspace-status-missing"
-            }>
-                {if exists { "Exists" } else { "Missing" }}
-            </span>
-        }
-    });
-    let git_status = git_status.map(workspace_git_status);
-    let open_controls = open_action.map(|action| {
-        let folder_action = action.clone();
-        let folder_return = return_to.clone();
-        let editor_controls = workspace_editors
-            .into_iter()
-            .map(|editor| {
-                let editor_action = action.clone();
-                let editor_return = return_to.clone();
-                let target = editor.target.clone();
-                let label = format!("Open {}", editor.label);
-                let icon_src = workspace_editor_icon_src(&editor.target);
-                view! {
-                    <form method="post" action=editor_action>
-                        <input type="hidden" name="target" value=target/>
-                        <input type="hidden" name="return_to" value=editor_return/>
-                        <button type="submit" class="secondary workspace-button" disabled=!open_available>
-                            {icon_src.map(|src| view! {
-                                <img class="workspace-button-icon" src=src alt="" aria-hidden="true"/>
-                            })}
-                            <span>{label}</span>
-                        </button>
-                    </form>
-                }
-            })
-            .collect::<Vec<_>>();
-        view! {
-            <>
-                <form method="post" action=folder_action>
-                    <input type="hidden" name="target" value="folder"/>
-                    <input type="hidden" name="return_to" value=folder_return/>
-                    <button type="submit" class="secondary workspace-button" disabled=!open_available>
-                        "Open folder"
-                    </button>
-                </form>
-                {editor_controls}
-            </>
-        }
-    });
-    let path_for_copy = copy_path.clone();
+    let status = view! {
+        <span class=if path_exists {
+            "workspace-status workspace-status-ok"
+        } else {
+            "workspace-status workspace-status-missing"
+        }>
+            {if path_exists { "Exists" } else { "Missing" }}
+        </span>
+    };
+    let git_status = git_status.map(|status| view! { <WorkspaceGitStatus status/> });
+    let editor_controls = workspace_editors
+        .into_iter()
+        .map(|editor| {
+            let target = editor.target.clone();
+            let label = format!("Open {}", editor.label);
+            let icon_src = workspace_editor_icon_src(&editor.target);
+            view! {
+                <WorkspaceOpenButton
+                    project=name.clone()
+                    target
+                    label
+                    icon_src
+                    disabled=!open_available
+                />
+            }
+        })
+        .collect::<Vec<_>>();
 
     view! {
         <div class="workspace-actions">
             <div class="workspace-path">
-                <span class="workspace-label">{label}</span>
                 <code>{display_path}</code>
                 {status}
             </div>
@@ -133,7 +138,14 @@ fn workspace_actions(
                 >
                     "Copy path"
                 </button>
-                {open_controls}
+                <WorkspaceOpenButton
+                    project=name
+                    target="folder".to_owned()
+                    label="Open folder".to_owned()
+                    icon_src=None
+                    disabled=!open_available
+                />
+                {editor_controls}
                 {move || {
                     copy_message
                         .get()
@@ -142,10 +154,49 @@ fn workspace_actions(
             </div>
         </div>
     }
-    .into_any()
 }
 
-fn workspace_git_status(status: ProjectGitStatusView) -> AnyView {
+#[component]
+fn WorkspaceOpenButton(
+    project: String,
+    target: String,
+    label: String,
+    icon_src: Option<&'static str>,
+    disabled: bool,
+) -> impl IntoView {
+    let service = project_service();
+    let (pending, set_pending) = signal(false);
+    let open = move |_| {
+        if pending.get_untracked() || disabled {
+            return;
+        }
+        set_pending.set(true);
+        let service = service.clone();
+        let project = project.clone();
+        let target = target.clone();
+        leptos::task::spawn_local(async move {
+            let _ = service.open_workspace(project, target).await;
+            set_pending.set(false);
+        });
+    };
+
+    view! {
+        <button
+            type="button"
+            class="secondary workspace-button"
+            disabled=move || disabled || pending.get()
+            on:click=open
+        >
+            {icon_src.map(|src| view! {
+                <img class="workspace-button-icon" src=src alt="" aria-hidden="true"/>
+            })}
+            <span>{label}</span>
+        </button>
+    }
+}
+
+#[component]
+fn WorkspaceGitStatus(status: ProjectGitStatusView) -> impl IntoView {
     if !status.is_repository {
         let message = match status.error {
             Some(error) => view! {

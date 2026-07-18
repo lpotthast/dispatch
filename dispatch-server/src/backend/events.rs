@@ -61,6 +61,16 @@ pub(crate) fn publish_project_changed(project: &str) {
     });
 }
 
+pub(crate) fn publish_project_deleted(project_id: i64, project: &str) {
+    let project = project.to_owned();
+    publish(|sequence, timestamp| UiEvent::ProjectDeleted {
+        sequence,
+        timestamp,
+        project_id,
+        project,
+    });
+}
+
 pub(crate) fn publish_system_prompt_changed(project: &str) {
     let project = project.to_owned();
     publish(|sequence, timestamp| UiEvent::SystemPromptChanged {

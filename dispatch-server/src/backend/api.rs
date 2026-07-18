@@ -1001,8 +1001,13 @@ async fn get_run_log(
 async fn active_sessions(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
-) -> Json<Vec<ProcessSessionView>> {
-    Json(state.sessions.list_for_project(&project).await)
+) -> Response {
+    let result: Result<Vec<ProcessSessionView>> = async {
+        let project_id = projects::project_id(&state.store, &project).await?;
+        Ok(state.sessions.list_for_project(project_id).await)
+    }
+    .await;
+    json_result(result)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1304,6 +1309,7 @@ async fn delete_item_relationship(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use std::sync::Arc;
 
     use axum::body::{Body, to_bytes};
@@ -1359,10 +1365,18 @@ mod tests {
         )
         .await
         .unwrap();
+        let sessions = ProcessSessionRegistry::new();
+        let automation_controller = AutomationController::new();
+        let project_deletion = crate::backend::project_deletion::ProjectDeletionService::new(
+            store.clone(),
+            automation_controller.clone(),
+            sessions.clone(),
+        );
         let state = AppState {
             store,
-            sessions: ProcessSessionRegistry::new(),
-            automation_controller: AutomationController::new(),
+            sessions,
+            automation_controller,
+            project_deletion,
             codex_status: Arc::new(tokio::sync::RwLock::new(
                 dispatch_types::CodexAppServerStatusView {
                     available: true,
@@ -1379,13 +1393,13 @@ mod tests {
     }
 
     async fn decode<T: DeserializeOwned>(response: Response<Body>) -> T {
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_that!(&(response.status())).is_equal_to(StatusCode::OK);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&body).unwrap()
     }
 
     async fn decode_error(response: Response<Body>) -> String {
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_that!(&(response.status())).is_equal_to(StatusCode::BAD_REQUEST);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice::<ApiError>(&body).unwrap().error
     }
@@ -1409,8 +1423,8 @@ mod tests {
         )
         .await;
         let claimed_item = claimed.item.unwrap();
-        assert_eq!(claimed_item.id, item_id);
-        assert_eq!(claimed_item.claimed_by.as_deref(), Some(agent_id.as_str()));
+        assert_that!(&(claimed_item.id)).is_equal_to(item_id);
+        assert_that!(&(claimed_item.claimed_by.as_deref())).is_equal_to(Some(agent_id.as_str()));
 
         let progress: CommentView = decode(
             progress_item(
@@ -1425,7 +1439,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(progress.body, "Working");
+        assert_that!(&(progress.body)).is_equal_to("Working");
 
         let released: WorkItemView = decode(
             release_item(
@@ -1440,14 +1454,15 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(released.state.as_deref(), Some("open"));
-        assert_eq!(released.claimed_by, None);
-        assert!(
-            released
+        assert_that!(&(released.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(&(released.claimed_by)).is_equal_to(None);
+        assert_that!(
+            &(released
                 .labels
                 .iter()
-                .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
-        );
+                .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY))
+        )
+        .is_true();
 
         let claimed: ClaimWorkItemResponse = decode(
             claim_item(
@@ -1462,7 +1477,7 @@ mod tests {
             .await,
         )
         .await;
-        assert!(!claimed.claimed());
+        assert_that!(&(!claimed.claimed())).is_true();
 
         let feedback_item_id = items::create_item(
             &state.store,
@@ -1493,7 +1508,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(claimed.item.unwrap().id, feedback_item_id);
+        assert_that!(&(claimed.item.unwrap().id)).is_equal_to(feedback_item_id);
 
         let feedback_requested: WorkItemView = decode(
             request_item_feedback(
@@ -1508,14 +1523,15 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(feedback_requested.state.as_deref(), Some("open"));
-        assert_eq!(feedback_requested.claimed_by, None);
-        assert!(
-            feedback_requested
+        assert_that!(&(feedback_requested.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(&(feedback_requested.claimed_by)).is_equal_to(None);
+        assert_that!(
+            &(feedback_requested
                 .labels
                 .iter()
-                .any(|label| label.key == FEEDBACK_REQUESTED_LABEL_KEY)
-        );
+                .any(|label| label.key == FEEDBACK_REQUESTED_LABEL_KEY))
+        )
+        .is_true();
 
         let finish_item_id = items::create_item(
             &state.store,
@@ -1546,7 +1562,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(claimed.item.unwrap().id, finish_item_id);
+        assert_that!(&(claimed.item.unwrap().id)).is_equal_to(finish_item_id);
 
         let finished: WorkItemView = decode(
             finish_item(
@@ -1561,8 +1577,8 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(finished.state.as_deref(), Some("done"));
-        assert_eq!(finished.claimed_by, None);
+        assert_that!(&(finished.state.as_deref())).is_equal_to(Some("done"));
+        assert_that!(&(finished.claimed_by)).is_equal_to(None);
     }
 
     #[tokio::test]
@@ -1590,9 +1606,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(updated.title, "Endpoint update");
-        assert_eq!(updated.state.as_deref(), Some("review"));
-        assert_eq!(updated.version, original.version + 1);
+        assert_that!(&(updated.title)).is_equal_to("Endpoint update");
+        assert_that!(&(updated.state.as_deref())).is_equal_to(Some("review"));
+        assert_that!(&(updated.version)).is_equal_to(original.version + 1);
     }
 
     #[tokio::test]
@@ -1618,15 +1634,15 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(created_without_labels.state.as_deref(), Some("open"));
-        assert_eq!(
-            created_without_labels
+        assert_that!(&(created_without_labels.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(
+            &(created_without_labels
                 .labels
                 .iter()
                 .filter(|label| label.key != dispatch_types::STATE_LABEL_KEY)
-                .count(),
-            0
-        );
+                .count())
+        )
+        .is_equal_to(0);
 
         let created_with_labels: WorkItemView = decode(
             create_item(
@@ -1655,19 +1671,21 @@ mod tests {
         )
         .await;
 
-        assert_eq!(created_with_labels.state.as_deref(), Some("review"));
-        assert!(
-            created_with_labels
+        assert_that!(&(created_with_labels.state.as_deref())).is_equal_to(Some("review"));
+        assert_that!(
+            &(created_with_labels
                 .labels
                 .iter()
-                .any(|label| { label.key == "type" && label.value.as_deref() == Some("feature") })
-        );
-        assert!(
-            created_with_labels
+                .any(|label| { label.key == "type" && label.value.as_deref() == Some("feature") }))
+        )
+        .is_true();
+        assert_that!(
+            &(created_with_labels
                 .labels
                 .iter()
-                .any(|label| label.key == "needs-verification" && label.value.is_none())
-        );
+                .any(|label| label.key == "needs-verification" && label.value.is_none()))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -1701,7 +1719,7 @@ mod tests {
             list_item_labels(Extension(state.clone()), Path(("demo".to_owned(), item_id))).await,
         )
         .await;
-        assert!(labels.iter().any(|label| label.key == "severity"));
+        assert_that!(&(labels.iter().any(|label| label.key == "severity"))).is_true();
 
         let updated: WorkItemView = decode(
             update_item_label(
@@ -1717,21 +1735,23 @@ mod tests {
             .await,
         )
         .await;
-        assert!(
-            updated
+        assert_that!(
+            &(updated
                 .labels
                 .iter()
-                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("p1") })
-        );
+                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("p1") }))
+        )
+        .is_true();
 
         let suggestions: Vec<ProjectLabelView> =
             decode(list_project_labels(Extension(state.clone()), Path("demo".to_owned())).await)
                 .await;
-        assert!(
-            suggestions
+        assert_that!(
+            &(suggestions
                 .iter()
-                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("p1") })
-        );
+                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("p1") }))
+        )
+        .is_true();
 
         let deleted = delete_item_label(
             Extension(state),
@@ -1742,7 +1762,7 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(deleted.status(), StatusCode::OK);
+        assert_that!(&(deleted.status())).is_equal_to(StatusCode::OK);
     }
 
     #[tokio::test]
@@ -1777,8 +1797,8 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(created.direction, WorkItemRelationshipDirection::Outgoing);
-        assert_eq!(created.relationship.kind, "is follow-up of");
+        assert_that!(&(created.direction)).is_equal_to(WorkItemRelationshipDirection::Outgoing);
+        assert_that!(&(created.relationship.kind)).is_equal_to("is follow-up of");
 
         let outgoing: Vec<WorkItemRelationshipListEntry> = decode(
             list_item_relationships(
@@ -1788,11 +1808,8 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(outgoing.len(), 1);
-        assert_eq!(
-            outgoing[0].direction,
-            WorkItemRelationshipDirection::Outgoing
-        );
+        assert_that!(&(outgoing.len())).is_equal_to(1);
+        assert_that!(&(outgoing[0].direction)).is_equal_to(WorkItemRelationshipDirection::Outgoing);
 
         let incoming: Vec<WorkItemRelationshipListEntry> = decode(
             list_item_relationships(
@@ -1802,11 +1819,8 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(incoming.len(), 1);
-        assert_eq!(
-            incoming[0].direction,
-            WorkItemRelationshipDirection::Incoming
-        );
+        assert_that!(&(incoming.len())).is_equal_to(1);
+        assert_that!(&(incoming[0].direction)).is_equal_to(WorkItemRelationshipDirection::Incoming);
 
         let duplicate = decode_error(
             create_item_relationship(
@@ -1821,7 +1835,7 @@ mod tests {
             .await,
         )
         .await;
-        assert!(duplicate.contains("duplicate relationship"));
+        assert_that!(&(duplicate.contains("duplicate relationship"))).is_true();
 
         let self_link = decode_error(
             create_item_relationship(
@@ -1836,7 +1850,7 @@ mod tests {
             .await,
         )
         .await;
-        assert!(self_link.contains("must differ"));
+        assert_that!(&(self_link.contains("must differ"))).is_true();
 
         let empty_kind = decode_error(
             create_item_relationship(
@@ -1851,7 +1865,7 @@ mod tests {
             .await,
         )
         .await;
-        assert!(empty_kind.contains("kind cannot be empty"));
+        assert_that!(&(empty_kind.contains("kind cannot be empty"))).is_true();
 
         let updated: WorkItemRelationshipView = decode(
             update_relationship(
@@ -1865,7 +1879,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(updated.kind, "unblocks");
+        assert_that!(&(updated.kind)).is_equal_to("unblocks");
 
         let deleted: DeleteWorkItemRelationshipResponse = decode(
             delete_relationship(
@@ -1876,13 +1890,13 @@ mod tests {
             .await,
         )
         .await;
-        assert!(deleted.deleted);
+        assert_that!(&(deleted.deleted)).is_true();
 
         let outgoing: Vec<WorkItemRelationshipListEntry> = decode(
             list_item_relationships(Extension(state), Path(("demo".to_owned(), source_id))).await,
         )
         .await;
-        assert!(outgoing.is_empty());
+        assert_that!(&(outgoing.is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -1903,12 +1917,12 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(set.project.memory, "Remember the relay CLI.");
-        assert_eq!(set.event.operation, "set");
-        assert_eq!(set.event.memory, "Remember the relay CLI.");
-        assert_eq!(set.event.actor_type.as_deref(), Some("agent"));
-        assert_eq!(set.event.actor_id.as_deref(), Some("dispatch-run-7"));
-        assert_eq!(set.event.agent_run_id, Some(7));
+        assert_that!(&(set.project.memory)).is_equal_to("Remember the relay CLI.");
+        assert_that!(&(set.event.operation)).is_equal_to("set");
+        assert_that!(&(set.event.memory)).is_equal_to("Remember the relay CLI.");
+        assert_that!(&(set.event.actor_type.as_deref())).is_equal_to(Some("agent"));
+        assert_that!(&(set.event.actor_id.as_deref())).is_equal_to(Some("dispatch-run-7"));
+        assert_that!(&(set.event.agent_run_id)).is_equal_to(Some(7));
 
         let appended: ProjectMemoryUpdateView = decode(
             append_project_memory(
@@ -1924,42 +1938,38 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(
-            appended.project.memory,
-            "Remember the relay CLI.\n\nUse Dispatch memory commands."
-        );
-        assert_eq!(appended.event.operation, "append");
+        assert_that!(&(appended.project.memory))
+            .is_equal_to("Remember the relay CLI.\n\nUse Dispatch memory commands.");
+        assert_that!(&(appended.event.operation)).is_equal_to("append");
 
         let current: ProjectMemoryView =
             decode(get_project_memory(Extension(state.clone()), Path("demo".to_owned())).await)
                 .await;
-        assert_eq!(current.last_event.unwrap().id, appended.event.id);
+        assert_that!(&(current.last_event.unwrap().id)).is_equal_to(appended.event.id);
 
         let events: Vec<ProjectMemoryEventView> = decode(
             list_project_memory_events(Extension(state.clone()), Path("demo".to_owned())).await,
         )
         .await;
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].id, appended.event.id);
+        assert_that!(&(events.len())).is_equal_to(2);
+        assert_that!(&(events[0].id)).is_equal_to(appended.event.id);
 
         let compacted: ProjectMemoryCompactionView = decode(
             compact_project_memory_events(Extension(state.clone()), Path("demo".to_owned())).await,
         )
         .await;
-        assert_eq!(compacted.deleted_events, 2);
+        assert_that!(&(compacted.deleted_events)).is_equal_to(2);
 
         let events: Vec<ProjectMemoryEventView> = decode(
             list_project_memory_events(Extension(state.clone()), Path("demo".to_owned())).await,
         )
         .await;
-        assert!(events.is_empty());
+        assert_that!(&(events.is_empty())).is_true();
 
         let current: ProjectMemoryView =
             decode(get_project_memory(Extension(state), Path("demo".to_owned())).await).await;
-        assert_eq!(
-            current.memory,
-            "Remember the relay CLI.\n\nUse Dispatch memory commands."
-        );
-        assert!(current.last_event.is_none());
+        assert_that!(&(current.memory))
+            .is_equal_to("Remember the relay CLI.\n\nUse Dispatch memory commands.");
+        assert_that!(&(current.last_event.is_none())).is_true();
     }
 }

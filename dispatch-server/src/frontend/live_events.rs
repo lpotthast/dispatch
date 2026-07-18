@@ -1,8 +1,20 @@
+#[cfg(not(feature = "ssr"))]
+use crate::frontend::services::{
+    advance_project_lifecycle_epoch, api_docs_service, automation_service, board_service,
+    codex_service, item_service, run_service,
+};
+#[cfg(not(feature = "ssr"))]
+use crate::frontend::services::{project_cache, project_service};
 use crate::shared::view_models::UiEvent;
 #[cfg(not(feature = "ssr"))]
 use codee::string::FromToStringCodec;
 use crudkit_leptos::crud_instance::CrudInstanceContext;
 use leptos::prelude::*;
+#[cfg(not(feature = "ssr"))]
+use leptos_router::{
+    NavigateOptions,
+    hooks::{use_navigate, use_params_map, use_query_map},
+};
 #[cfg(not(feature = "ssr"))]
 use leptos_use::{
     ReconnectLimit, UseWebSocketOptions, UseWebSocketReturn, use_websocket_with_options,
@@ -22,6 +34,17 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
 
     #[cfg(not(feature = "ssr"))]
     {
+        let navigate = use_navigate();
+        let query = use_query_map();
+        let params = use_params_map();
+        let project_service = project_service();
+        let project_cache = project_cache();
+        let board_service = board_service();
+        let automation_service = automation_service();
+        let item_service = item_service();
+        let run_service = run_service();
+        let codex_service = codex_service();
+        let api_docs_service = api_docs_service();
         let UseWebSocketReturn { message, .. } =
             use_websocket_with_options::<String, String, FromToStringCodec, _, _>(
                 "/api/events/ws",
@@ -34,6 +57,39 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
                 && let Ok(event) = serde_json::from_str::<UiEvent>(&raw)
             {
                 set_latest_event.set(Some(event));
+            }
+        });
+        Effect::new(move |_| {
+            let Some(UiEvent::ProjectDeleted {
+                project_id,
+                project,
+                ..
+            }) = latest_event.get()
+            else {
+                return;
+            };
+            advance_project_lifecycle_epoch();
+            project_service.clear_cache();
+            board_service.clear_cache();
+            automation_service.clear_cache();
+            item_service.clear_cache();
+            run_service.clear_cache();
+            codex_service.clear_cache();
+            api_docs_service.clear_cache();
+            project_cache.remove(project_id, &project);
+            let selected = query
+                .read()
+                .get("project")
+                .or_else(|| params.read().get("project"));
+            if selected.as_deref() == Some(project.as_str()) {
+                navigate(
+                    "/projects",
+                    NavigateOptions {
+                        replace: true,
+                        scroll: true,
+                        ..NavigateOptions::default()
+                    },
+                );
             }
         });
     }
@@ -85,7 +141,19 @@ pub(crate) fn codex_event_matches(event: &UiEvent) -> bool {
             | UiEvent::AgentToolChanged { .. }
             | UiEvent::ProjectListChanged { .. }
             | UiEvent::ProjectChanged { .. }
+            | UiEvent::ProjectDeleted { .. }
             | UiEvent::AutomationChanged { .. }
+    )
+}
+
+pub(crate) fn projects_page_event_matches(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::ProjectListChanged { .. }
+            | UiEvent::ProjectChanged { .. }
+            | UiEvent::ProjectDeleted { .. }
+            | UiEvent::AutomationChanged { .. }
+            | UiEvent::CodexStatusChanged { .. }
     )
 }
 
@@ -94,6 +162,7 @@ pub(crate) fn api_docs_event_matches(event: &UiEvent) -> bool {
         event,
         UiEvent::ProjectListChanged { .. }
             | UiEvent::ProjectChanged { .. }
+            | UiEvent::ProjectDeleted { .. }
             | UiEvent::CodexStatusChanged { .. }
     )
 }
@@ -103,6 +172,7 @@ pub(crate) fn runs_page_event_matches(event: &UiEvent) -> bool {
         event,
         UiEvent::ProjectListChanged { .. }
             | UiEvent::ProjectChanged { .. }
+            | UiEvent::ProjectDeleted { .. }
             | UiEvent::CodexStatusChanged { .. }
     )
 }
@@ -118,6 +188,7 @@ pub(crate) fn item_event_matches(
     match event {
         UiEvent::ProjectListChanged { .. }
         | UiEvent::ProjectChanged { .. }
+        | UiEvent::ProjectDeleted { .. }
         | UiEvent::AutomationChanged { .. }
         | UiEvent::CodexStatusChanged { .. }
         | UiEvent::AgentToolChanged { .. } => true,
@@ -165,6 +236,7 @@ pub(crate) fn run_log_event_matches(
         } => Some(*changed_run_id) == run_id,
         UiEvent::ProjectListChanged { .. }
         | UiEvent::ProjectChanged { .. }
+        | UiEvent::ProjectDeleted { .. }
         | UiEvent::AutomationChanged { .. }
         | UiEvent::CodexStatusChanged { .. }
         | UiEvent::AgentToolChanged { .. } => true,
@@ -207,6 +279,7 @@ pub(crate) fn trigger_runs_event_matches(event: &UiEvent, project: &str) -> bool
 fn event_project(event: &UiEvent) -> Option<&str> {
     match event {
         UiEvent::ProjectChanged { project, .. }
+        | UiEvent::ProjectDeleted { project, .. }
         | UiEvent::SystemPromptChanged { project, .. }
         | UiEvent::WorkItemChanged { project, .. }
         | UiEvent::CommentChanged { project, .. }
@@ -226,10 +299,12 @@ fn event_project(event: &UiEvent) -> Option<&str> {
 mod tests {
     use super::{
         api_docs_event_matches, board_items_event_matches, codex_event_matches,
-        event_scopes_named_project, item_event_matches, run_log_event_matches,
-        runs_page_event_matches, runs_section_event_matches, trigger_runs_event_matches,
+        event_scopes_named_project, item_event_matches, projects_page_event_matches,
+        run_log_event_matches, runs_page_event_matches, runs_section_event_matches,
+        trigger_runs_event_matches,
     };
     use crate::shared::view_models::UiEvent;
+    use assertr::prelude::*;
 
     const DEMO_PROJECT: &str = "demo";
     const OTHER_PROJECT: &str = "other";
@@ -350,9 +425,9 @@ mod tests {
     fn event_scope_matches_named_project_only_for_project_events() {
         let event = work_item_changed(DEMO_PROJECT, 7);
 
-        assert!(event_scopes_named_project(&event, Some(DEMO_PROJECT)));
-        assert!(!event_scopes_named_project(&event, Some(OTHER_PROJECT)));
-        assert!(event_scopes_named_project(&event, None));
+        assert_that!(&(event_scopes_named_project(&event, Some(DEMO_PROJECT)))).is_true();
+        assert_that!(&(!event_scopes_named_project(&event, Some(OTHER_PROJECT)))).is_true();
+        assert_that!(&(event_scopes_named_project(&event, None))).is_true();
     }
 
     #[test]
@@ -362,276 +437,336 @@ mod tests {
             agent_tool_changed(),
             codex_status_changed(),
         ] {
-            assert!(event_scopes_named_project(&event, Some(DEMO_PROJECT)));
-            assert!(event_scopes_named_project(&event, None));
+            assert_that!(&(event_scopes_named_project(&event, Some(DEMO_PROJECT)))).is_true();
+            assert_that!(&(event_scopes_named_project(&event, None))).is_true();
         }
     }
 
     #[test]
     fn codex_page_refreshes_for_global_events() {
-        assert!(codex_event_matches(&project_list_changed()));
-        assert!(codex_event_matches(&agent_tool_changed()));
-        assert!(codex_event_matches(&codex_status_changed()));
+        assert_that!(&(codex_event_matches(&project_list_changed()))).is_true();
+        assert_that!(&(codex_event_matches(&agent_tool_changed()))).is_true();
+        assert_that!(&(codex_event_matches(&codex_status_changed()))).is_true();
+    }
+
+    #[test]
+    fn projects_page_refreshes_for_project_lifecycle_and_shell_events() {
+        assert_that!(&(projects_page_event_matches(&project_list_changed()))).is_true();
+        assert_that!(&(projects_page_event_matches(&project_changed(DEMO_PROJECT)))).is_true();
+        assert_that!(&(projects_page_event_matches(&automation_changed(DEMO_PROJECT)))).is_true();
+        assert_that!(&(projects_page_event_matches(&codex_status_changed()))).is_true();
+        assert_that!(&(!projects_page_event_matches(&agent_tool_changed()))).is_true();
     }
 
     #[test]
     fn api_docs_and_runs_pages_refresh_for_shell_context_events() {
-        assert!(api_docs_event_matches(&project_list_changed()));
-        assert!(api_docs_event_matches(&project_changed(DEMO_PROJECT)));
-        assert!(api_docs_event_matches(&codex_status_changed()));
-        assert!(!api_docs_event_matches(&agent_tool_changed()));
+        assert_that!(&(api_docs_event_matches(&project_list_changed()))).is_true();
+        assert_that!(&(api_docs_event_matches(&project_changed(DEMO_PROJECT)))).is_true();
+        assert_that!(&(api_docs_event_matches(&codex_status_changed()))).is_true();
+        assert_that!(&(!api_docs_event_matches(&agent_tool_changed()))).is_true();
 
-        assert!(runs_page_event_matches(&project_list_changed()));
-        assert!(runs_page_event_matches(&project_changed(DEMO_PROJECT)));
-        assert!(runs_page_event_matches(&codex_status_changed()));
-        assert!(!runs_page_event_matches(&agent_tool_changed()));
+        assert_that!(&(runs_page_event_matches(&project_list_changed()))).is_true();
+        assert_that!(&(runs_page_event_matches(&project_changed(DEMO_PROJECT)))).is_true();
+        assert_that!(&(runs_page_event_matches(&codex_status_changed()))).is_true();
+        assert_that!(&(!runs_page_event_matches(&agent_tool_changed()))).is_true();
     }
 
     #[test]
     fn runs_page_shell_ignores_live_run_events() {
-        assert!(!runs_page_event_matches(&automation_changed(DEMO_PROJECT)));
-        assert!(!runs_page_event_matches(&agent_run_changed(
-            DEMO_PROJECT,
-            42,
-            Some(7)
-        )));
-        assert!(!runs_page_event_matches(&agent_output_changed(
-            DEMO_PROJECT,
-            42,
-            Some(7)
-        )));
+        assert_that!(&(!runs_page_event_matches(&automation_changed(DEMO_PROJECT)))).is_true();
+        assert_that!(&(!runs_page_event_matches(&agent_run_changed(DEMO_PROJECT, 42, Some(7)))))
+            .is_true();
+        assert_that!(&(!runs_page_event_matches(&agent_output_changed(DEMO_PROJECT, 42, Some(7)))))
+            .is_true();
     }
 
     #[test]
     fn item_detail_refreshes_for_global_events() {
-        assert!(item_event_matches(
-            &project_list_changed(),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(item_event_matches(
-            &agent_tool_changed(),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(item_event_matches(
-            &codex_status_changed(),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
+        assert_that!(&(item_event_matches(&project_list_changed(), Some(DEMO_PROJECT), Some(7))))
+            .is_true();
+        assert_that!(&(item_event_matches(&agent_tool_changed(), Some(DEMO_PROJECT), Some(7))))
+            .is_true();
+        assert_that!(&(item_event_matches(&codex_status_changed(), Some(DEMO_PROJECT), Some(7))))
+            .is_true();
     }
 
     #[test]
     fn item_detail_matches_selected_item_events() {
-        assert!(item_event_matches(
-            &work_item_changed(DEMO_PROJECT, 7),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(item_event_matches(
-            &comment_changed(DEMO_PROJECT, 7),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(item_event_matches(
-            &agent_run_changed(DEMO_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(item_event_matches(
-            &agent_output_changed(DEMO_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
+        assert_that!(
+            &(item_event_matches(
+                &work_item_changed(DEMO_PROJECT, 7),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(item_event_matches(
+                &comment_changed(DEMO_PROJECT, 7),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(item_event_matches(
+                &agent_run_changed(DEMO_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(item_event_matches(
+                &agent_output_changed(DEMO_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
     }
 
     #[test]
     fn item_detail_ignores_unmatched_item_and_run_events() {
-        assert!(!item_event_matches(
-            &work_item_changed(DEMO_PROJECT, 8),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &comment_changed(DEMO_PROJECT, 8),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &agent_run_changed(DEMO_PROJECT, 42, Some(8)),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &agent_output_changed(DEMO_PROJECT, 42, Some(8)),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &agent_run_changed(DEMO_PROJECT, 99, None),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &agent_output_changed(DEMO_PROJECT, 99, None),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
+        assert_that!(
+            &(!item_event_matches(
+                &work_item_changed(DEMO_PROJECT, 8),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &comment_changed(DEMO_PROJECT, 8),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &agent_run_changed(DEMO_PROJECT, 42, Some(8)),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &agent_output_changed(DEMO_PROJECT, 42, Some(8)),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &agent_run_changed(DEMO_PROJECT, 99, None),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &agent_output_changed(DEMO_PROJECT, 99, None),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
     }
 
     #[test]
     fn item_detail_applies_project_scoping_before_item_matching() {
-        assert!(!item_event_matches(
-            &work_item_changed(OTHER_PROJECT, 7),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &comment_changed(OTHER_PROJECT, 7),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &agent_run_changed(OTHER_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
-        assert!(!item_event_matches(
-            &agent_output_changed(OTHER_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(7)
-        ));
+        assert_that!(
+            &(!item_event_matches(
+                &work_item_changed(OTHER_PROJECT, 7),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &comment_changed(OTHER_PROJECT, 7),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &agent_run_changed(OTHER_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!item_event_matches(
+                &agent_output_changed(OTHER_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(7)
+            ))
+        )
+        .is_true();
     }
 
     #[test]
     fn run_log_refreshes_for_global_events() {
-        assert!(run_log_event_matches(
-            &project_list_changed(),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(run_log_event_matches(
-            &agent_tool_changed(),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(run_log_event_matches(
-            &codex_status_changed(),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
+        assert_that!(
+            &(run_log_event_matches(&project_list_changed(), Some(DEMO_PROJECT), Some(42)))
+        )
+        .is_true();
+        assert_that!(&(run_log_event_matches(&agent_tool_changed(), Some(DEMO_PROJECT), Some(42))))
+            .is_true();
+        assert_that!(
+            &(run_log_event_matches(&codex_status_changed(), Some(DEMO_PROJECT), Some(42)))
+        )
+        .is_true();
     }
 
     #[test]
     fn run_log_matches_selected_run_events() {
-        assert!(run_log_event_matches(
-            &agent_run_changed(DEMO_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(run_log_event_matches(
-            &agent_output_changed(DEMO_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
+        assert_that!(
+            &(run_log_event_matches(
+                &agent_run_changed(DEMO_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(run_log_event_matches(
+                &agent_output_changed(DEMO_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
     }
 
     #[test]
     fn run_log_ignores_unmatched_run_events() {
-        assert!(!run_log_event_matches(
-            &agent_run_changed(DEMO_PROJECT, 99, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(!run_log_event_matches(
-            &agent_output_changed(DEMO_PROJECT, 99, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
+        assert_that!(
+            &(!run_log_event_matches(
+                &agent_run_changed(DEMO_PROJECT, 99, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!run_log_event_matches(
+                &agent_output_changed(DEMO_PROJECT, 99, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
     }
 
     #[test]
     fn run_log_ignores_unrelated_item_and_project_content_events() {
-        assert!(!run_log_event_matches(
-            &work_item_changed(DEMO_PROJECT, 7),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(!run_log_event_matches(
-            &comment_changed(DEMO_PROJECT, 7),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(!run_log_event_matches(
-            &system_prompt_changed(DEMO_PROJECT),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(!run_log_event_matches(
-            &memory_changed(DEMO_PROJECT),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(!run_log_event_matches(
-            &swim_lane_changed(DEMO_PROJECT),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(!run_log_event_matches(
-            &work_item_state_changed(DEMO_PROJECT),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
+        assert_that!(
+            &(!run_log_event_matches(
+                &work_item_changed(DEMO_PROJECT, 7),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!run_log_event_matches(
+                &comment_changed(DEMO_PROJECT, 7),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!run_log_event_matches(
+                &system_prompt_changed(DEMO_PROJECT),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!run_log_event_matches(&memory_changed(DEMO_PROJECT), Some(DEMO_PROJECT), Some(42)))
+        )
+        .is_true();
+        assert_that!(
+            &(!run_log_event_matches(
+                &swim_lane_changed(DEMO_PROJECT),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!run_log_event_matches(
+                &work_item_state_changed(DEMO_PROJECT),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
     }
 
     #[test]
     fn run_log_applies_project_scoping_before_run_matching() {
-        assert!(!run_log_event_matches(
-            &agent_run_changed(OTHER_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
-        assert!(!run_log_event_matches(
-            &agent_output_changed(OTHER_PROJECT, 42, Some(7)),
-            Some(DEMO_PROJECT),
-            Some(42)
-        ));
+        assert_that!(
+            &(!run_log_event_matches(
+                &agent_run_changed(OTHER_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
+        assert_that!(
+            &(!run_log_event_matches(
+                &agent_output_changed(OTHER_PROJECT, 42, Some(7)),
+                Some(DEMO_PROJECT),
+                Some(42)
+            ))
+        )
+        .is_true();
     }
 
     #[test]
     fn board_items_matches_board_refresh_events_for_project() {
-        assert!(board_items_event_matches(
-            &work_item_changed(DEMO_PROJECT, 7),
-            DEMO_PROJECT
-        ));
-        assert!(board_items_event_matches(
-            &comment_changed(DEMO_PROJECT, 7),
-            DEMO_PROJECT
-        ));
-        assert!(board_items_event_matches(
-            &agent_run_changed(DEMO_PROJECT, 42, Some(7)),
-            DEMO_PROJECT
-        ));
-        assert!(board_items_event_matches(
-            &swim_lane_changed(DEMO_PROJECT),
-            DEMO_PROJECT
-        ));
-        assert!(board_items_event_matches(
-            &work_item_state_changed(DEMO_PROJECT),
-            DEMO_PROJECT
-        ));
-        assert!(!board_items_event_matches(
-            &work_item_changed(OTHER_PROJECT, 7),
-            DEMO_PROJECT
-        ));
-        assert!(!board_items_event_matches(
-            &comment_changed(OTHER_PROJECT, 7),
-            DEMO_PROJECT
-        ));
-        assert!(!board_items_event_matches(
-            &codex_status_changed(),
-            DEMO_PROJECT
-        ));
+        assert_that!(
+            &(board_items_event_matches(&work_item_changed(DEMO_PROJECT, 7), DEMO_PROJECT))
+        )
+        .is_true();
+        assert_that!(&(board_items_event_matches(&comment_changed(DEMO_PROJECT, 7), DEMO_PROJECT)))
+            .is_true();
+        assert_that!(
+            &(board_items_event_matches(
+                &agent_run_changed(DEMO_PROJECT, 42, Some(7)),
+                DEMO_PROJECT
+            ))
+        )
+        .is_true();
+        assert_that!(&(board_items_event_matches(&swim_lane_changed(DEMO_PROJECT), DEMO_PROJECT)))
+            .is_true();
+        assert_that!(
+            &(board_items_event_matches(&work_item_state_changed(DEMO_PROJECT), DEMO_PROJECT))
+        )
+        .is_true();
+        assert_that!(
+            &(!board_items_event_matches(&work_item_changed(OTHER_PROJECT, 7), DEMO_PROJECT))
+        )
+        .is_true();
+        assert_that!(
+            &(!board_items_event_matches(&comment_changed(OTHER_PROJECT, 7), DEMO_PROJECT))
+        )
+        .is_true();
+        assert_that!(&(!board_items_event_matches(&codex_status_changed(), DEMO_PROJECT)))
+            .is_true();
     }
 
     #[test]
@@ -642,8 +777,8 @@ mod tests {
             agent_output_changed(DEMO_PROJECT, 42, Some(7)),
             codex_status_changed(),
         ] {
-            assert!(runs_section_event_matches(&event, DEMO_PROJECT));
-            assert!(trigger_runs_event_matches(&event, DEMO_PROJECT));
+            assert_that!(&(runs_section_event_matches(&event, DEMO_PROJECT))).is_true();
+            assert_that!(&(trigger_runs_event_matches(&event, DEMO_PROJECT))).is_true();
         }
 
         for event in [
@@ -652,8 +787,8 @@ mod tests {
             agent_output_changed(OTHER_PROJECT, 42, Some(7)),
             work_item_changed(DEMO_PROJECT, 7),
         ] {
-            assert!(!runs_section_event_matches(&event, DEMO_PROJECT));
-            assert!(!trigger_runs_event_matches(&event, DEMO_PROJECT));
+            assert_that!(&(!runs_section_event_matches(&event, DEMO_PROJECT))).is_true();
+            assert_that!(&(!trigger_runs_event_matches(&event, DEMO_PROJECT))).is_true();
         }
     }
 }

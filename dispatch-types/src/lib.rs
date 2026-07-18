@@ -52,6 +52,12 @@ pub enum UiEvent {
         timestamp: String,
         project: String,
     },
+    ProjectDeleted {
+        sequence: u64,
+        timestamp: String,
+        project_id: i64,
+        project: String,
+    },
     SystemPromptChanged {
         sequence: u64,
         timestamp: String,
@@ -2244,6 +2250,7 @@ pub struct TriggerRunOutcome {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProcessSessionView {
     pub run_id: i64,
+    pub project_id: i64,
     pub project_name: String,
     pub tool_name: String,
     pub command: String,
@@ -2388,36 +2395,27 @@ pub struct AddCommentRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     #[test]
     fn automation_run_mutability_parses_displays_and_serializes() {
-        assert_eq!(
-            "mutating".parse::<AutomationRunMutability>().unwrap(),
-            AutomationRunMutability::Mutating
-        );
-        assert_eq!(
-            "read-only".parse::<AutomationRunMutability>().unwrap(),
-            AutomationRunMutability::ReadOnly
-        );
-        assert_eq!(AutomationRunMutability::ReadOnly.to_string(), "read_only");
-        assert_eq!(
-            serde_json::to_string(&AutomationRunMutability::ReadOnly).unwrap(),
-            r#""read_only""#
-        );
-        assert!("readonly-ish".parse::<AutomationRunMutability>().is_err());
+        assert_that!(&("mutating".parse::<AutomationRunMutability>().unwrap()))
+            .is_equal_to(AutomationRunMutability::Mutating);
+        assert_that!(&("read-only".parse::<AutomationRunMutability>().unwrap()))
+            .is_equal_to(AutomationRunMutability::ReadOnly);
+        assert_that!(&(AutomationRunMutability::ReadOnly.to_string())).is_equal_to("read_only");
+        assert_that!(&(serde_json::to_string(&AutomationRunMutability::ReadOnly).unwrap()))
+            .is_equal_to(r#""read_only""#);
+        assert_that!(&("readonly-ish".parse::<AutomationRunMutability>().is_err())).is_true();
     }
 
     #[test]
     fn swim_lane_item_order_has_one_canonical_wire_value() {
-        assert_eq!(
-            "title-desc".parse::<SwimLaneItemOrder>().unwrap(),
-            SwimLaneItemOrder::TitleDesc
-        );
-        assert_eq!(
-            serde_json::to_string(&SwimLaneItemOrder::UpdatedDesc).unwrap(),
-            r#""updated_desc""#
-        );
-        assert!("newest-ish".parse::<SwimLaneItemOrder>().is_err());
+        assert_that!(&("title-desc".parse::<SwimLaneItemOrder>().unwrap()))
+            .is_equal_to(SwimLaneItemOrder::TitleDesc);
+        assert_that!(&(serde_json::to_string(&SwimLaneItemOrder::UpdatedDesc).unwrap()))
+            .is_equal_to(r#""updated_desc""#);
+        assert_that!(&("newest-ish".parse::<SwimLaneItemOrder>().is_err())).is_true();
     }
 
     #[test]
@@ -2434,56 +2432,57 @@ mod tests {
                 WorkItemEventType::RelationshipDeleted,
             ),
         ] {
-            assert_eq!(storage.parse::<WorkItemEventType>().unwrap(), event_type);
-            assert_eq!(event_type.as_storage(), storage);
-            assert_eq!(
-                serde_json::to_string(&event_type).unwrap(),
-                format!(r#""{storage}""#)
-            );
+            assert_that!(&(storage.parse::<WorkItemEventType>().unwrap())).is_equal_to(event_type);
+            assert_that!(&(event_type.as_storage())).is_equal_to(storage);
+            assert_that!(&(serde_json::to_string(&event_type).unwrap()))
+                .is_equal_to(format!(r#""{storage}""#));
         }
-        assert!("item_claimedd".parse::<WorkItemEventType>().is_err());
+        assert_that!(&("item_claimedd".parse::<WorkItemEventType>().is_err())).is_true();
     }
 
     #[test]
     fn agent_run_cleanup_status_rejects_unknown_states() {
-        assert_eq!(
-            "not-applicable".parse::<AgentRunCleanupStatus>().unwrap(),
-            AgentRunCleanupStatus::NotApplicable
-        );
-        assert_eq!(AgentRunCleanupStatus::Cleaned.to_string(), "cleaned");
-        assert!("cleanup_failed".parse::<AgentRunCleanupStatus>().is_err());
+        assert_that!(&("not-applicable".parse::<AgentRunCleanupStatus>().unwrap()))
+            .is_equal_to(AgentRunCleanupStatus::NotApplicable);
+        assert_that!(&(AgentRunCleanupStatus::Cleaned.to_string())).is_equal_to("cleaned");
+        assert_that!(&("cleanup_failed".parse::<AgentRunCleanupStatus>().is_err())).is_true();
     }
 
     #[test]
     fn codex_agent_models_include_gpt_56_matrix() {
-        assert_eq!(CodexAgentModel::newest().as_storage(), "gpt-5.6-sol");
-        assert_eq!(
-            "gpt-5.6-terra".parse::<CodexAgentModel>().unwrap(),
-            CodexAgentModel::Gpt56Terra
-        );
-        assert_eq!(
-            "gpt-5.6".parse::<CodexAgentModel>().unwrap(),
-            CodexAgentModel::Gpt56
-        );
-        assert!(CodexAgentModel::Gpt56Sol.supports_reasoning_effort(AgentReasoningEffort::Max));
-        assert!(
-            !CodexAgentModel::Gpt56Sol.supports_reasoning_effort(AgentReasoningEffort::Minimal)
-        );
-        assert!(CodexAgentModel::Gpt55.supports_reasoning_effort(AgentReasoningEffort::Minimal));
-        assert!(!CodexAgentModel::Gpt55.supports_reasoning_effort(AgentReasoningEffort::Max));
+        assert_that!(&(CodexAgentModel::newest().as_storage())).is_equal_to("gpt-5.6-sol");
+        assert_that!(&("gpt-5.6-terra".parse::<CodexAgentModel>().unwrap()))
+            .is_equal_to(CodexAgentModel::Gpt56Terra);
+        assert_that!(&("gpt-5.6".parse::<CodexAgentModel>().unwrap()))
+            .is_equal_to(CodexAgentModel::Gpt56);
+        assert_that!(
+            &(CodexAgentModel::Gpt56Sol.supports_reasoning_effort(AgentReasoningEffort::Max))
+        )
+        .is_true();
+        assert_that!(
+            &(!CodexAgentModel::Gpt56Sol.supports_reasoning_effort(AgentReasoningEffort::Minimal))
+        )
+        .is_true();
+        assert_that!(
+            &(CodexAgentModel::Gpt55.supports_reasoning_effort(AgentReasoningEffort::Minimal))
+        )
+        .is_true();
+        assert_that!(
+            &(!CodexAgentModel::Gpt55.supports_reasoning_effort(AgentReasoningEffort::Max))
+        )
+        .is_true();
     }
 
     #[test]
     fn agent_reasoning_effort_accepts_max() {
-        assert_eq!(
-            "max".parse::<AgentReasoningEffort>().unwrap(),
-            AgentReasoningEffort::Max
-        );
-        assert_eq!(AgentReasoningEffort::highest(), AgentReasoningEffort::Max);
-        assert!(
-            AgentReasoningEffort::allowed_values()
-                .contains("none, minimal, low, medium, high, xhigh, max")
-        );
+        assert_that!(&("max".parse::<AgentReasoningEffort>().unwrap()))
+            .is_equal_to(AgentReasoningEffort::Max);
+        assert_that!(&(AgentReasoningEffort::highest())).is_equal_to(AgentReasoningEffort::Max);
+        assert_that!(
+            &(AgentReasoningEffort::allowed_values()
+                .contains("none, minimal, low, medium, high, xhigh, max"))
+        )
+        .is_true();
     }
 
     #[test]
@@ -2497,7 +2496,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(request.initial_labels.is_empty());
+        assert_that!(&(request.initial_labels.is_empty())).is_true();
     }
 
     #[test]
@@ -2515,10 +2514,10 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(request.initial_labels.len(), 2);
-        assert_eq!(request.initial_labels[0].key, "type");
-        assert_eq!(request.initial_labels[0].value.as_deref(), Some("feature"));
-        assert_eq!(request.initial_labels[1].key, "needs-verification");
-        assert!(request.initial_labels[1].value.is_none());
+        assert_that!(&(request.initial_labels.len())).is_equal_to(2);
+        assert_that!(&(request.initial_labels[0].key)).is_equal_to("type");
+        assert_that!(&(request.initial_labels[0].value.as_deref())).is_equal_to(Some("feature"));
+        assert_that!(&(request.initial_labels[1].key)).is_equal_to("needs-verification");
+        assert_that!(&(request.initial_labels[1].value.is_none())).is_true();
     }
 }

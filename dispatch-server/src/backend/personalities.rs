@@ -353,6 +353,7 @@ pub(crate) async fn validate_personality_delete(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
     use tempfile::TempDir;
 
@@ -393,9 +394,9 @@ mod tests {
 
         let personalities = list_personalities(&store, "demo").await.unwrap();
 
-        assert_eq!(personalities.len(), 1);
-        assert_eq!(personalities[0].name, DEFAULT_PERSONALITY_NAME);
-        assert_eq!(personalities[0].personality_description, "");
+        assert_that!(&(personalities.len())).is_equal_to(1);
+        assert_that!(&(personalities[0].name)).is_equal_to(DEFAULT_PERSONALITY_NAME);
+        assert_that!(&(personalities[0].personality_description)).is_equal_to("");
     }
 
     #[tokio::test]
@@ -422,7 +423,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("does not exist in this project"));
+        assert_that!(&(err.to_string().contains("does not exist in this project"))).is_true();
     }
 
     #[tokio::test]
@@ -435,7 +436,7 @@ mod tests {
         let default_err = validate_personality_delete(&store, &default)
             .await
             .unwrap_err();
-        assert!(default_err.to_string().contains("cannot be deleted"));
+        assert_that!(&(default_err.to_string().contains("cannot be deleted"))).is_true();
 
         let now = utc_now();
         let custom = PersonalityActiveModel {
@@ -482,6 +483,6 @@ mod tests {
         let err = validate_personality_delete(&store, &custom)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("referenced by automation trigger"));
+        assert_that!(&(err.to_string().contains("referenced by automation trigger"))).is_true();
     }
 }

@@ -320,6 +320,7 @@ fn metadata_value_text(metadata: &serde_json::Value, key: &str) -> Option<String
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use dispatch_types::{
         AgentRunCleanupStatus, AgentRunOutputKind, AgentRunStatus, AgentToolName, AuthorType,
         AutomationRunMutability, WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
@@ -450,10 +451,7 @@ mod tests {
         let item = work_item();
         let output = text_output(|output| write_item_detail(output, &item));
 
-        assert_eq!(
-            output,
-            "#42 [open] v3\nReview renderer\nclaimed by: dispatch-run-1\nlabels: priority=high, source\n\nKeep text output stable.\n"
-        );
+        assert_that!(&(output)).is_equal_to("#42 [open] v3\nReview renderer\nclaimed by: dispatch-run-1\nlabels: priority=high, source\n\nKeep text output stable.\n");
     }
 
     #[test]
@@ -474,12 +472,12 @@ mod tests {
             )
         });
 
-        assert!(output.contains(
+        assert_that!(&(output.contains(
             "#9\toutgoing\t#42 [open] -- is follow-up of --> #18 [in_progress]\trelated: #18 Original\n"
-        ));
-        assert!(output.contains(
+        ))).is_true();
+        assert_that!(&(output.contains(
             "#9\tincoming\t#42 [open] -- is follow-up of --> #18 [in_progress]\trelated: #42 Follow-up\n"
-        ));
+        ))).is_true();
     }
 
     #[test]
@@ -487,7 +485,7 @@ mod tests {
         let output =
             text_output(|output| write_relationship_view(output, &relationship(), "Updated"));
 
-        assert_eq!(output, "Updated relationship #9: #42 is follow-up of #18\n");
+        assert_that!(&(output)).is_equal_to("Updated relationship #9: #42 is follow-up of #18\n");
     }
 
     #[test]
@@ -514,14 +512,17 @@ mod tests {
 
         let output = text_output(|output| write_run_log(output, &log));
 
-        assert!(
-            output.contains("tokens: 3,734 total (1,234 input, 1,000 cached input, 2,500 output)")
-        );
-        assert!(output.contains("commit: committed abc123 (required)"));
-        assert!(output.contains("[#2 tool_call] Command\ncargo test\noutput:\n"));
-        assert!(output.contains("\"status\": \"ok\""));
-        assert!(output.contains("\ndeveloper instructions:\nFollow Dispatch policy\n"));
-        assert!(output.contains("\nuser prompt:\nRun this task\n"));
+        assert_that!(
+            &(output
+                .contains("tokens: 3,734 total (1,234 input, 1,000 cached input, 2,500 output)"))
+        )
+        .is_true();
+        assert_that!(&(output.contains("commit: committed abc123 (required)"))).is_true();
+        assert_that!(&(output.contains("[#2 tool_call] Command\ncargo test\noutput:\n"))).is_true();
+        assert_that!(&(output.contains("\"status\": \"ok\""))).is_true();
+        assert_that!(&(output.contains("\ndeveloper instructions:\nFollow Dispatch policy\n")))
+            .is_true();
+        assert_that!(&(output.contains("\nuser prompt:\nRun this task\n"))).is_true();
     }
 
     #[test]
@@ -537,6 +538,6 @@ mod tests {
 
         let output = text_output(|output| write_comments(output, &comments));
 
-        assert_eq!(output, "#5\tagent\t\tProgress\n");
+        assert_that!(&(output)).is_equal_to("#5\tagent\t\tProgress\n");
     }
 }

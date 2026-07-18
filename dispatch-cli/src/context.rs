@@ -103,6 +103,7 @@ pub(crate) fn resolve_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     fn env_from<'a>(
         entries: &'a [(&'a str, &'a str)],
@@ -130,11 +131,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(context.api_url, "http://127.0.0.1:4100");
-        assert_eq!(context.project.as_deref(), Some("demo"));
-        assert_eq!(context.agent_id.as_deref(), Some("dispatch-run-1"));
-        assert_eq!(context.agent_run_id, Some(1));
-        assert_eq!(context.claimed_item_id, Some(42));
+        assert_that!(&(context.api_url)).is_equal_to("http://127.0.0.1:4100");
+        assert_that!(&(context.project.as_deref())).is_equal_to(Some("demo"));
+        assert_that!(&(context.agent_id.as_deref())).is_equal_to(Some("dispatch-run-1"));
+        assert_that!(&(context.agent_run_id)).is_equal_to(Some(1));
+        assert_that!(&(context.claimed_item_id)).is_equal_to(Some(42));
     }
 
     #[test]
@@ -154,10 +155,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(context.api_url, "http://127.0.0.1:5000");
-        assert_eq!(context.project.as_deref(), Some("override"));
-        assert_eq!(context.agent_id.as_deref(), Some("human"));
-        assert_eq!(context.agent_run_id, Some(9));
+        assert_that!(&(context.api_url)).is_equal_to("http://127.0.0.1:5000");
+        assert_that!(&(context.project.as_deref())).is_equal_to(Some("override"));
+        assert_that!(&(context.agent_id.as_deref())).is_equal_to(Some("human"));
+        assert_that!(&(context.agent_run_id)).is_equal_to(Some(9));
     }
 
     #[test]
@@ -170,8 +171,8 @@ mod tests {
             claimed_item_id: Some(42),
         };
 
-        assert_eq!(context.item_id(Some(124)).unwrap(), 124);
-        assert_eq!(context.item_id(None).unwrap(), 42);
+        assert_that!(&(context.item_id(Some(124)).unwrap())).is_equal_to(124);
+        assert_that!(&(context.item_id(None).unwrap())).is_equal_to(42);
     }
 
     #[test]
@@ -181,9 +182,9 @@ mod tests {
             env_from(&[("DISPATCH_URL", "http://127.0.0.1:4200")]),
         )
         .unwrap();
-        assert_eq!(context.api_url, "http://127.0.0.1:4200");
+        assert_that!(&(context.api_url)).is_equal_to("http://127.0.0.1:4200");
 
         let context = resolve_context(&ContextOverrides::default(), env_from(&[])).unwrap();
-        assert_eq!(context.api_url, DEFAULT_API_URL);
+        assert_that!(&(context.api_url)).is_equal_to(DEFAULT_API_URL);
     }
 }

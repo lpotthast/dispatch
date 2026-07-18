@@ -168,6 +168,7 @@ fn model_to_view(tool: AgentToolModel) -> Result<AgentToolView> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -190,7 +191,7 @@ mod tests {
 
         let found = find_executable_in_path_var("codex", bin.as_os_str()).unwrap();
 
-        assert_eq!(found, tool);
+        assert_that!(&(found)).is_equal_to(tool);
     }
 
     #[tokio::test]
@@ -201,7 +202,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(tool.executable_path.as_deref(), Some("/bin/echo"));
-        assert_eq!(tool.effective_path.as_deref(), Some("/bin/echo"));
+        assert_that!(&(tool.executable_path.as_deref())).is_equal_to(Some("/bin/echo"));
+        assert_that!(&(tool.effective_path.as_deref())).is_equal_to(Some("/bin/echo"));
     }
 }

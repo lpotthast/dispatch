@@ -56,12 +56,12 @@ use crudkit_leptos::fields::{FieldRenderer, render_label};
 use crudkit_leptos::{
     ReactiveField,
     crud_instance_config::{
-        CrudInstanceConfig, CrudNavigationConfig, FieldRendererRegistry, Header, ItemsPerPage,
+        CrudBuiltinViewControls, CrudInstanceConfig, FieldRendererRegistry, Header, ItemsPerPage,
         ModelHandler, PageNr,
     },
+    crud_view_registry::CrudViewRegistry,
     crudkit_web::{
-        HeaderOptions, Label, reqwest_executor::NewClientPerRequestExecutor,
-        view::SerializableCrudView,
+        HeaderOptions, Label, reqwest_executor::NewClientPerRequestExecutor, view::CrudView,
     },
     prelude::*,
 };
@@ -82,10 +82,10 @@ mod swim_lanes;
 mod work_item_states;
 mod work_items;
 
-pub(crate) use agent_tools::agent_tools_panel;
-pub(crate) use automation_triggers::{AutomationTableKind, automation_triggers_crudkit_instance};
+pub(crate) use agent_tools::AgentToolsPanel;
+pub(crate) use automation_triggers::{AutomationTableKind, AutomationTriggersCrudkitInstance};
 pub(crate) use personalities::PersonalitiesPanel;
-pub(crate) use projects::projects_panel;
+pub(crate) use projects::ProjectsPanel;
 pub(crate) use swim_lanes::SwimLanesPanel;
 pub(crate) use work_item_states::WorkItemStatesPanel;
 pub(crate) use work_items::{WorkItemsPanel, work_items_crudkit_config_for_view};
@@ -95,10 +95,13 @@ pub(crate) fn selected_trigger_id_from_context(context: CrudInstanceContext) -> 
 }
 
 fn selected_entity_id_from_context(context: CrudInstanceContext) -> Option<i64> {
-    match context.view.get() {
-        SerializableCrudView::Read(id) | SerializableCrudView::Edit(id) => serializable_i64_id(&id),
-        SerializableCrudView::List | SerializableCrudView::Create => None,
-    }
+    context
+        .navigation
+        .current()
+        .get()
+        .subject
+        .as_ref()
+        .and_then(serializable_i64_id)
 }
 
 fn selected_personality_id_from_context(context: CrudInstanceContext) -> Option<i64> {

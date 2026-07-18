@@ -7,11 +7,12 @@ use crate::backend::{events, process_sessions::ProcessSessionRegistry, projects,
 
 #[derive(Clone, Debug, Default)]
 pub struct AutomationController {
-    projects: Arc<Mutex<HashMap<String, ProjectAutomation>>>,
+    projects: Arc<Mutex<HashMap<i64, ProjectAutomation>>>,
 }
 
 #[derive(Debug)]
 struct ProjectAutomation {
+    project_name: String,
     shutdown: watch::Sender<bool>,
 }
 
@@ -21,26 +22,33 @@ impl AutomationController {
     }
 
     pub async fn start_project(&self, store: &Store, project_name: String) -> Result<()> {
-        projects::get_project(store, &project_name).await?;
+        let project = projects::get_project(store, &project_name).await?;
 
         let mut projects = self.projects.lock().await;
-        if projects.contains_key(&project_name) {
+        if projects.contains_key(&project.id) {
             return Ok(());
         }
 
         let (shutdown, _) = watch::channel(false);
-        projects.insert(project_name.clone(), ProjectAutomation { shutdown });
+        projects.insert(
+            project.id,
+            ProjectAutomation {
+                project_name: project_name.clone(),
+                shutdown,
+            },
+        );
         events::publish_automation_changed(&project_name);
         Ok(())
     }
 
     pub async fn stop_project(
         &self,
+        project_id: i64,
         project_name: &str,
         sessions: &ProcessSessionRegistry,
     ) -> Result<()> {
-        let automation = self.projects.lock().await.remove(project_name);
-        sessions.cancel_project(project_name).await;
+        let automation = self.projects.lock().await.remove(&project_id);
+        sessions.cancel_project(project_id).await;
         if let Some(automation) = automation {
             let _ = automation.shutdown.send(true);
         }
@@ -50,7 +58,10 @@ impl AutomationController {
 
     pub async fn shutdown_all(&self, sessions: &ProcessSessionRegistry) {
         let projects = std::mem::take(&mut *self.projects.lock().await);
-        let project_names = projects.keys().cloned().collect::<Vec<_>>();
+        let project_names = projects
+            .values()
+            .map(|automation| automation.project_name.clone())
+            .collect::<Vec<_>>();
         for automation in projects.values() {
             let _ = automation.shutdown.send(true);
         }
@@ -60,8 +71,8 @@ impl AutomationController {
         }
     }
 
-    pub async fn is_project_running(&self, project_name: &str) -> bool {
-        self.projects.lock().await.contains_key(project_name)
+    pub async fn is_project_running(&self, project_id: i64) -> bool {
+        self.projects.lock().await.contains_key(&project_id)
     }
 
     pub async fn active_project_names(&self) -> Vec<String> {
@@ -69,8 +80,8 @@ impl AutomationController {
             .projects
             .lock()
             .await
-            .keys()
-            .cloned()
+            .values()
+            .map(|automation| automation.project_name.clone())
             .collect::<Vec<_>>();
         names.sort();
         names
@@ -80,9 +91,12 @@ impl AutomationController {
         self.projects
             .lock()
             .await
-            .iter()
-            .map(|(project_name, automation)| {
-                (project_name.clone(), automation.shutdown.subscribe())
+            .values()
+            .map(|automation| {
+                (
+                    automation.project_name.clone(),
+                    automation.shutdown.subscribe(),
+                )
             })
             .collect()
     }
@@ -90,6 +104,7 @@ impl AutomationController {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -128,22 +143,19 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(controller.is_project_running("demo").await);
-        assert_eq!(controller.active_project_names().await, vec!["demo"]);
+        assert_that!(&(controller.is_project_running(1).await)).is_true();
+        assert_that!(&(controller.active_project_names().await)).is_equal_to(vec!["demo"]);
 
         let cancellations = controller.project_cancellations().await;
         let cancellation = cancellations
             .get("demo")
             .expect("active project should expose cancellation");
-        assert!(!*cancellation.borrow());
+        assert_that!(&(!*cancellation.borrow())).is_true();
 
-        controller.stop_project("demo", &sessions).await.unwrap();
+        controller.stop_project(1, "demo", &sessions).await.unwrap();
 
-        assert!(!controller.is_project_running("demo").await);
-        assert_eq!(
-            controller.active_project_names().await,
-            Vec::<String>::new()
-        );
-        assert!(*cancellation.borrow());
+        assert_that!(&(!controller.is_project_running(1).await)).is_true();
+        assert_that!(&(controller.active_project_names().await)).is_equal_to(Vec::<String>::new());
+        assert_that!(&(*cancellation.borrow())).is_true();
     }
 }

@@ -181,6 +181,7 @@ fn checked_git_reset_args(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use dispatch_types::{AgentGitCommandPolicy, WorkspaceMode};
 
     use super::*;
@@ -208,12 +209,12 @@ mod tests {
             &policy,
         )
         .unwrap();
-        assert_eq!(args[0], "commit");
-        assert_eq!(args[1], "--no-verify");
+        assert_that!(&(args[0])).is_equal_to("commit");
+        assert_that!(&(args[1])).is_equal_to("--no-verify");
 
         let err = checked_git_args(vec!["commit".to_owned(), "--verify".to_owned()], &policy)
             .unwrap_err();
-        assert!(err.to_string().contains("--verify is blocked"));
+        assert_that!(&(err.to_string().contains("--verify is blocked"))).is_true();
     }
 
     #[test]
@@ -233,8 +234,8 @@ mod tests {
             &policy,
         )
         .unwrap();
-        assert_eq!(args[4], "commit");
-        assert_eq!(args[5], "--no-verify");
+        assert_that!(&(args[4])).is_equal_to("commit");
+        assert_that!(&(args[5])).is_equal_to("--no-verify");
 
         let err = checked_git_args(
             vec![
@@ -247,7 +248,7 @@ mod tests {
             &policy,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("blocked by Dispatch"));
+        assert_that!(&(err.to_string().contains("blocked by Dispatch"))).is_true();
     }
 
     #[test]
@@ -265,7 +266,7 @@ mod tests {
         ] {
             let err = checked_git_args(args.into_iter().map(str::to_owned).collect(), &policy)
                 .unwrap_err();
-            assert!(err.to_string().contains("blocked by Dispatch"));
+            assert_that!(&(err.to_string().contains("blocked by Dispatch"))).is_true();
         }
 
         checked_git_args(
@@ -283,10 +284,12 @@ mod tests {
             &current_branch,
         )
         .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("blocked for this Dispatch workspace mode")
-        );
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("blocked for this Dispatch workspace mode"))
+        )
+        .is_true();
 
         let worktree = git_runtime_policy(Default::default(), WorkspaceMode::GitWorktree);
         checked_git_args(
@@ -297,7 +300,7 @@ mod tests {
 
         let err = checked_git_args(vec!["reset".to_owned(), "--merge".to_owned()], &worktree)
             .unwrap_err();
-        assert!(err.to_string().contains("blocked by Dispatch"));
+        assert_that!(&(err.to_string().contains("blocked by Dispatch"))).is_true();
     }
 
     #[test]
@@ -315,7 +318,7 @@ mod tests {
 
         for command in ["add", "commit", "push", "reset"] {
             let err = checked_git_args(vec![command.to_owned()], &policy).unwrap_err();
-            assert!(err.to_string().contains("not allowed"));
+            assert_that!(&(err.to_string().contains("not allowed"))).is_true();
         }
     }
 }

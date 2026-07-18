@@ -1,6 +1,6 @@
 use crate::{
     frontend::{
-        components::{ActivePage, cached_query, encode_path, top_bar},
+        components::{ActivePage, TopBar, cached_query, encode_path},
         live_events::{item_event_matches, refetch_on_live_event},
         services::{item_service, project_cache},
     },
@@ -73,16 +73,18 @@ pub fn PageItem() -> impl IntoView {
             .map(|page| page.codex_status)
             .unwrap_or_default()
     });
-    let topbar = top_bar(
-        active_project_names,
-        Signal::derive({
-            let project = project.clone();
-            move || project.clone()
-        }),
-        ActivePage::Board,
-        Signal::derive(|| None),
-        codex_status,
-    );
+    let topbar = view! {
+        <TopBar
+            active_project_names
+            selected_project=Signal::derive({
+                let project = project.clone();
+                move || project.clone()
+            })
+            active=ActivePage::Board
+            automation=Signal::derive(|| None)
+            codex_status
+        />
+    };
     let board_href = project
         .as_deref()
         .map(|project| format!("/?project={}", encode_path(project)))
@@ -99,7 +101,9 @@ pub fn PageItem() -> impl IntoView {
                     result
                         .value
                         .get()
-                        .map(|page| item_content(page, result.refresh, interactive))
+                        .map(|page| view! {
+                            <ItemContent page refresh=result.refresh interactive/>
+                        }.into_any())
                         .unwrap_or_else(|| {
                         view! {
                             <section class="item-header">
@@ -122,7 +126,7 @@ mod content {
         frontend::{
             ItemPage,
             components::{
-                WorkItemStatesContext, claim_badge, encode_path, format_label, item_href,
+                WorkItemStatesContext, claim_badge, encode_path, item_href,
                 provide_work_item_states_context, run_token_usage_label, state_label,
             },
             crudkit::{crudkit_i64_id, work_items_crudkit_config_for_view},
@@ -139,17 +143,65 @@ mod content {
     };
     use crudkit_leptos::crud_instance::CrudInstanceContext;
     use crudkit_leptos::{
-        crud_instance_config::CrudNavigationConfig, crudkit_web::view::SerializableCrudView,
-        prelude::*,
+        crud_instance_config::CrudBuiltinViewControls, crudkit_web::view::CrudView, prelude::*,
     };
     use leptos::prelude::*;
     use leptos_router::{NavigateOptions, hooks::use_navigate};
 
-    pub(crate) fn item_content(
+    #[component]
+    pub(crate) fn ItemContent(
         page: ItemPage,
         refresh: Callback<()>,
         interactive: ReadSignal<bool>,
-    ) -> AnyView {
+    ) -> impl IntoView {
+        let project = page.project.clone();
+        let header_title = format!("#{} {}", page.item.id, page.item.title);
+        let board_href = format!("/?project={}", encode_path(&project));
+        let navigate = use_navigate();
+        let board_href_for_exit = board_href.clone();
+        let exit_to_board = Callback::new(move |()| {
+            navigate(&board_href_for_exit, NavigateOptions::default());
+        });
+        let (item_editor_context, set_item_editor_context) = signal(None::<CrudInstanceContext>);
+        view! {
+            <section class="item-header">
+                <button
+                    type="button"
+                    class="link-button item-board-link"
+                    on:click=move |_| {
+                        if let Some(context) = item_editor_context.get_untracked() {
+                            context.navigation.return_from_current();
+                        } else {
+                            exit_to_board.run(());
+                        }
+                    }
+                >
+                    "Board"
+                </button>
+                <h1>{header_title}</h1>
+            </section>
+            <ItemDetailContent
+                page
+                refresh
+                interactive
+                on_return=exit_to_board
+                on_context_created=Callback::new(move |context| {
+                    set_item_editor_context.set(Some(context));
+                })
+                on_run_click=None
+            />
+        }
+    }
+
+    #[component]
+    pub(crate) fn ItemDetailContent(
+        page: ItemPage,
+        refresh: Callback<()>,
+        interactive: ReadSignal<bool>,
+        on_return: Callback<()>,
+        on_context_created: Callback<CrudInstanceContext>,
+        on_run_click: Option<Callback<(leptos::ev::MouseEvent, i64)>>,
+    ) -> impl IntoView {
         let ItemPage {
             projects: _,
             active_project_names: _,
@@ -164,42 +216,35 @@ mod content {
             codex_status: _,
         } = page;
         provide_work_item_states_context(work_item_states);
-        let board_href = format!("/?project={}", encode_path(&project));
-        let header_title = format!("#{} {}", item.id, item.title);
         let item_state_display = state_label(&item).to_owned();
         let item_project_id = item.project_id;
         let item_id = item.id;
-        let (item_editor_context, set_item_editor_context) = signal(None::<CrudInstanceContext>);
-        let navigate = use_navigate();
-        let board_href_for_exit = board_href.clone();
-        let exit_to_board = Callback::new(move |()| {
-            navigate(&board_href_for_exit, NavigateOptions::default());
-        });
-        let exit_to_board_for_link = exit_to_board;
         let editor_default_create_state = Signal::derive(|| DEFAULT_STATE_LABEL.to_owned());
-        let item_detail_navigation = CrudNavigationConfig {
+        let item_detail_controls = CrudBuiltinViewControls {
             show_delete: true,
-            ..CrudNavigationConfig::embedded_single_entity()
+            ..CrudBuiltinViewControls::embedded_single_entity()
         };
+        let initial_view = CrudView::edit(crudkit_i64_id(item_id));
         let mut item_detail_config = work_items_crudkit_config_for_view(
             api_base_url,
             item_project_id,
-            SerializableCrudView::Edit(crudkit_i64_id(item_id)),
-            item_detail_navigation,
+            initial_view,
+            item_detail_controls,
             editor_default_create_state,
             None,
             Signal::derive(Vec::<ProjectLabelView>::new),
         );
         item_detail_config.elements = without_crudkit_field(item_detail_config.elements, "id");
+        let instance_created = Callback::new(move |context: CrudInstanceContext| {
+            context.navigation.return_with(move || on_return.run(()));
+            on_context_created.run(context);
+        });
         let item_editor = view! {
             <div class="crudkit-item-detail" data-crudkit-leptos="work-item-detail">
                 <CrudInstance
                     name="work-item-detail"
                     config=item_detail_config
-                    on_exit=exit_to_board
-                    on_context_created=Callback::new(move |context| {
-                        set_item_editor_context.set(Some(context));
-                    })
+                    on_context_created=instance_created
                 />
             </div>
         };
@@ -220,8 +265,7 @@ mod content {
             },
         );
         let comment_pending = comment_mutation.pending();
-        let comment_submit = move |event: leptos::ev::SubmitEvent| {
-            event.prevent_default();
+        let comment_click = move |_| {
             if comment_pending.get_untracked() {
                 return;
             }
@@ -251,7 +295,18 @@ mod content {
                     "/projects/{}/automation/runs/{run_id}/log",
                     encode_path(&project)
                 );
-                view! { <a href=href>"run #" {run_id}</a> }
+                view! {
+                    <a
+                        href=href
+                        on:click=move |event| {
+                            if let Some(on_run_click) = on_run_click {
+                                on_run_click.run((event, run_id));
+                            }
+                        }
+                    >
+                        "run #" {run_id}
+                    </a>
+                }
             });
             let automation_link = origin.trigger_name.clone().map(|name| {
                 let href = format!("/automation?project={}", encode_path(&project));
@@ -278,7 +333,9 @@ mod content {
                 </section>
             }
         });
-        let automation_run_views = automation_runs_view(&project, automation_runs);
+        let automation_run_views = view! {
+            <AutomationRuns project=project.clone() runs=automation_runs on_run_click/>
+        };
         let comment_views = comments
             .into_iter()
             .map(|comment| {
@@ -295,70 +352,73 @@ mod content {
                 }
             })
             .collect::<Vec<_>>();
-        let labels = item_labels_view(&project, &item, label_suggestions, refresh, interactive);
-        let relationship_views =
-            item_relationships_view(&project, &item, relationships, refresh, interactive);
+        let labels = view! {
+            <ItemLabels
+                project=project.clone()
+                item=item.clone()
+                suggestions=label_suggestions
+                refresh
+                interactive
+            />
+        };
+        let relationship_views = view! {
+            <ItemRelationships
+                project=project.clone()
+                item=item.clone()
+                relationships
+                refresh
+                interactive
+            />
+        };
 
         view! {
-            <>
-                    <section class="item-header">
+            <div class="item-detail-content">
+                <section class="item-meta">
+                    <span>{item_state_display}</span>
+                    <span>"v" {item.version}</span>
+                    {claim}
+                    {finished}
+                    {work_group}
+                </section>
+                <section class="item-settings panel">
+                    <h2>"Item details"</h2>
+                    {item_editor}
+                </section>
+                {item_origin}
+                {labels}
+                {relationship_views}
+                {automation_run_views}
+                <section class="comments">
+                    <h2>"Comments"</h2>
+                    {comment_views}
+                    <div class="comment-add-controls">
+                        <input
+                            name="author_name"
+                            placeholder="Your name"
+                            prop:value=move || comment_author.get()
+                            on:input=move |event| {
+                                set_comment_author.set(event_target_value(&event));
+                            }
+                        />
+                        <textarea
+                            name="body"
+                            placeholder="Comment"
+                            required
+                            prop:value=move || comment_body.get()
+                            on:input=move |event| {
+                                set_comment_body.set(event_target_value(&event));
+                            }
+                        ></textarea>
                         <button
                             type="button"
-                            class="link-button item-board-link"
-                            on:click=move |_| {
-                                if let Some(context) = item_editor_context.get_untracked() {
-                                    context.request_leave();
-                                } else {
-                                    exit_to_board_for_link.run(());
-                                }
-                            }
+                            disabled=move || !interactive.get() || comment_pending.get()
+                            on:click=comment_click
                         >
-                            "Board"
+                            "Add comment"
                         </button>
-                        <h1>{header_title}</h1>
-                    </section>
-                    <section class="item-meta">
-                        <span>{item_state_display}</span>
-                        <span>"v" {item.version}</span>
-                        {claim}
-                        {finished}
-                        {work_group}
-                    </section>
-                    <section class="item-settings panel">
-                        <h2>"Item details"</h2>
-                        {item_editor}
-                    </section>
-                    {item_origin}
-                    {labels}
-                    {relationship_views}
-                    {automation_run_views}
-                    <section class="comments">
-                        <h2>"Comments"</h2>
-                        {comment_views}
-                        <form class="comment-add-form" on:submit=comment_submit>
-                            <input
-                                name="author_name"
-                                placeholder="Your name"
-                                prop:value=move || comment_author.get()
-                                on:input=move |event| {
-                                    set_comment_author.set(event_target_value(&event));
-                                }
-                            />
-                            <textarea
-                                name="body"
-                                placeholder="Comment"
-                                required
-                                prop:value=move || comment_body.get()
-                                on:input=move |event| {
-                                    set_comment_body.set(event_target_value(&event));
-                                }
-                            ></textarea>
-                            <button disabled=move || !interactive.get() || comment_pending.get()>
-                                "Add comment"
-                            </button>
-                        </form>
-                    </section>
-            </>
+                    </div>
+                </section>
+            </div>
         }
         .into_any()
     }
@@ -458,9 +518,10 @@ mod content {
         (run_id > 0).then_some(run_id)
     }
 
-    fn item_relationships_view(
-        project: &str,
-        item: &WorkItemView,
+    #[component]
+    fn ItemRelationships(
+        project: String,
+        item: WorkItemView,
         relationships: Vec<WorkItemRelationshipListEntry>,
         refresh: Callback<()>,
         interactive: ReadSignal<bool>,
@@ -468,7 +529,7 @@ mod content {
         let (target_item_id, set_target_item_id) = signal(String::new());
         let (relationship_kind, set_relationship_kind) = signal(String::new());
         let service = item_service();
-        let project_for_add = project.to_owned();
+        let project_for_add = project.clone();
         let item_id = item.id;
         let add_mutation = mutation_action(
             refresh,
@@ -483,8 +544,7 @@ mod content {
             },
         );
         let add_pending = add_mutation.pending();
-        let add_submit = move |event: leptos::ev::SubmitEvent| {
-            event.prevent_default();
+        let add_click = move |_| {
             if add_pending.get_untracked() {
                 return;
             }
@@ -498,7 +558,17 @@ mod content {
         };
         let rows = relationships
             .into_iter()
-            .map(|entry| item_relationship_row(project, item.id, entry, refresh, interactive))
+            .map(|entry| {
+                view! {
+                    <ItemRelationshipRow
+                        project=project.clone()
+                        item_id=item.id
+                        entry
+                        refresh
+                        interactive
+                    />
+                }
+            })
             .collect::<Vec<_>>();
         let empty = rows.is_empty().then(|| {
             view! { <p class="muted">"No relationships"</p> }
@@ -511,7 +581,7 @@ mod content {
                     {empty}
                     {rows}
                 </div>
-                <form class="relationship-add-form" on:submit=add_submit>
+                <div class="relationship-add-controls">
                     <input
                         type="number"
                         min="1"
@@ -532,17 +602,22 @@ mod content {
                             set_relationship_kind.set(event_target_value(&event));
                         }
                     />
-                    <button disabled=move || !interactive.get() || add_pending.get()>
+                    <button
+                        type="button"
+                        disabled=move || !interactive.get() || add_pending.get()
+                        on:click=add_click
+                    >
                         "Add relationship"
                     </button>
-                </form>
+                </div>
             </section>
         }
         .into_any()
     }
 
-    fn item_relationship_row(
-        project: &str,
+    #[component]
+    fn ItemRelationshipRow(
+        project: String,
         item_id: i64,
         entry: WorkItemRelationshipListEntry,
         refresh: Callback<()>,
@@ -557,8 +632,8 @@ mod content {
         let service = item_service();
         let delete_service = service.clone();
         let relationship_id = relationship.id;
-        let project_for_update = project.to_owned();
-        let project_for_delete = project.to_owned();
+        let project_for_update = project.clone();
+        let project_for_delete = project.clone();
         let update_mutation = mutation_action(
             refresh,
             || {},
@@ -573,8 +648,7 @@ mod content {
             },
         );
         let update_pending = update_mutation.pending();
-        let update_submit = move |event: leptos::ev::SubmitEvent| {
-            event.prevent_default();
+        let update_click = move |_| {
             if !update_pending.get_untracked() {
                 update_mutation.dispatch(UpdateWorkItemRelationshipRequest {
                     kind: kind.get_untracked(),
@@ -595,16 +669,15 @@ mod content {
             },
         );
         let delete_pending = delete_mutation.pending();
-        let delete_submit = move |event: leptos::ev::SubmitEvent| {
-            event.prevent_default();
+        let delete_click = move |_| {
             if !delete_pending.get_untracked() {
                 delete_mutation.dispatch(());
             }
         };
         let direction = entry.direction.to_string();
-        let related_href = item_href(project, related.id);
-        let source_link = relationship_endpoint_link(project, &relationship.source);
-        let target_link = relationship_endpoint_link(project, &relationship.target);
+        let related_href = item_href(&project, related.id);
+        let source = relationship.source.clone();
+        let target = relationship.target.clone();
         let related_state = relationship_item_state_label(&related).to_owned();
 
         view! {
@@ -613,42 +686,51 @@ mod content {
                     <span class="relationship-direction">{direction}</span>
                     <strong>{relationship.kind.clone()}</strong>
                     <p>
-                        {source_link}
+                        <RelationshipEndpointLink project=project.clone() item=source/>
                         <span class="relationship-kind">" -- " {relationship.kind.clone()} " --> "</span>
-                        {target_link}
+                        <RelationshipEndpointLink project=project.clone() item=target/>
                     </p>
                     <a class="relationship-related" href=related_href>
                         "#"{related.id} " [" {related_state} "] " {related.title}
                     </a>
                 </div>
-                <form class="relationship-kind-form" on:submit=update_submit>
+                <div class="relationship-kind-controls">
                     <input
                         name="kind"
                         required
                         prop:value=move || kind.get()
                         on:input=move |event| set_kind.set(event_target_value(&event))
                     />
-                    <button disabled=move || !interactive.get() || update_pending.get()>"Update"</button>
-                </form>
-                <form class="relationship-delete-form" on:submit=delete_submit>
                     <button
+                        type="button"
+                        disabled=move || !interactive.get() || update_pending.get()
+                        on:click=update_click
+                    >
+                        "Update"
+                    </button>
+                </div>
+                <div class="relationship-delete-controls">
+                    <button
+                        type="button"
                         class="danger"
                         disabled=move || !interactive.get() || delete_pending.get()
+                        on:click=delete_click
                     >
                         "Delete"
                     </button>
-                </form>
+                </div>
             </article>
         }
     }
 
-    fn relationship_endpoint_link(
-        project: &str,
-        item: &WorkItemRelationshipItemSummary,
-    ) -> impl IntoView + 'static + use<> {
-        let href = item_href(project, item.id);
-        let state = relationship_item_state_label(item).to_owned();
-        let title = item.title.clone();
+    #[component]
+    fn RelationshipEndpointLink(
+        project: String,
+        item: WorkItemRelationshipItemSummary,
+    ) -> impl IntoView {
+        let href = item_href(&project, item.id);
+        let state = relationship_item_state_label(&item).to_owned();
+        let title = item.title;
         let id = item.id;
         view! {
             <a href=href>"#"{id} " [" {state} "] " {title}</a>
@@ -659,9 +741,10 @@ mod content {
         item.state.as_deref().unwrap_or("(no state)")
     }
 
-    fn item_labels_view(
-        project: &str,
-        item: &WorkItemView,
+    #[component]
+    fn ItemLabels(
+        project: String,
+        item: WorkItemView,
         suggestions: Vec<ProjectLabelView>,
         refresh: Callback<()>,
         interactive: ReadSignal<bool>,
@@ -675,7 +758,7 @@ mod content {
         let (label_key, set_label_key) = signal(String::new());
         let (label_value, set_label_value) = signal(String::new());
         let service = item_service();
-        let project_for_add = project.to_owned();
+        let project_for_add = project.clone();
         let item_id = item.id;
         let item_version = item.version;
         let add_mutation = mutation_action(
@@ -695,8 +778,7 @@ mod content {
             },
         );
         let add_pending = add_mutation.pending();
-        let add_submit = move |event: leptos::ev::SubmitEvent| {
-            event.prevent_default();
+        let add_click = move |_| {
             if !add_pending.get_untracked() {
                 add_mutation.dispatch(CreateWorkItemLabelRequest {
                     key: label_key.get_untracked(),
@@ -708,7 +790,18 @@ mod content {
             .labels
             .iter()
             .cloned()
-            .map(|label| item_label_row(project, item, label, state_options, refresh, interactive))
+            .map(|label| {
+                view! {
+                    <ItemLabelRow
+                        project=project.clone()
+                        item=item.clone()
+                        label
+                        work_item_states=state_options
+                        refresh
+                        interactive
+                    />
+                }
+            })
             .collect::<Vec<_>>();
 
         view! {
@@ -717,7 +810,7 @@ mod content {
                 <datalist id="label-key-suggestions">{suggestion_options}</datalist>
                 <datalist id="state-value-suggestions">{state_suggestion_options}</datalist>
                 <div class="label-list">{rows}</div>
-                <form class="label-add-form" on:submit=add_submit>
+                <div class="label-add-controls">
                     <input
                         name="key"
                         list="label-key-suggestions"
@@ -733,16 +826,23 @@ mod content {
                         prop:value=move || label_value.get()
                         on:input=move |event| set_label_value.set(event_target_value(&event))
                     />
-                    <button disabled=move || !interactive.get() || add_pending.get()>"Add label"</button>
-                </form>
+                    <button
+                        type="button"
+                        disabled=move || !interactive.get() || add_pending.get()
+                        on:click=add_click
+                    >
+                        "Add label"
+                    </button>
+                </div>
             </section>
         }
         .into_any()
     }
 
-    fn item_label_row(
-        project: &str,
-        item: &WorkItemView,
+    #[component]
+    fn ItemLabelRow(
+        project: String,
+        item: WorkItemView,
         label: WorkItemLabelView,
         work_item_states: ReadSignal<Vec<WorkItemStateView>>,
         refresh: Callback<()>,
@@ -750,16 +850,16 @@ mod content {
     ) -> impl IntoView + 'static {
         let is_state = label.key == STATE_LABEL_KEY;
         let initial_value = label.value.clone().unwrap_or_default();
-        let rendered = format_label(&label.key, label.value.as_deref());
         let can_delete = label.key != STATE_LABEL_KEY;
         let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
         let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;
+        let row_key = label.key.clone();
         let (key, set_key) = signal(label.key.clone());
         let (value, set_value) = signal(initial_value);
         let service = item_service();
         let delete_service = service.clone();
-        let project_for_update = project.to_owned();
-        let project_for_delete = project.to_owned();
+        let project_for_update = project.clone();
+        let project_for_delete = project;
         let item_id = item.id;
         let item_version = item.version;
         let label_id = label.id;
@@ -792,8 +892,7 @@ mod content {
             },
         );
         let update_pending = update_mutation.pending();
-        let update_submit = move |event: leptos::ev::SubmitEvent| {
-            event.prevent_default();
+        let update_click = move |_| {
             if !update_pending.get_untracked() {
                 update_mutation.dispatch((key.get_untracked(), value.get_untracked()));
             }
@@ -812,70 +911,87 @@ mod content {
             },
         );
         let delete_pending = delete_mutation.pending();
-        let delete_submit = move |event: leptos::ev::SubmitEvent| {
-            event.prevent_default();
+        let delete_click = move |_| {
             if !delete_pending.get_untracked() {
                 delete_mutation.dispatch(());
             }
         };
 
         view! {
-            <article class="label-row">
-                <span
-                    class="label-chip"
-                    class:blocked=blocked
-                    class:feedback=feedback_requested
-                >
-                    {rendered}
-                </span>
-                <form
+            <article
+                class="label-row"
+                class:blocked=blocked
+                class:feedback=feedback_requested
+                data-label-key=row_key
+            >
+                <div
                     class=if is_state {
-                        "label-update-form state-label-form"
+                        "label-update-controls state-label-controls"
                     } else {
-                        "label-update-form"
+                        "label-update-controls"
                     }
-                    on:submit=update_submit
                 >
                     {if is_state {
                         view! {
-                            <select
-                                name="value"
-                                class="state-label-select"
-                                required
-                                on:change=move |event| set_value.set(event_target_value(&event))
-                            >
-                                {move || state_label_option_views(work_item_states.get(), value.get())}
-                            </select>
+                            <div class="label-fixed-key">
+                                <span>"Key"</span>
+                                <strong>"State"</strong>
+                            </div>
+                            <label class="label-field">
+                                <span>"Value"</span>
+                                <select
+                                    name="value"
+                                    class="state-label-select"
+                                    required
+                                    on:change=move |event| set_value.set(event_target_value(&event))
+                                >
+                                    {move || state_label_option_views(work_item_states.get(), value.get())}
+                                </select>
+                            </label>
                         }
                         .into_any()
                     } else {
                         view! {
-                            <input
-                                name="key"
-                                required
-                                prop:value=move || key.get()
-                                on:input=move |event| set_key.set(event_target_value(&event))
-                            />
-                            <input
-                                name="value"
-                                prop:value=move || value.get()
-                                on:input=move |event| set_value.set(event_target_value(&event))
-                            />
+                            <label class="label-field">
+                                <span>"Key"</span>
+                                <input
+                                    name="key"
+                                    required
+                                    prop:value=move || key.get()
+                                    on:input=move |event| set_key.set(event_target_value(&event))
+                                />
+                            </label>
+                            <label class="label-field">
+                                <span>"Value"</span>
+                                <input
+                                    name="value"
+                                    prop:value=move || value.get()
+                                    on:input=move |event| set_value.set(event_target_value(&event))
+                                />
+                            </label>
                         }
                         .into_any()
                     }}
-                    <button disabled=move || !interactive.get() || update_pending.get()>"Update"</button>
-                </form>
-                {can_delete.then(|| view! {
-                    <form class="label-delete-form" on:submit=delete_submit>
+                    <div class="label-row-actions">
                         <button
-                            class="danger"
-                            disabled=move || !interactive.get() || delete_pending.get()
+                            type="button"
+                            disabled=move || !interactive.get() || update_pending.get()
+                            on:click=update_click
                         >
-                            "Delete"
+                            "Update"
                         </button>
-                    </form>
-                })}
+                        {can_delete.then(move || view! {
+                            <button
+                                type="button"
+                                class="danger label-delete-button"
+                                disabled=move || !interactive.get() || delete_pending.get()
+                                on:click=delete_click
+                            >
+                                "Delete"
+                            </button>
+                        })}
+                    </div>
+                </div>
             </article>
         }
     }
@@ -941,7 +1057,12 @@ mod content {
             .collect()
     }
 
-    fn automation_runs_view(project: &str, runs: Vec<AgentRunView>) -> AnyView {
+    #[component]
+    fn AutomationRuns(
+        project: String,
+        runs: Vec<AgentRunView>,
+        on_run_click: Option<Callback<(leptos::ev::MouseEvent, i64)>>,
+    ) -> AnyView {
         if runs.is_empty() {
             return ().into_any();
         }
@@ -951,13 +1072,22 @@ mod content {
             .map(|run| {
                 let href = format!(
                     "/projects/{}/automation/runs/{}/log",
-                    encode_path(project),
+                    encode_path(&project),
                     run.id
                 );
                 let tokens = run.token_usage.map(run_token_usage_label);
                 view! {
                     <li>
-                        <a href=href>"#" {run.id}</a>
+                        <a
+                            href=href
+                            on:click=move |event| {
+                                if let Some(on_run_click) = on_run_click {
+                                    on_run_click.run((event, run.id));
+                                }
+                            }
+                        >
+                            "#" {run.id}
+                        </a>
                         " · "
                         {run.status.to_string()}
                         " · "
@@ -987,21 +1117,22 @@ mod content {
     #[cfg(test)]
     mod tests {
         use super::infer_dispatch_run_id;
+        use assertr::prelude::*;
 
         #[test]
         fn infers_run_id_from_dispatch_agent_name() {
-            assert_eq!(infer_dispatch_run_id("dispatch-run-60"), Some(60));
+            assert_that!(&(infer_dispatch_run_id("dispatch-run-60"))).is_equal_to(Some(60));
         }
 
         #[test]
         fn ignores_non_run_agent_names() {
-            assert_eq!(infer_dispatch_run_id("codex"), None);
-            assert_eq!(infer_dispatch_run_id("dispatch-run-"), None);
-            assert_eq!(infer_dispatch_run_id("dispatch-run-0"), None);
-            assert_eq!(infer_dispatch_run_id("dispatch-run-+60"), None);
-            assert_eq!(infer_dispatch_run_id("dispatch-run-abc"), None);
+            assert_that!(&(infer_dispatch_run_id("codex"))).is_equal_to(None);
+            assert_that!(&(infer_dispatch_run_id("dispatch-run-"))).is_equal_to(None);
+            assert_that!(&(infer_dispatch_run_id("dispatch-run-0"))).is_equal_to(None);
+            assert_that!(&(infer_dispatch_run_id("dispatch-run-+60"))).is_equal_to(None);
+            assert_that!(&(infer_dispatch_run_id("dispatch-run-abc"))).is_equal_to(None);
         }
     }
 }
 
-pub(crate) use content::{infer_dispatch_run_id, item_content};
+pub(crate) use content::{ItemContent, ItemDetailContent, infer_dispatch_run_id};

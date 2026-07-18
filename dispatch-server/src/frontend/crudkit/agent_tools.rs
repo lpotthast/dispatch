@@ -1,24 +1,31 @@
 use super::*;
+use crate::frontend::services::codex_service;
+use crudkit_leptos::crud_action::ResourceActionInput;
+use leptonic::components::prelude::ButtonColor;
 
-pub(crate) fn agent_tools_panel(api_base_url: String) -> impl IntoView + 'static {
+#[component]
+pub(crate) fn AgentToolsPanel(
+    api_base_url: String,
+    on_refreshed: Callback<()>,
+) -> impl IntoView + 'static {
     view! {
         <section class="app-tools panel">
             <div class="panel-heading">
                 <h2>"Codex app-server"</h2>
                 <p class="muted">"Dispatch requires Codex app-server for automation."</p>
             </div>
-            <form method="post" action="/agent-tools/discover">
-                <input type="hidden" name="return_to" value="/projects"/>
-                <button>"Check Codex"</button>
-            </form>
             <div class="crudkit-agent-tools" data-crudkit-leptos="agent-tools">
-                {agent_tools_crudkit_instance(api_base_url)}
+                <AgentToolsCrudkitInstance api_base_url on_refreshed/>
             </div>
         </section>
     }
 }
 
-fn agent_tools_crudkit_instance(api_base_url: String) -> impl IntoView + 'static {
+#[component]
+fn AgentToolsCrudkitInstance(
+    api_base_url: String,
+    on_refreshed: Callback<()>,
+) -> impl IntoView + 'static {
     let (context, set_context) = signal(None::<CrudInstanceContext>);
     reload_crudkit_on_live_event(context, |event| {
         matches!(
@@ -26,20 +33,52 @@ fn agent_tools_crudkit_instance(api_base_url: String) -> impl IntoView + 'static
             UiEvent::AgentToolChanged { .. } | UiEvent::CodexStatusChanged { .. }
         )
     });
+    let config = agent_tools_crudkit_config(api_base_url, on_refreshed);
 
     view! {
         <CrudInstance
             name="agent-tools"
-            config=agent_tools_crudkit_config(api_base_url)
+            config
             on_context_created=Callback::new(move |context| set_context.set(Some(context)))
         />
     }
 }
 
-fn agent_tools_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
+fn agent_tools_crudkit_config(
+    api_base_url: String,
+    on_refreshed: Callback<()>,
+) -> CrudInstanceConfig {
+    let service = codex_service();
+    let check_codex = CrudAction {
+        id: "check-codex",
+        name: "Check Codex".to_owned(),
+        icon: Some(icondata::BsArrowRepeat),
+        button_color: ButtonColor::Secondary,
+        action: Callback::new(move |input: ResourceActionInput| {
+            let service = service.clone();
+            leptos::task::spawn_local(async move {
+                let outcome = match service.discover_agent_tools().await {
+                    Ok(()) => {
+                        on_refreshed.run(());
+                        Ok(CrudActionAftermath {
+                            show_toast: None,
+                            reload_data: true,
+                        })
+                    }
+                    Err(_) => Err(CrudActionAftermath {
+                        show_toast: None,
+                        reload_data: false,
+                    }),
+                };
+                input.and_then.run(outcome);
+            });
+        }),
+        view: None,
+    };
+
     CrudInstanceConfig {
         api_base_url,
-        view: SerializableCrudView::List,
+        initial_view: CrudView::table(),
         list_columns: vec![
             Header::showing(
                 ReadAgentToolField::Id,
@@ -119,9 +158,10 @@ fn agent_tools_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
         resource_name: CrudAgentToolResource::resource_name().to_owned(),
         reqwest_executor: Arc::new(NewClientPerRequestExecutor),
         model_handler: ModelHandler::new::<CreateAgentTool, ReadAgentTool, AgentTool>(),
-        actions: vec![],
+        actions: vec![check_codex],
         entity_actions: vec![],
-        navigation: CrudNavigationConfig::default(),
+        builtin_view_controls: CrudBuiltinViewControls::default(),
+        view_registry: CrudViewRegistry::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder().build(),
         update_field_renderer: FieldRendererRegistry::builder().build(),

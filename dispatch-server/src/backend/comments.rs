@@ -90,6 +90,7 @@ pub async fn list_comments(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -166,11 +167,11 @@ mod tests {
         let comments = list_comments(&store, "demo", item_id).await.unwrap();
         let item = get_item(&store, "demo", item_id).await.unwrap();
 
-        assert_eq!(comments.len(), 2);
-        assert_eq!(comments[0].body, "First");
-        assert_eq!(comments[1].author_type, AuthorType::Agent);
-        assert_eq!(item.comment_count, 2);
-        assert_eq!(item.version, 3);
+        assert_that!(&(comments.len())).is_equal_to(2);
+        assert_that!(&(comments[0].body)).is_equal_to("First");
+        assert_that!(&(comments[1].author_type)).is_equal_to(AuthorType::Agent);
+        assert_that!(&(item.comment_count)).is_equal_to(2);
+        assert_that!(&(item.version)).is_equal_to(3);
 
         let events = list_events(&store, "demo", Some(item_id), None)
             .await
@@ -180,14 +181,17 @@ mod tests {
             .filter(|event| event.event_type == WorkItemEventType::CommentAdded)
             .collect::<Vec<_>>();
 
-        assert_eq!(comment_events.len(), 2);
-        assert!(comment_events.iter().all(|event| {
-            event.work_item_id == Some(item_id)
-                && event.body == "Added comment"
-                && event.actor_type.is_none()
-                && event.actor_id.is_none()
-                && event.agent_run_id.is_none()
-        }));
+        assert_that!(&(comment_events.len())).is_equal_to(2);
+        assert_that!(
+            &(comment_events.iter().all(|event| {
+                event.work_item_id == Some(item_id)
+                    && event.body == "Added comment"
+                    && event.actor_type.is_none()
+                    && event.actor_id.is_none()
+                    && event.agent_run_id.is_none()
+            }))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -207,6 +211,6 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("project 'missing' does not exist"));
+        assert_that!(&(err.to_string().contains("project 'missing' does not exist"))).is_true();
     }
 }

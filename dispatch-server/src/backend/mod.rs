@@ -38,6 +38,7 @@ pub(crate) mod migrations;
 pub(crate) mod page_data;
 pub(crate) mod personalities;
 pub(crate) mod process_sessions;
+pub(crate) mod project_deletion;
 pub(crate) mod projects;
 pub(crate) mod prompt_text;
 pub(crate) mod relationship_mutations;

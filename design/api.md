@@ -142,13 +142,19 @@ CrudKit-generated routes are mounted under `/api` for ordinary admin resources:
 
 CrudKit is not used for custom workflow authority. Admin CRUD can inspect and maintain records, but workflow transitions should use the custom endpoints so server services apply Dispatch rules consistently.
 
+Project delete is an exception to ordinary row-level CRUD implementation: CrudKit and the direct
+operator handler both delegate to the authoritative project-deletion lifecycle. A successful
+response means automation has stopped, active runs have been cancelled and reaped, Dispatch-owned
+runtime artifacts have been removed, and the database cascade has completed. Cleanup or shutdown
+failure rejects deletion without removing the project row.
+
 Automation rule CRUD exposes the explicit run mutability and selected personality for work-consuming rules. Create and update requests validate storage values `mutating` and `read_only`; new custom rules default to `mutating` unless the operator chooses read-only. Consume-work create and update requests default a missing personality to the project `Default` personality and reject missing or cross-project personality references. Existing rules migrated from older schemas remain `mutating` until edited.
 
 Personality CRUD is project-scoped. Create and update requests trim and require `name`, keep `personality_description` as free-form text, and enforce unique names within a project. Delete requests reject `Default` and reject any personality referenced by an automation rule.
 
-## UI Form Endpoints
+## Operator Mutation Endpoints
 
-The Leptos UI uses server form handlers for operator actions such as:
+The server exposes operator mutation handlers for actions such as:
 
 - creating, updating, and deleting projects;
 - updating project prompts, memory, and settings;
@@ -165,13 +171,14 @@ The Leptos UI uses server form handlers for operator actions such as:
 - discovering agent tools;
 - picking folders on the local system.
 
-These endpoints are UI integration points, not the stable agent-facing API.
+These endpoints are UI integration points, not the stable agent-facing API. The hydrated Leptos
+frontend does not submit HTML forms to them. Dispatch-owned controls call typed methods on focused
+frontend services, whose production implementations use server functions and invoke the same
+authoritative backend services as the direct handlers.
 
 Direct automation starts may include an explicit mutability value. Omitted mutability defaults to `mutating`; work-producing evaluations ignore run mutability because they do not launch agents. Automation status responses include aggregate running runs plus separate mutating/read-only running counts and the effective mutating allowance.
 
-Hydrated UI controls that save data in the background may post to these same form handlers with an internal background-request marker. Those requests should return a non-navigating success response while ordinary form posts keep their redirect fallback.
-
-Project system prompt form writes create `SystemPromptChanged` events containing the full post-write prompt snapshot. System prompt history compaction deletes only old prompt events; the current project system prompt remains on the project record.
+Project system prompt writes create `SystemPromptChanged` events containing the full post-write prompt snapshot. System prompt history compaction deletes only old prompt events; the current project system prompt remains on the project record.
 
 ## Errors
 

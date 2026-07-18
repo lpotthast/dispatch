@@ -1,15 +1,15 @@
 use crate::{
     frontend::{
         components::{
-            ActivePage, cached_query, encode_path, recorded_field, run_commit_outcome_label,
-            run_origin_label, run_output_view, run_result_summary, run_status_class,
-            run_token_usage_text, run_work_item_link, run_workspace_actions, top_bar,
+            ActivePage, RunOutput, TopBar, cached_query, encode_path, recorded_field,
+            run_commit_outcome_label, run_origin_label, run_result_summary, run_status_class,
+            run_token_usage_text, run_work_item_link,
         },
         live_events::{refetch_on_live_event, run_log_event_matches},
         pages::memory_event_ref_label,
         services::{project_cache, run_service},
     },
-    shared::view_models::{CodexAppServerStatusView, ProjectView, RunLogView, WorkspaceEditorView},
+    shared::view_models::{CodexAppServerStatusView, ProjectView, RunLogView},
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
@@ -22,7 +22,6 @@ pub struct RunLogPage {
     pub active_project_names: Vec<String>,
     pub project: String,
     pub run_log: RunLogView,
-    pub workspace_editors: Vec<WorkspaceEditorView>,
     pub codex_status: CodexAppServerStatusView,
 }
 
@@ -68,16 +67,18 @@ pub fn PageRunLog() -> impl IntoView {
             .map(|page| page.codex_status)
             .unwrap_or_default()
     });
-    let topbar = top_bar(
-        active_project_names,
-        Signal::derive({
-            let project = project.clone();
-            move || project.clone()
-        }),
-        ActivePage::Board,
-        Signal::derive(|| None),
-        codex_status,
-    );
+    let topbar = view! {
+        <TopBar
+            active_project_names
+            selected_project=Signal::derive({
+                let project = project.clone();
+                move || project.clone()
+            })
+            active=ActivePage::Board
+            automation=Signal::derive(|| None)
+            codex_status
+        />
+    };
     let board_href = project
         .as_deref()
         .map(|project| format!("/?project={}", encode_path(project)))
@@ -100,12 +101,12 @@ pub fn PageRunLog() -> impl IntoView {
                 </section>
                 {move || {
                     let show_thinking_history = show_thinking_history.get();
-                    result.value.get().map(|page| {
-                        run_log_content(
-                            page,
-                            show_thinking_history,
-                            toggle_thinking_history,
-                        )
+                    result.value.get().map(|page| view! {
+                        <RunLogContent
+                            page
+                            show_thinking_history
+                            toggle_thinking_history
+                        />
                     })
                 }}
             </main>
@@ -113,30 +114,24 @@ pub fn PageRunLog() -> impl IntoView {
     }
 }
 
-fn run_log_content(
+#[component]
+pub(crate) fn RunLogContent(
     page: RunLogPage,
     show_thinking_history: bool,
     toggle_thinking_history: Callback<()>,
-) -> AnyView {
+) -> impl IntoView {
     let RunLogPage {
         projects: _,
         active_project_names: _,
         project,
         run_log,
-        workspace_editors,
         codex_status: _,
     } = page;
     let summary = run_result_summary(&run_log.run);
     let origin = run_origin_label(&run_log.run);
     let work_item = run_work_item_link(&project, run_log.run.work_item_id);
     let command = recorded_field(&run_log.run.command);
-    let run_href = format!(
-        "/projects/{}/automation/runs/{}/log",
-        encode_path(&project),
-        run_log.run.id
-    );
-    let working_dir =
-        run_workspace_actions(&project, &run_log.run, workspace_editors, run_href.clone());
+    let working_dir = recorded_field(&run_log.run.working_dir);
     let status_class = run_status_class(run_log.run.status);
     let memory_event = run_log.memory_event.as_ref().map(memory_event_ref_label);
     let token_usage = run_token_usage_text(&run_log.run);
@@ -152,16 +147,8 @@ fn run_log_content(
     let created_items = run_item_links(&project, run_log.created_items.clone());
     let modified_items = run_item_links(&project, run_log.modified_items.clone());
     let cancel_action = if run_log.active {
-        let action = format!(
-            "/projects/{}/automation/runs/{}/cancel",
-            encode_path(&project),
-            run_log.run.id
-        );
         Some(view! {
-            <form method="post" action=action>
-                <input type="hidden" name="return_to" value=run_href/>
-                <button type="submit" class="danger">"Cancel run"</button>
-            </form>
+            <CancelRunButton project=project.clone() run_id=run_log.run.id/>
         })
     } else {
         None
@@ -175,12 +162,14 @@ fn run_log_content(
             </>
         }
     });
-    let output = run_output_view(
-        run_log.output.clone(),
-        run_log.active,
-        show_thinking_history,
-        toggle_thinking_history,
-    );
+    let output = view! {
+        <RunOutput
+            output=run_log.output.clone()
+            active=run_log.active
+            show_thinking_history
+            toggle_thinking_history
+        />
+    };
     let developer_instructions = run_log
         .developer_instructions
         .unwrap_or_else(|| "No developer instructions have been written.".to_owned());
@@ -291,6 +280,36 @@ fn run_log_content(
         </>
     }
     .into_any()
+}
+
+#[component]
+fn CancelRunButton(project: String, run_id: i64) -> impl IntoView {
+    let service = run_service();
+    let (pending, set_pending) = signal(false);
+    let cancel = move |_| {
+        if pending.get_untracked() {
+            return;
+        }
+        set_pending.set(true);
+        let service = service.clone();
+        let project = project.clone();
+        leptos::task::spawn_local(async move {
+            if service.cancel_run(project, run_id).await.is_err() {
+                set_pending.set(false);
+            }
+        });
+    };
+
+    view! {
+        <button
+            type="button"
+            class="danger"
+            disabled=move || pending.get()
+            on:click=cancel
+        >
+            "Cancel run"
+        </button>
+    }
 }
 
 fn run_item_links(

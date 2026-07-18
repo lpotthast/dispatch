@@ -12,6 +12,7 @@ pub(crate) fn rich_text_to_prompt_markdown(value: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     #[test]
     fn tiptap_html_preserves_prompt_structure_as_markdown() {
@@ -24,17 +25,23 @@ mod tests {
 
         let markdown = rich_text_to_prompt_markdown(html).unwrap();
 
-        assert!(markdown.contains("## Acceptance criteria"), "{markdown}");
-        assert!(
-            markdown.contains("*   Inspect `parser-module`."),
-            "{markdown}"
-        );
-        assert!(
-            markdown.contains("*   Run **focused tests**."),
-            "{markdown}"
-        );
-        assert!(markdown.contains("```"), "{markdown}");
-        assert!(markdown.contains("just test"), "{markdown}");
-        assert!(!markdown.contains("<li>"), "{markdown}");
+        assert_that!(&(markdown.contains("## Acceptance criteria")))
+            .with_detail_message(markdown.to_string())
+            .is_true();
+        assert_that!(&(markdown.contains("*   Inspect `parser-module`.")))
+            .with_detail_message(markdown.to_string())
+            .is_true();
+        assert_that!(&(markdown.contains("*   Run **focused tests**.")))
+            .with_detail_message(markdown.to_string())
+            .is_true();
+        assert_that!(&(markdown.contains("```")))
+            .with_detail_message(markdown.to_string())
+            .is_true();
+        assert_that!(&(markdown.contains("just test")))
+            .with_detail_message(markdown.to_string())
+            .is_true();
+        assert_that!(&(!markdown.contains("<li>")))
+            .with_detail_message(markdown.to_string())
+            .is_true();
     }
 }

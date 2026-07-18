@@ -14,13 +14,14 @@ pub(crate) fn SwimLanesPanel(
                 <h2>"Swim-lanes"</h2>
             </div>
             <div class="crudkit-swim-lanes" data-crudkit-leptos="swim-lanes">
-                {swim_lanes_crudkit_instance(api_base_url, project, project_id, edit_lane_id)}
+                <SwimLanesCrudkitInstance api_base_url project project_id edit_lane_id/>
             </div>
         </section>
     }
 }
 
-fn swim_lanes_crudkit_instance(
+#[component]
+fn SwimLanesCrudkitInstance(
     api_base_url: String,
     project: String,
     project_id: i64,
@@ -31,11 +32,12 @@ fn swim_lanes_crudkit_instance(
         event_scopes_named_project(event, Some(project.as_str()))
             && matches!(event, UiEvent::SwimLaneChanged { .. })
     });
+    let config = swim_lanes_crudkit_config(api_base_url, project_id, edit_lane_id);
 
     view! {
         <CrudInstance
             name="swim-lanes"
-            config=swim_lanes_crudkit_config(api_base_url, project_id, edit_lane_id)
+            config
             on_context_created=Callback::new(move |context| set_context.set(Some(context)))
         />
     }
@@ -46,13 +48,13 @@ fn swim_lanes_crudkit_config(
     project_id: i64,
     edit_lane_id: Option<i64>,
 ) -> CrudInstanceConfig {
-    let view = edit_lane_id
+    let initial_view = edit_lane_id
         .map(crudkit_i64_id)
-        .map(SerializableCrudView::Edit)
-        .unwrap_or(SerializableCrudView::List);
+        .map(CrudView::edit)
+        .unwrap_or_else(CrudView::table);
     CrudInstanceConfig {
         api_base_url,
-        view,
+        initial_view,
         list_columns: vec![
             Header::showing(
                 ReadSwimLaneField::Identifier,
@@ -207,7 +209,8 @@ fn swim_lanes_crudkit_config(
         model_handler: swim_lane_model_handler(project_id),
         actions: vec![],
         entity_actions: vec![],
-        navigation: CrudNavigationConfig::default(),
+        builtin_view_controls: CrudBuiltinViewControls::default(),
+        view_registry: CrudViewRegistry::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(

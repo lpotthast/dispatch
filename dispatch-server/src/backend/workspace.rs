@@ -314,6 +314,7 @@ fn macos_application_exists(app_name: &str, home: Option<&OsStr>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     fn create_path_program(directory: &Path, program: &str) {
         std::fs::write(directory.join(program), "").unwrap();
@@ -341,15 +342,12 @@ mod tests {
             .command_for(WorkspaceOpenTarget::RustRover, path)
             .unwrap();
 
-        assert_eq!(command.program, OsString::from("open"));
-        assert_eq!(
-            command.args,
-            vec![
-                OsString::from("-a"),
-                OsString::from("RustRover"),
-                OsString::from("/tmp/demo"),
-            ]
-        );
+        assert_that!(&(command.program)).is_equal_to(OsString::from("open"));
+        assert_that!(&(command.args)).is_equal_to(vec![
+            OsString::from("-a"),
+            OsString::from("RustRover"),
+            OsString::from("/tmp/demo"),
+        ]);
     }
 
     #[test]
@@ -364,9 +362,9 @@ mod tests {
 
         let editors = config.available_editors();
 
-        assert_eq!(editors.len(), 1);
-        assert_eq!(editors[0].target, "vscode");
-        assert_eq!(editors[0].label, "VS Code");
+        assert_that!(&(editors.len())).is_equal_to(1);
+        assert_that!(&(editors[0].target)).is_equal_to("vscode");
+        assert_that!(&(editors[0].label)).is_equal_to("VS Code");
     }
 
     #[test]
@@ -384,8 +382,8 @@ mod tests {
             .command_for(WorkspaceOpenTarget::RustRover, path)
             .unwrap();
 
-        assert_eq!(command.program, OsString::from("rustrover"));
-        assert_eq!(command.args, vec![OsString::from("/tmp/demo")]);
+        assert_that!(&(command.program)).is_equal_to(OsString::from("rustrover"));
+        assert_that!(&(command.args)).is_equal_to(vec![OsString::from("/tmp/demo")]);
     }
 
     #[test]
@@ -402,7 +400,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("RustRover is not available"));
+        assert_that!(&(err.contains("RustRover is not available"))).is_true();
     }
 
     #[test]
@@ -420,16 +418,16 @@ mod tests {
             .command_for(WorkspaceOpenTarget::VsCode, path)
             .unwrap();
 
-        assert_eq!(command.program, OsString::from("code.exe"));
-        assert_eq!(command.args, vec![OsString::from("C:/demo")]);
+        assert_that!(&(command.program)).is_equal_to(OsString::from("code.exe"));
+        assert_that!(&(command.args)).is_equal_to(vec![OsString::from("C:/demo")]);
     }
 
     #[test]
     fn linux_folder_command_uses_xdg_open() {
         let command = folder_open_command("linux", Path::new("/tmp/demo")).unwrap();
 
-        assert_eq!(command.program, OsString::from("xdg-open"));
-        assert_eq!(command.args, vec![OsString::from("/tmp/demo")]);
+        assert_that!(&(command.program)).is_equal_to(OsString::from("xdg-open"));
+        assert_that!(&(command.args)).is_equal_to(vec![OsString::from("/tmp/demo")]);
     }
 
     #[test]
@@ -438,6 +436,6 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("does not exist"));
+        assert_that!(&(err.contains("does not exist"))).is_true();
     }
 }

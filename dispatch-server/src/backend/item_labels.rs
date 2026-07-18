@@ -66,12 +66,13 @@ pub(crate) fn format_label(key: &str, value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     #[test]
     fn normalization_rejects_empty_or_composite_keys() {
-        assert_eq!(normalize_key(" priority ").unwrap(), "priority");
-        assert!(normalize_key("severity=high").is_err());
-        assert!(validate_pair(STATE_LABEL_KEY, None).is_err());
+        assert_that!(&(normalize_key(" priority ").unwrap())).is_equal_to("priority");
+        assert_that!(&(normalize_key("severity=high").is_err())).is_true();
+        assert_that!(&(validate_pair(STATE_LABEL_KEY, None).is_err())).is_true();
     }
 
     #[test]
@@ -82,29 +83,26 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(
-            labels,
-            vec![
-                NormalizedLabel {
-                    key: "priority".to_owned(),
-                    value: Some("high".to_owned()),
-                },
-                NormalizedLabel {
-                    key: "needs-verification".to_owned(),
-                    value: None,
-                },
-            ]
-        );
+        assert_that!(&(labels)).is_equal_to(vec![
+            NormalizedLabel {
+                key: "priority".to_owned(),
+                value: Some("high".to_owned()),
+            },
+            NormalizedLabel {
+                key: "needs-verification".to_owned(),
+                value: None,
+            },
+        ]);
 
         let err = normalize_initial_labels([
             ("area".to_owned(), Some("frontend".to_owned())),
             (" area ".to_owned(), Some("backend".to_owned())),
         ])
         .unwrap_err();
-        assert!(err.to_string().contains("duplicate initial label key"));
+        assert_that!(&(err.to_string().contains("duplicate initial label key"))).is_true();
 
         let err = normalize_initial_labels([(STATE_LABEL_KEY.to_owned(), Some("open".to_owned()))])
             .unwrap_err();
-        assert!(err.to_string().contains("use the state selector"));
+        assert_that!(&(err.to_string().contains("use the state selector"))).is_true();
     }
 }

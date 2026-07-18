@@ -27,13 +27,14 @@ pub(crate) fn validate_agent_id(agent_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
 
     #[test]
     fn dispatch_run_agent_ids_round_trip_valid_positive_run_ids() {
         let agent_id = dispatch_run_agent_id(42);
 
-        assert_eq!(agent_id, "dispatch-run-42");
-        assert_eq!(parse_dispatch_run_agent_id(&agent_id), Some(42));
+        assert_that!(&(agent_id)).is_equal_to("dispatch-run-42");
+        assert_that!(&(parse_dispatch_run_agent_id(&agent_id))).is_equal_to(Some(42));
     }
 
     #[test]
@@ -47,13 +48,15 @@ mod tests {
             "dispatch-run- 60",
             "dispatch-run-abc",
         ] {
-            assert_eq!(parse_dispatch_run_agent_id(agent_id), None, "{agent_id}");
+            assert_that!(&(parse_dispatch_run_agent_id(agent_id)))
+                .with_detail_message(agent_id.to_string())
+                .is_equal_to(None);
         }
     }
 
     #[test]
     fn agent_id_validation_rejects_blank_ids() {
-        assert!(validate_agent_id("agent-a").is_ok());
-        assert!(validate_agent_id(" ").is_err());
+        assert_that!(&(validate_agent_id("agent-a").is_ok())).is_true();
+        assert_that!(&(validate_agent_id(" ").is_err())).is_true();
     }
 }

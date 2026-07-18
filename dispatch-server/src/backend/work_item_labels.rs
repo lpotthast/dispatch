@@ -291,6 +291,7 @@ pub(crate) fn to_view(label: WorkItemLabelModel) -> WorkItemLabelView {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
     use tempfile::TempDir;
 
@@ -427,9 +428,9 @@ mod tests {
             .find(|label| label.key == "bug" && label.value.is_none())
             .unwrap();
 
-        assert_eq!(severity.usage_count, 2);
-        assert_eq!(severity.last_used_at, "2026-06-18T00:00:03Z");
-        assert_eq!(bug.usage_count, 1);
+        assert_that!(&(severity.usage_count)).is_equal_to(2);
+        assert_that!(&(severity.last_used_at)).is_equal_to("2026-06-18T00:00:03Z");
+        assert_that!(&(bug.usage_count)).is_equal_to(1);
     }
 
     #[tokio::test]
@@ -447,8 +448,8 @@ mod tests {
         )
         .await;
 
-        assert!(
-            item_has_key(
+        assert_that!(
+            &(item_has_key(
                 store.db().as_ref(),
                 demo_project_id,
                 item_id,
@@ -456,10 +457,11 @@ mod tests {
                 None
             )
             .await
-            .unwrap()
-        );
-        assert!(
-            !item_has_key(
+            .unwrap())
+        )
+        .is_true();
+        assert_that!(
+            &(!item_has_key(
                 store.db().as_ref(),
                 demo_project_id,
                 item_id,
@@ -467,7 +469,8 @@ mod tests {
                 Some(label.id),
             )
             .await
-            .unwrap()
-        );
+            .unwrap())
+        )
+        .is_true();
     }
 }

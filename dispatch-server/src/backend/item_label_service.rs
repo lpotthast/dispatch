@@ -273,6 +273,7 @@ impl LabelMutationContext {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -354,19 +355,20 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(added.version, item.version + 1);
-        assert_eq!(updated.version, added.version + 1);
-        assert_eq!(deleted.work_item.version, updated.version + 1);
-        assert!(deleted.deleted);
-        assert_eq!(deleted.label_id, label_id);
-        assert_eq!(deleted.work_item.state.as_deref(), Some("open"));
-        assert!(
-            !deleted
+        assert_that!(&(added.version)).is_equal_to(item.version + 1);
+        assert_that!(&(updated.version)).is_equal_to(added.version + 1);
+        assert_that!(&(deleted.work_item.version)).is_equal_to(updated.version + 1);
+        assert_that!(&(deleted.deleted)).is_true();
+        assert_that!(&(deleted.label_id)).is_equal_to(label_id);
+        assert_that!(&(deleted.work_item.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(
+            &(!deleted
                 .work_item
                 .labels
                 .iter()
-                .any(|label| label.key == "priority")
-        );
+                .any(|label| label.key == "priority"))
+        )
+        .is_true();
 
         let events = list_events(&store, "demo", Some(item.id), None)
             .await
@@ -383,20 +385,17 @@ mod tests {
             })
             .map(|event| (event.event_type, event.body.as_str()))
             .collect();
-        assert_eq!(
-            label_events,
-            vec![
-                (WorkItemEventType::LabelAdded, "Added label priority=high"),
-                (
-                    WorkItemEventType::LabelUpdated,
-                    "Updated label priority=low"
-                ),
-                (
-                    WorkItemEventType::LabelDeleted,
-                    "Deleted label priority=low"
-                ),
-            ]
-        );
+        assert_that!(&(label_events)).is_equal_to(vec![
+            (WorkItemEventType::LabelAdded, "Added label priority=high"),
+            (
+                WorkItemEventType::LabelUpdated,
+                "Updated label priority=low",
+            ),
+            (
+                WorkItemEventType::LabelDeleted,
+                "Deleted label priority=low",
+            ),
+        ]);
     }
 
     #[tokio::test]
@@ -449,7 +448,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(add_state.to_string().contains("move the item"));
+        assert_that!(&(add_state.to_string().contains("move the item"))).is_true();
 
         let update_state = update_label(
             &store,
@@ -462,7 +461,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(update_state.to_string().contains("move the item"));
+        assert_that!(&(update_state.to_string().contains("move the item"))).is_true();
 
         let rename_to_state = update_label(
             &store,
@@ -475,7 +474,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(rename_to_state.to_string().contains("move the item"));
+        assert_that!(&(rename_to_state.to_string().contains("move the item"))).is_true();
 
         let delete_state = delete_label(
             &store,
@@ -486,6 +485,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(delete_state.to_string().contains("move the item"));
+        assert_that!(&(delete_state.to_string().contains("move the item"))).is_true();
     }
 }

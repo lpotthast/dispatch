@@ -1,9 +1,9 @@
 use crate::{
     frontend::{
         components::{
-            ActivePage, cached_query, copy_workspace_text, encode_path, selected_project_signal,
-            top_bar,
+            ActivePage, TopBar, cached_query, copy_workspace_text, selected_project_signal,
         },
+        crudkit::AgentToolsPanel,
         live_events::{codex_event_matches, refetch_on_live_event},
         services::{codex_service, project_cache},
     },
@@ -28,9 +28,10 @@ pub struct CodexStatusPage {
 }
 
 #[component]
-pub fn PageCodex() -> impl IntoView {
+pub fn PageSystem() -> impl IntoView {
     let selected_project = selected_project_signal();
     let service = codex_service();
+    let api_base_url = service.crudkit_api_base_url().to_owned();
     let initial = service.cached_page_untracked(&selected_project.get_untracked());
     let service_for_cache = service.clone();
     let service_for_load = service.clone();
@@ -65,54 +66,58 @@ pub fn PageCodex() -> impl IntoView {
             .map(|page| page.codex_status)
             .unwrap_or_default()
     });
-    let topbar = top_bar(
-        active_project_names,
-        selected_project.into(),
-        ActivePage::Codex,
-        Signal::derive(|| None),
-        codex_status,
-    );
+    let topbar = view! {
+        <TopBar
+            active_project_names
+            selected_project=selected_project.into()
+            active=ActivePage::System
+            automation=Signal::derive(|| None)
+            codex_status
+        />
+    };
 
     view! {
-        <Title text="Codex automation"/>
+        <Title text="System"/>
         <div>
             {topbar}
-            <main class="page-shell codex-page">
+            <main class="page-shell system-page codex-page">
                 <section class="page-heading">
-                    <h1>"Codex automation"</h1>
+                    <h1>"System"</h1>
                     <p class="muted">
-                        "Detailed status refreshes every five minutes while this page is open."
+                        "System-wide runtime configuration and status. Detailed Codex status refreshes every five minutes while this page is open."
                     </p>
                 </section>
-                {move || {
-                    let page = result.value.get().unwrap_or_else(|| CodexStatusPage {
-                        projects: Vec::new(),
-                        active_project_names: Vec::new(),
-                        selected_project: selected_project.get(),
-                        codex_status: CodexAppServerStatusView::default(),
-                    });
-                    codex_status_content(page)
-                }}
+                <div class="system-sections">
+                    {move || {
+                        let page = result.value.get().unwrap_or_else(|| CodexStatusPage {
+                            projects: Vec::new(),
+                            active_project_names: Vec::new(),
+                            selected_project: selected_project.get(),
+                            codex_status: CodexAppServerStatusView::default(),
+                        });
+                        view! { <CodexStatusContent page on_refreshed=result.refresh/> }
+                    }}
+                    <AgentToolsPanel api_base_url on_refreshed=result.refresh/>
+                </div>
             </main>
         </div>
     }
 }
 
-fn codex_status_content(page: CodexStatusPage) -> AnyView {
+#[component]
+fn CodexStatusContent(page: CodexStatusPage, on_refreshed: Callback<()>) -> impl IntoView {
     let CodexStatusPage {
         projects: _,
         active_project_names: _,
         selected_project,
         codex_status,
     } = page;
-    let return_to = selected_project
-        .as_deref()
-        .map(|project| format!("/codex?project={}", encode_path(project)))
-        .unwrap_or_else(|| "/codex".to_owned());
-    codex_status_panel(&codex_status, return_to)
+    let _ = selected_project;
+    view! { <CodexStatusPanel status=codex_status on_refreshed/> }
 }
 
-fn codex_status_panel(status: &CodexAppServerStatusView, return_to: String) -> AnyView {
+#[component]
+fn CodexStatusPanel(status: CodexAppServerStatusView, on_refreshed: Callback<()>) -> impl IntoView {
     let status_class = if status.usable {
         "codex-status-ready"
     } else if status.available {
@@ -187,14 +192,15 @@ fn codex_status_panel(status: &CodexAppServerStatusView, return_to: String) -> A
         let limits = status
             .rate_limits
             .iter()
-            .map(rate_limit_view)
+            .cloned()
+            .map(|limit| view! { <RateLimitView limit/> })
             .collect::<Vec<_>>();
         view! { <div class="codex-rate-limits">{limits}</div> }.into_any()
     };
     let usage = status
         .usage_summary
-        .as_ref()
-        .map(usage_summary_view)
+        .clone()
+        .map(|summary| view! { <UsageSummaryView summary/> }.into_any())
         .unwrap_or_else(|| {
             view! { <p class="muted">"No token usage summary reported."</p> }.into_any()
         });
@@ -212,20 +218,43 @@ fn codex_status_panel(status: &CodexAppServerStatusView, return_to: String) -> A
     let install_prompt = (!status.available).then(|| {
         view! { <p class="codex-install-prompt">{status.install_prompt.clone()}</p> }
     });
-    let auth_setup = status.auth_setup.clone().map(codex_auth_setup_view);
+    let auth_setup = status
+        .auth_setup
+        .clone()
+        .map(|setup| view! { <CodexAuthSetup setup/> });
     let can_logout = status.available
         && status.auth_method.as_deref() != Some("apiKey")
         && (status.signed_in || status.auth_setup.is_some());
-    let return_to_for_refresh = return_to.clone();
-    let return_to_for_logout = return_to;
-    let logout_action = can_logout.then(|| {
-        view! {
-            <form method="post" action="/codex/logout">
-                <input type="hidden" name="return_to" value=return_to_for_logout/>
-                <button type="submit" class="danger">"Log out"</button>
-            </form>
+    let service = codex_service();
+    let logout_service = service.clone();
+    let (refresh_pending, set_refresh_pending) = signal(false);
+    let (logout_pending, set_logout_pending) = signal(false);
+    let refresh = move |_| {
+        if refresh_pending.get_untracked() {
+            return;
         }
-    });
+        set_refresh_pending.set(true);
+        let service = service.clone();
+        leptos::task::spawn_local(async move {
+            if service.discover_agent_tools().await.is_ok() {
+                on_refreshed.run(());
+            }
+            set_refresh_pending.set(false);
+        });
+    };
+    let logout = move |_| {
+        if logout_pending.get_untracked() {
+            return;
+        }
+        set_logout_pending.set(true);
+        let service = logout_service.clone();
+        leptos::task::spawn_local(async move {
+            if service.logout().await.is_ok() {
+                on_refreshed.run(());
+            }
+            set_logout_pending.set(false);
+        });
+    };
 
     view! {
         <section class=format!("codex-status-panel {status_class}")>
@@ -237,11 +266,24 @@ fn codex_status_panel(status: &CodexAppServerStatusView, return_to: String) -> A
                 </div>
                 <div class="codex-status-actions">
                     <span class="codex-status-badge">{badge}</span>
-                    <form method="post" action="/agent-tools/discover">
-                        <input type="hidden" name="return_to" value=return_to_for_refresh/>
-                        <button type="submit" class="secondary">"Refresh"</button>
-                    </form>
-                    {logout_action}
+                    <button
+                        type="button"
+                        class="secondary"
+                        disabled=move || refresh_pending.get()
+                        on:click=refresh
+                    >
+                        "Refresh"
+                    </button>
+                    {can_logout.then(move || view! {
+                        <button
+                            type="button"
+                            class="danger"
+                            disabled=move || logout_pending.get()
+                            on:click=logout
+                        >
+                            "Log out"
+                        </button>
+                    })}
                 </div>
             </div>
             {auth_setup}
@@ -295,7 +337,8 @@ fn codex_status_panel(status: &CodexAppServerStatusView, return_to: String) -> A
     .into_any()
 }
 
-fn codex_auth_setup_view(setup: CodexAuthSetupView) -> AnyView {
+#[component]
+fn CodexAuthSetup(setup: CodexAuthSetupView) -> impl IntoView {
     let command = setup.login_command.clone();
     let command_for_copy = command.clone();
     let home_for_copy = setup.codex_home_path.clone();
@@ -363,8 +406,9 @@ fn auth_method_label(method: &str) -> String {
     }
 }
 
-fn rate_limit_view(limit: &CodexRateLimitView) -> AnyView {
-    let lines = rate_limit_lines(limit)
+#[component]
+fn RateLimitView(limit: CodexRateLimitView) -> impl IntoView {
+    let lines = rate_limit_lines(&limit)
         .into_iter()
         .map(|line| view! { <li>{line}</li> })
         .collect::<Vec<_>>();
@@ -458,7 +502,8 @@ fn rate_window_line(
     Some(line)
 }
 
-fn usage_summary_view(summary: &CodexUsageSummaryView) -> AnyView {
+#[component]
+fn UsageSummaryView(summary: CodexUsageSummaryView) -> impl IntoView {
     let mut rows = Vec::new();
     if let Some(value) = summary.lifetime_tokens {
         rows.push(("Lifetime tokens", format_number(value)));

@@ -716,16 +716,6 @@ pub fn allowed_code_edit_agents(settings: &ProjectSettingsView) -> i64 {
     }
 }
 
-pub async fn delete_project(store: &Store, name: &str) -> Result<()> {
-    let project = find_project_by_name(store, name).await?;
-    Project::delete_by_id(project.id)
-        .exec(store.db().as_ref())
-        .await
-        .context_with(|| format!("failed to delete project '{name}'"))?;
-    events::publish_project_list_changed();
-    Ok(())
-}
-
 pub fn spawn_path_status_checker_until(
     store: Store,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
@@ -1137,6 +1127,7 @@ pub(crate) fn validate_agent_extra_writable_roots_do_not_include_database(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use std::fs;
 
     use git2::Signature;
@@ -1264,33 +1255,25 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.workspace_mode, WorkspaceMode::GitBranch);
-        assert_eq!(plan.max_code_edit_agents, 1);
-        assert_eq!(plan.max_read_only_agents, 0);
-        assert!(plan.create_pr);
-        assert_eq!(plan.commit_standard, "Use short subjects.");
-        assert_eq!(plan.default_agent_model, None);
-        assert_eq!(
-            plan.agent_extra_writable_roots,
-            vec![
-                expand_home_path("~/Library/Caches/chrome-for-testing-manager"),
-                "/tmp/dispatch-browser".to_owned(),
-            ]
-        );
+        assert_that!(&(plan.workspace_mode)).is_equal_to(WorkspaceMode::GitBranch);
+        assert_that!(&(plan.max_code_edit_agents)).is_equal_to(1);
+        assert_that!(&(plan.max_read_only_agents)).is_equal_to(0);
+        assert_that!(&(plan.create_pr)).is_true();
+        assert_that!(&(plan.commit_standard)).is_equal_to("Use short subjects.");
+        assert_that!(&(plan.default_agent_model)).is_equal_to(None);
+        assert_that!(&(plan.agent_extra_writable_roots)).is_equal_to(vec![
+            expand_home_path("~/Library/Caches/chrome-for-testing-manager"),
+            "/tmp/dispatch-browser".to_owned(),
+        ]);
 
         let active = plan.apply_to(project);
 
-        assert_eq!(
-            active.workspace_mode,
-            Set(WorkspaceMode::GitBranch.as_storage().to_owned())
-        );
-        assert_eq!(active.max_read_only_agents, Set(0));
-        assert_eq!(active.create_pr, Set(true));
-        assert_eq!(
-            active.commit_standard,
-            Set("Use short subjects.".to_owned())
-        );
-        assert_eq!(active.default_agent_model, Set(None));
+        assert_that!(&(active.workspace_mode))
+            .is_equal_to(Set(WorkspaceMode::GitBranch.as_storage().to_owned()));
+        assert_that!(&(active.max_read_only_agents)).is_equal_to(Set(0));
+        assert_that!(&(active.create_pr)).is_equal_to(Set(true));
+        assert_that!(&(active.commit_standard)).is_equal_to(Set("Use short subjects.".to_owned()));
+        assert_that!(&(active.default_agent_model)).is_equal_to(Set(None));
     }
 
     #[test]
@@ -1306,10 +1289,12 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("project settings update requires at least one field")
-        );
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("project settings update requires at least one field"))
+        )
+        .is_true();
     }
 
     #[test]
@@ -1320,7 +1305,8 @@ mod tests {
 
         let err = project_to_view(project).unwrap_err();
 
-        assert!(format!("{err:#}").contains("project has invalid workspace mode"));
+        assert_that!(&(format!("{err:#}").contains("project has invalid workspace mode")))
+            .is_true();
     }
 
     #[test]
@@ -1331,7 +1317,10 @@ mod tests {
 
         let err = ValidatedProjectSettings::from_model(&project).unwrap_err();
 
-        assert!(format!("{err:#}").contains("project has invalid agent Git command policy"));
+        assert_that!(
+            &(format!("{err:#}").contains("project has invalid agent Git command policy"))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -1340,7 +1329,7 @@ mod tests {
 
         let err = get_project(&store, "missing").await.unwrap_err();
 
-        assert!(err.to_string().contains("project 'missing' does not exist"));
+        assert_that!(&(err.to_string().contains("project 'missing' does not exist"))).is_true();
     }
 
     #[tokio::test]
@@ -1362,18 +1351,16 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("project path is required"));
+        assert_that!(&(err.to_string().contains("project path is required"))).is_true();
     }
 
     #[test]
     fn project_path_expands_home_prefix() {
         let home = std::ffi::OsString::from("/Users/example");
 
-        assert_eq!(
-            expand_home_path_with("~/dev/vibetest", Some(&home)),
-            "/Users/example/dev/vibetest"
-        );
-        assert_eq!(expand_home_path_with("~", Some(&home)), "/Users/example");
+        assert_that!(&(expand_home_path_with("~/dev/vibetest", Some(&home))))
+            .is_equal_to("/Users/example/dev/vibetest");
+        assert_that!(&(expand_home_path_with("~", Some(&home)))).is_equal_to("/Users/example");
     }
 
     #[test]
@@ -1386,11 +1373,11 @@ mod tests {
 
         let status = inspect_project_git_status(Some(temp.path().to_str().unwrap()), true).unwrap();
 
-        assert!(status.is_repository);
-        assert_eq!(status.branch.as_deref(), Some("main"));
-        assert_eq!(status.added_lines, 2);
-        assert_eq!(status.deleted_lines, 1);
-        assert!(status.error.is_none());
+        assert_that!(&(status.is_repository)).is_true();
+        assert_that!(&(status.branch.as_deref())).is_equal_to(Some("main"));
+        assert_that!(&(status.added_lines)).is_equal_to(2);
+        assert_that!(&(status.deleted_lines)).is_equal_to(1);
+        assert_that!(&(status.error.is_none())).is_true();
     }
 
     #[test]
@@ -1399,11 +1386,11 @@ mod tests {
 
         let status = inspect_project_git_status(Some(temp.path().to_str().unwrap()), true).unwrap();
 
-        assert!(!status.is_repository);
-        assert!(status.branch.is_none());
-        assert_eq!(status.added_lines, 0);
-        assert_eq!(status.deleted_lines, 0);
-        assert!(status.error.is_none());
+        assert_that!(&(!status.is_repository)).is_true();
+        assert_that!(&(status.branch.is_none())).is_true();
+        assert_that!(&(status.added_lines)).is_equal_to(0);
+        assert_that!(&(status.deleted_lines)).is_equal_to(0);
+        assert_that!(&(status.error.is_none())).is_true();
     }
 
     #[tokio::test]
@@ -1427,11 +1414,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(created.name, "demo");
-        assert_eq!(created.display_name, "demo");
-        assert_eq!(created.path.as_deref(), Some(demo_path.to_str().unwrap()));
-        assert_eq!(created.system_prompt, "Prefer small changes.");
-        assert_eq!(created.memory, "Initial memory.");
+        assert_that!(&(created.name)).is_equal_to("demo");
+        assert_that!(&(created.display_name)).is_equal_to("demo");
+        assert_that!(&(created.path.as_deref())).is_equal_to(Some(demo_path.to_str().unwrap()));
+        assert_that!(&(created.system_prompt)).is_equal_to("Prefer small changes.");
+        assert_that!(&(created.memory)).is_equal_to("Initial memory.");
 
         let updated = update_project(
             &store,
@@ -1444,13 +1431,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(updated.display_name, "Demo Project");
-        assert_eq!(
-            updated.path.as_deref(),
-            Some(new_demo_path.to_str().unwrap())
-        );
-        assert_eq!(updated.system_prompt, "Prefer small changes.");
-        assert_eq!(updated.memory, "Initial memory.");
+        assert_that!(&(updated.display_name)).is_equal_to("Demo Project");
+        assert_that!(&(updated.path.as_deref())).is_equal_to(Some(new_demo_path.to_str().unwrap()));
+        assert_that!(&(updated.system_prompt)).is_equal_to("Prefer small changes.");
+        assert_that!(&(updated.memory)).is_equal_to("Initial memory.");
     }
 
     #[tokio::test]
@@ -1475,9 +1459,9 @@ mod tests {
 
         let refreshed = refresh_project_path_statuses(&store).await.unwrap();
 
-        assert_eq!(refreshed.len(), 1);
-        assert!(!refreshed[0].path_exists);
-        assert!(refreshed[0].path_checked_at.is_some());
+        assert_that!(&(refreshed.len())).is_equal_to(1);
+        assert_that!(&(!refreshed[0].path_exists)).is_true();
+        assert_that!(&(refreshed[0].path_checked_at.is_some())).is_true();
     }
 
     #[tokio::test]
@@ -1498,8 +1482,8 @@ mod tests {
         .unwrap()
         .project;
 
-        assert_eq!(prompted.system_prompt, "User-controlled prompt");
-        assert_eq!(remembered.memory, "Shared project memory");
+        assert_that!(&(prompted.system_prompt)).is_equal_to("User-controlled prompt");
+        assert_that!(&(remembered.memory)).is_equal_to("Shared project memory");
     }
 
     #[tokio::test]
@@ -1521,10 +1505,10 @@ mod tests {
         .unwrap();
 
         let initial_events = list_system_prompt_events(&store, "demo").await.unwrap();
-        assert_eq!(initial_events.len(), 1);
-        assert_eq!(initial_events[0].operation, "initial");
-        assert_eq!(initial_events[0].system_prompt, "Initial prompt.");
-        assert_eq!(initial_events[0].actor_type.as_deref(), Some("system"));
+        assert_that!(&(initial_events.len())).is_equal_to(1);
+        assert_that!(&(initial_events[0].operation)).is_equal_to("initial");
+        assert_that!(&(initial_events[0].system_prompt)).is_equal_to("Initial prompt.");
+        assert_that!(&(initial_events[0].actor_type.as_deref())).is_equal_to(Some("system"));
 
         let updated = update_system_prompt_with_source(
             &store,
@@ -1534,28 +1518,29 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(updated.project.system_prompt, "Updated prompt.");
-        assert_eq!(updated.event.operation, "set");
-        assert_eq!(updated.event.system_prompt, "Updated prompt.");
-        assert_eq!(updated.event.actor_type.as_deref(), Some("user"));
+        assert_that!(&(updated.project.system_prompt)).is_equal_to("Updated prompt.");
+        assert_that!(&(updated.event.operation)).is_equal_to("set");
+        assert_that!(&(updated.event.system_prompt)).is_equal_to("Updated prompt.");
+        assert_that!(&(updated.event.actor_type.as_deref())).is_equal_to(Some("user"));
 
         let current = get_project(&store, "demo").await.unwrap();
-        assert_eq!(current.system_prompt, "Updated prompt.");
+        assert_that!(&(current.system_prompt)).is_equal_to("Updated prompt.");
 
         let events = list_system_prompt_events(&store, "demo").await.unwrap();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].id, updated.event.id);
+        assert_that!(&(events.len())).is_equal_to(2);
+        assert_that!(&(events[0].id)).is_equal_to(updated.event.id);
 
         let compacted = compact_system_prompt_events(&store, "demo").await.unwrap();
-        assert_eq!(compacted.deleted_events, 2);
-        assert!(
-            list_system_prompt_events(&store, "demo")
+        assert_that!(&(compacted.deleted_events)).is_equal_to(2);
+        assert_that!(
+            &(list_system_prompt_events(&store, "demo")
                 .await
                 .unwrap()
-                .is_empty()
-        );
+                .is_empty())
+        )
+        .is_true();
         let current = get_project(&store, "demo").await.unwrap();
-        assert_eq!(current.system_prompt, "Updated prompt.");
+        assert_that!(&(current.system_prompt)).is_equal_to("Updated prompt.");
     }
 
     #[tokio::test]
@@ -1596,20 +1581,18 @@ mod tests {
             serde_json::from_str::<change_events::SystemPromptChangedBody>(&prompt_row.body)
                 .expect("system prompt event body should decode");
 
-        assert_eq!(prompted.event.actor_type.as_deref(), Some("agent"));
-        assert_eq!(prompted.event.actor_id.as_deref(), Some("dispatch-run-42"));
-        assert_eq!(prompted.event.agent_run_id, Some(42));
-        assert_eq!(prompt_row.project_id, project.id);
-        assert_eq!(prompt_row.work_item_id, None);
-        assert_eq!(
-            prompt_row.event_type,
-            change_events::SYSTEM_PROMPT_CHANGED_EVENT_TYPE.as_storage()
-        );
-        assert_eq!(prompt_row.actor_type.as_deref(), Some("agent"));
-        assert_eq!(prompt_row.actor_id.as_deref(), Some("dispatch-run-42"));
-        assert_eq!(prompt_row.agent_run_id, Some(42));
-        assert_eq!(prompt_body.operation, "set");
-        assert_eq!(prompt_body.system_prompt, "Agent prompt.");
+        assert_that!(&(prompted.event.actor_type.as_deref())).is_equal_to(Some("agent"));
+        assert_that!(&(prompted.event.actor_id.as_deref())).is_equal_to(Some("dispatch-run-42"));
+        assert_that!(&(prompted.event.agent_run_id)).is_equal_to(Some(42));
+        assert_that!(&(prompt_row.project_id)).is_equal_to(project.id);
+        assert_that!(&(prompt_row.work_item_id)).is_equal_to(None);
+        assert_that!(&(prompt_row.event_type))
+            .is_equal_to(change_events::SYSTEM_PROMPT_CHANGED_EVENT_TYPE.as_storage());
+        assert_that!(&(prompt_row.actor_type.as_deref())).is_equal_to(Some("agent"));
+        assert_that!(&(prompt_row.actor_id.as_deref())).is_equal_to(Some("dispatch-run-42"));
+        assert_that!(&(prompt_row.agent_run_id)).is_equal_to(Some(42));
+        assert_that!(&(prompt_body.operation)).is_equal_to("set");
+        assert_that!(&(prompt_body.system_prompt)).is_equal_to("Agent prompt.");
 
         let remembered = append_memory_with_source(
             &store,
@@ -1630,20 +1613,18 @@ mod tests {
         let memory_body =
             serde_json::from_str::<change_events::MemoryChangedBody>(&memory_row.body).unwrap();
 
-        assert_eq!(remembered.event.actor_type.as_deref(), Some("agent"));
-        assert_eq!(remembered.event.actor_id.as_deref(), Some("codex-worker"));
-        assert_eq!(remembered.event.agent_run_id, Some(77));
-        assert_eq!(memory_row.project_id, project.id);
-        assert_eq!(memory_row.work_item_id, None);
-        assert_eq!(
-            memory_row.event_type,
-            change_events::MEMORY_CHANGED_EVENT_TYPE.as_storage()
-        );
-        assert_eq!(memory_row.actor_type.as_deref(), Some("agent"));
-        assert_eq!(memory_row.actor_id.as_deref(), Some("codex-worker"));
-        assert_eq!(memory_row.agent_run_id, Some(77));
-        assert_eq!(memory_body.operation, "append");
-        assert_eq!(memory_body.memory, "Agent memory.");
+        assert_that!(&(remembered.event.actor_type.as_deref())).is_equal_to(Some("agent"));
+        assert_that!(&(remembered.event.actor_id.as_deref())).is_equal_to(Some("codex-worker"));
+        assert_that!(&(remembered.event.agent_run_id)).is_equal_to(Some(77));
+        assert_that!(&(memory_row.project_id)).is_equal_to(project.id);
+        assert_that!(&(memory_row.work_item_id)).is_equal_to(None);
+        assert_that!(&(memory_row.event_type))
+            .is_equal_to(change_events::MEMORY_CHANGED_EVENT_TYPE.as_storage());
+        assert_that!(&(memory_row.actor_type.as_deref())).is_equal_to(Some("agent"));
+        assert_that!(&(memory_row.actor_id.as_deref())).is_equal_to(Some("codex-worker"));
+        assert_that!(&(memory_row.agent_run_id)).is_equal_to(Some(77));
+        assert_that!(&(memory_body.operation)).is_equal_to("append");
+        assert_that!(&(memory_body.memory)).is_equal_to("Agent memory.");
     }
 
     #[tokio::test]
@@ -1653,36 +1634,25 @@ mod tests {
 
         let settings = get_settings(&store, "demo").await.unwrap();
 
-        assert_eq!(settings.workspace_mode, WorkspaceMode::CurrentBranch);
-        assert_eq!(allowed_code_edit_agents(&settings), 1);
-        assert_eq!(settings.max_read_only_agents, 2);
-        assert!(!settings.create_pr);
-        assert!(settings.auto_commit);
-        assert_eq!(settings.commit_standard, "");
-        assert_eq!(settings.revert_strategy, RevertStrategy::Manual);
-        assert_eq!(settings.stale_claim_minutes, 0);
-        assert_eq!(
-            settings.worktree_cleanup_policy,
-            WorktreeCleanupPolicy::Manual
-        );
-        assert_eq!(settings.default_agent_tool, AgentToolName::Codex);
-        assert_eq!(
-            settings.default_agent_model.as_deref(),
-            Some(CodexAgentModel::newest().as_storage())
-        );
-        assert_eq!(
-            settings.default_agent_reasoning_effort,
-            Some(AgentReasoningEffort::highest())
-        );
-        assert_eq!(
-            settings.agent_sandbox_mode,
-            AgentSandboxMode::WorkspaceWrite
-        );
-        assert!(settings.agent_extra_writable_roots.is_empty());
-        assert_eq!(
-            settings.agent_git_command_policy,
-            AgentGitCommandPolicy::default()
-        );
+        assert_that!(&(settings.workspace_mode)).is_equal_to(WorkspaceMode::CurrentBranch);
+        assert_that!(&(allowed_code_edit_agents(&settings))).is_equal_to(1);
+        assert_that!(&(settings.max_read_only_agents)).is_equal_to(2);
+        assert_that!(&(!settings.create_pr)).is_true();
+        assert_that!(&(settings.auto_commit)).is_true();
+        assert_that!(&(settings.commit_standard)).is_equal_to("");
+        assert_that!(&(settings.revert_strategy)).is_equal_to(RevertStrategy::Manual);
+        assert_that!(&(settings.stale_claim_minutes)).is_equal_to(0);
+        assert_that!(&(settings.worktree_cleanup_policy))
+            .is_equal_to(WorktreeCleanupPolicy::Manual);
+        assert_that!(&(settings.default_agent_tool)).is_equal_to(AgentToolName::Codex);
+        assert_that!(&(settings.default_agent_model.as_deref()))
+            .is_equal_to(Some(CodexAgentModel::newest().as_storage()));
+        assert_that!(&(settings.default_agent_reasoning_effort))
+            .is_equal_to(Some(AgentReasoningEffort::highest()));
+        assert_that!(&(settings.agent_sandbox_mode)).is_equal_to(AgentSandboxMode::WorkspaceWrite);
+        assert_that!(&(settings.agent_extra_writable_roots.is_empty())).is_true();
+        assert_that!(&(settings.agent_git_command_policy))
+            .is_equal_to(AgentGitCommandPolicy::default());
     }
 
     #[tokio::test]
@@ -1704,11 +1674,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(project.default_agent_model.as_deref(), Some("gpt-5.4-mini"));
-        assert_eq!(
-            project.default_agent_reasoning_effort,
-            Some(AgentReasoningEffort::XHigh)
-        );
+        assert_that!(&(project.default_agent_model.as_deref())).is_equal_to(Some("gpt-5.4-mini"));
+        assert_that!(&(project.default_agent_reasoning_effort))
+            .is_equal_to(Some(AgentReasoningEffort::XHigh));
     }
 
     #[tokio::test]
@@ -1730,10 +1698,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            project.default_agent_reasoning_effort,
-            Some(AgentReasoningEffort::High)
-        );
+        assert_that!(&(project.default_agent_reasoning_effort))
+            .is_equal_to(Some(AgentReasoningEffort::High));
     }
 
     #[tokio::test]
@@ -1752,10 +1718,12 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("default agent model must be one of")
-        );
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("default agent model must be one of"))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -1775,8 +1743,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("default agent model"));
-        assert!(err.to_string().contains("incompatible"));
+        assert_that!(&(err.to_string().contains("default agent model"))).is_true();
+        assert_that!(&(err.to_string().contains("incompatible"))).is_true();
     }
 
     #[tokio::test]
@@ -1816,51 +1784,36 @@ mod tests {
         .unwrap();
         let project = get_project(&store, "demo").await.unwrap();
 
-        assert_eq!(settings.project_id, project.id);
-        assert_eq!(settings.workspace_mode, WorkspaceMode::GitBranch);
-        assert_eq!(project.workspace_mode, WorkspaceMode::GitBranch);
-        assert_eq!(settings.max_read_only_agents, 4);
-        assert_eq!(project.max_read_only_agents, 4);
-        assert!(!settings.auto_commit);
-        assert!(!project.auto_commit);
-        assert_eq!(settings.commit_standard, "Use Conventional Commits.");
-        assert_eq!(project.commit_standard, "Use Conventional Commits.");
-        assert_eq!(settings.revert_strategy, RevertStrategy::GitReset);
-        assert_eq!(project.revert_strategy, RevertStrategy::GitReset);
-        assert_eq!(project.default_agent_tool, AgentToolName::Codex);
-        assert_eq!(
-            settings.agent_sandbox_mode,
-            AgentSandboxMode::DangerFullAccess
-        );
-        assert_eq!(
-            project.agent_sandbox_mode,
-            AgentSandboxMode::DangerFullAccess
-        );
-        assert_eq!(
-            settings.agent_extra_writable_roots,
-            vec![
-                expand_home_path("~/Library/Caches/chrome-for-testing-manager"),
-                "/tmp/dispatch-browser".to_owned(),
-            ]
-        );
-        assert_eq!(
-            project.agent_extra_writable_roots,
-            settings.agent_extra_writable_roots
-        );
-        assert_eq!(
-            settings.agent_git_command_policy,
-            AgentGitCommandPolicy {
-                add: true,
-                commit: false,
-                push: true,
-                reset: false,
-                ..Default::default()
-            }
-        );
-        assert_eq!(
-            project.agent_git_command_policy,
-            settings.agent_git_command_policy
-        );
+        assert_that!(&(settings.project_id)).is_equal_to(project.id);
+        assert_that!(&(settings.workspace_mode)).is_equal_to(WorkspaceMode::GitBranch);
+        assert_that!(&(project.workspace_mode)).is_equal_to(WorkspaceMode::GitBranch);
+        assert_that!(&(settings.max_read_only_agents)).is_equal_to(4);
+        assert_that!(&(project.max_read_only_agents)).is_equal_to(4);
+        assert_that!(&(!settings.auto_commit)).is_true();
+        assert_that!(&(!project.auto_commit)).is_true();
+        assert_that!(&(settings.commit_standard)).is_equal_to("Use Conventional Commits.");
+        assert_that!(&(project.commit_standard)).is_equal_to("Use Conventional Commits.");
+        assert_that!(&(settings.revert_strategy)).is_equal_to(RevertStrategy::GitReset);
+        assert_that!(&(project.revert_strategy)).is_equal_to(RevertStrategy::GitReset);
+        assert_that!(&(project.default_agent_tool)).is_equal_to(AgentToolName::Codex);
+        assert_that!(&(settings.agent_sandbox_mode))
+            .is_equal_to(AgentSandboxMode::DangerFullAccess);
+        assert_that!(&(project.agent_sandbox_mode)).is_equal_to(AgentSandboxMode::DangerFullAccess);
+        assert_that!(&(settings.agent_extra_writable_roots)).is_equal_to(vec![
+            expand_home_path("~/Library/Caches/chrome-for-testing-manager"),
+            "/tmp/dispatch-browser".to_owned(),
+        ]);
+        assert_that!(&(project.agent_extra_writable_roots))
+            .is_equal_to(settings.agent_extra_writable_roots);
+        assert_that!(&(settings.agent_git_command_policy)).is_equal_to(AgentGitCommandPolicy {
+            add: true,
+            commit: false,
+            push: true,
+            reset: false,
+            ..Default::default()
+        });
+        assert_that!(&(project.agent_git_command_policy))
+            .is_equal_to(settings.agent_git_command_policy);
     }
 
     #[tokio::test]
@@ -1879,7 +1832,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("includes Dispatch database"));
+        assert_that!(&(err.to_string().contains("includes Dispatch database"))).is_true();
     }
 
     #[tokio::test]
@@ -1898,7 +1851,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("at least 1"));
+        assert_that!(&(err.to_string().contains("at least 1"))).is_true();
     }
 
     #[tokio::test]
@@ -1917,7 +1870,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(settings.max_read_only_agents, 0);
+        assert_that!(&(settings.max_read_only_agents)).is_equal_to(0);
         let err = update_settings(
             &store,
             "demo",
@@ -1928,7 +1881,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("max read-only agents"));
+        assert_that!(&(err.to_string().contains("max read-only agents"))).is_true();
     }
 
     #[tokio::test]
@@ -1948,7 +1901,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("only git_worktree"));
+        assert_that!(&(err.to_string().contains("only git_worktree"))).is_true();
     }
 
     #[tokio::test]
@@ -1968,7 +1921,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("pull requests"));
+        assert_that!(&(err.to_string().contains("pull requests"))).is_true();
     }
 
     #[tokio::test]
@@ -1988,8 +1941,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(settings.create_pr);
-        assert_eq!(allowed_code_edit_agents(&settings), 1);
+        assert_that!(&(settings.create_pr)).is_true();
+        assert_that!(&(allowed_code_edit_agents(&settings))).is_equal_to(1);
     }
 
     #[tokio::test]
@@ -2008,6 +1961,6 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("stale claim"));
+        assert_that!(&(err.to_string().contains("stale claim"))).is_true();
     }
 }

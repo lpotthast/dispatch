@@ -111,7 +111,7 @@ htmd = { version = "0.5.4", optional = true }
 indexmap = { version = "2", features = ["serde"], optional = true }
 leptonic = { version = "0.5.0", git = "https://github.com/lpotthast/leptonic", branch = "migrate-to-leptos-0.8", features = ["tiptap"] }
 leptos = "0.8.19"
-leptos-use = { version = "0.18.3", default-features = false, features = ["storage", "use_websocket"], optional = true }
+leptos-use = { version = "0.18.3", default-features = false, features = ["storage", "use_element_size", "use_media_query", "use_websocket"], optional = true }
 leptos_axum = { version = "=0.8.7", optional = true }
 leptos_meta = "=0.8.5"
 leptos-routes = "0.4.1"
@@ -143,12 +143,13 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 assertr = "0.6.0"
 browser-test = { version = "0.4.0" }
 leptos-browser-test = { version = "0.3.0" }
+reqwest = { version = "0.13", features = ["json"] }
 tempfile = "3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
-web-sys = { version = "0.3", optional = true, features = ["Blob", "File", "FileList", "HtmlInputElement"] }
+web-sys = { version = "0.3", optional = true, features = ["Blob", "DomRect", "Element", "File", "FileList", "HtmlInputElement", "PointerEvent"] }
 
 [profile.wasm-release]
 inherits = "release"

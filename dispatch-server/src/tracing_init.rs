@@ -156,37 +156,38 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertr::prelude::*;
     use tracing::Level;
 
     #[test]
     fn default_filter_hides_sqlx_info() {
         let filter = default_fmt_filter(LevelFilter::INFO);
 
-        assert!(filter.would_enable("dispatch_server", &Level::INFO));
-        assert!(!filter.would_enable("sqlx::query", &Level::INFO));
-        assert!(filter.would_enable("sqlx::query", &Level::WARN));
+        assert_that!(&(filter.would_enable("dispatch_server", &Level::INFO))).is_true();
+        assert_that!(&(!filter.would_enable("sqlx::query", &Level::INFO))).is_true();
+        assert_that!(&(filter.would_enable("sqlx::query", &Level::WARN))).is_true();
     }
 
     #[test]
     fn dispatch_log_filter_can_enable_sqlx_info() {
         let filter = build_fmt_filter(LevelFilter::INFO, Some("info,sqlx=info"), None).unwrap();
 
-        assert!(filter.would_enable("sqlx::query", &Level::INFO));
+        assert_that!(&(filter.would_enable("sqlx::query", &Level::INFO))).is_true();
     }
 
     #[test]
     fn sqlx_log_level_can_override_default_target() {
         let filter = build_fmt_filter(LevelFilter::INFO, None, Some(LevelFilter::DEBUG)).unwrap();
 
-        assert!(filter.would_enable("sqlx::query", &Level::DEBUG));
-        assert!(!filter.would_enable("sqlx::query", &Level::TRACE));
+        assert_that!(&(filter.would_enable("sqlx::query", &Level::DEBUG))).is_true();
+        assert_that!(&(!filter.would_enable("sqlx::query", &Level::TRACE))).is_true();
     }
 
     #[test]
     fn configured_filter_replaces_default_filter() {
         let filter = build_fmt_filter(LevelFilter::INFO, Some("off"), None).unwrap();
 
-        assert!(!filter.would_enable("dispatch_server", &Level::ERROR));
-        assert!(!filter.would_enable("sqlx::query", &Level::WARN));
+        assert_that!(&(!filter.would_enable("dispatch_server", &Level::ERROR))).is_true();
+        assert_that!(&(!filter.would_enable("sqlx::query", &Level::WARN))).is_true();
     }
 }

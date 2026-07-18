@@ -2067,6 +2067,8 @@ pub(crate) fn model_to_view(trigger: AutomationTriggerModel) -> Result<Automatio
 
 #[cfg(test)]
 mod tests {
+    use super::Condition;
+    use assertr::prelude::*;
     use std::path::PathBuf;
 
     use crudkit_core::condition::{
@@ -2182,9 +2184,9 @@ mod tests {
 
     #[test]
     fn schedules_accept_every_notation() {
-        assert!(parse_schedule("@every 15m").is_ok());
-        assert!(parse_schedule("@hourly").is_ok());
-        assert!(parse_schedule("0s").is_err());
+        assert_that!(&(parse_schedule("@every 15m").is_ok())).is_true();
+        assert_that!(&(parse_schedule("@hourly").is_ok())).is_true();
+        assert_that!(&(parse_schedule("0s").is_err())).is_true();
     }
 
     #[tokio::test]
@@ -2199,17 +2201,20 @@ mod tests {
             .await
             .unwrap();
 
-        assert_ne!(first.id, second.id);
-        assert_eq!(first.title, "campaign item");
-        assert_eq!(first.state.as_deref(), Some("open"));
-        assert!(first.labels.iter().any(|label| {
-            label.key == "source" && label.value.as_deref() == Some("automation")
-        }));
+        assert_that!(&(first.id)).is_not_equal_to(second.id);
+        assert_that!(&(first.title)).is_equal_to("campaign item");
+        assert_that!(&(first.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(
+            &(first.labels.iter().any(|label| {
+                label.key == "source" && label.value.as_deref() == Some("automation")
+            }))
+        )
+        .is_true();
         let origin = first.origin.unwrap();
-        assert_eq!(origin.kind, WorkItemOriginKind::ProducingAutomation);
-        assert_eq!(origin.trigger_id, Some(trigger.id));
-        assert_eq!(origin.trigger_revision_id, trigger.current_revision_id);
-        assert!(origin.producing_evaluation_id.is_some());
+        assert_that!(&(origin.kind)).is_equal_to(WorkItemOriginKind::ProducingAutomation);
+        assert_that!(&(origin.trigger_id)).is_equal_to(Some(trigger.id));
+        assert_that!(&(origin.trigger_revision_id)).is_equal_to(trigger.current_revision_id);
+        assert_that!(&(origin.producing_evaluation_id.is_some())).is_true();
     }
 
     #[tokio::test]
@@ -2228,7 +2233,7 @@ mod tests {
         let duplicate = create_work_item_from_trigger(&store, "demo", &trigger)
             .await
             .unwrap();
-        assert_eq!(duplicate.id, first.id);
+        assert_that!(&(duplicate.id)).is_equal_to(first.id);
 
         item_claims::claim_specific_item(&store, "demo", first.id, "agent-test")
             .await
@@ -2240,17 +2245,20 @@ mod tests {
         let replacement = create_work_item_from_trigger(&store, "demo", &trigger)
             .await
             .unwrap();
-        assert_ne!(replacement.id, first.id);
+        assert_that!(&(replacement.id)).is_not_equal_to(first.id);
 
         let evaluations =
             automation_revisions::list_evaluations(&store, "demo", Some(trigger.id), 20)
                 .await
                 .unwrap();
-        assert_eq!(evaluations.len(), 3);
-        assert!(evaluations.iter().any(|evaluation| {
-            evaluation.outcome == AutomationEvaluationOutcome::SkippedDuplicate
-                && evaluation.work_item_id == Some(first.id)
-        }));
+        assert_that!(&(evaluations.len())).is_equal_to(3);
+        assert_that!(
+            &(evaluations.iter().any(|evaluation| {
+                evaluation.outcome == AutomationEvaluationOutcome::SkippedDuplicate
+                    && evaluation.work_item_id == Some(first.id)
+            }))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -2275,80 +2283,76 @@ mod tests {
             create_work_item_from_trigger(&store, "demo", &first_trigger),
         );
         let first = first.unwrap();
-        assert_eq!(concurrent.unwrap().id, first.id);
+        assert_that!(&(concurrent.unwrap().id)).is_equal_to(first.id);
 
         let cross_trigger = create_work_item_from_trigger(&store, "demo", &second_trigger)
             .await
             .unwrap();
-        assert_eq!(cross_trigger.id, first.id);
-        assert_eq!(
-            items::list_items(&store, "demo", None).await.unwrap().len(),
-            1
-        );
+        assert_that!(&(cross_trigger.id)).is_equal_to(first.id);
+        assert_that!(&(items::list_items(&store, "demo", None).await.unwrap().len()))
+            .is_equal_to(1);
     }
 
     #[tokio::test]
     async fn new_project_gets_default_work_item_automation() {
         let (_temp, store) = test_store().await;
         let automations = list_triggers(&store, "demo").await.unwrap();
-        assert_eq!(automations.len(), 3);
+        assert_that!(&(automations.len())).is_equal_to(3);
         let automation = automation_by_name(&automations, DEFAULT_WORK_ITEM_AUTOMATION_NAME);
 
-        assert_eq!(automation.activation, AutomationActivation::WorkItem);
-        assert_eq!(automation.effect, AutomationEffect::ConsumeWork);
-        assert_eq!(automation.mutability, AutomationRunMutability::Mutating);
-        assert_eq!(automation.schedule, DEFAULT_WORK_ITEM_AUTOMATION_SCHEDULE);
-        assert_eq!(
-            automation.work_item_selector,
-            Some(default_work_item_selector())
-        );
-        assert_eq!(automation.priority, 0);
-        assert_eq!(automation.evaluation_count, 0);
-        assert_eq!(automation.pending_evaluation_count, 0);
+        assert_that!(&(automation.activation)).is_equal_to(AutomationActivation::WorkItem);
+        assert_that!(&(automation.effect)).is_equal_to(AutomationEffect::ConsumeWork);
+        assert_that!(&(automation.mutability)).is_equal_to(AutomationRunMutability::Mutating);
+        assert_that!(&(automation.schedule)).is_equal_to(DEFAULT_WORK_ITEM_AUTOMATION_SCHEDULE);
+        assert_that!(&(automation.work_item_selector))
+            .is_equal_to(Some(default_work_item_selector()));
+        assert_that!(&(automation.priority)).is_equal_to(0);
+        assert_that!(&(automation.evaluation_count)).is_equal_to(0);
+        assert_that!(&(automation.pending_evaluation_count)).is_equal_to(0);
 
         let refiner = automation_by_name(&automations, DEFAULT_REFINEMENT_AUTOMATION_NAME);
-        assert_eq!(refiner.activation, AutomationActivation::WorkItem);
-        assert_eq!(refiner.effect, AutomationEffect::ConsumeWork);
-        assert_eq!(refiner.mutability, AutomationRunMutability::ReadOnly);
-        assert_eq!(refiner.schedule, DEFAULT_WORK_ITEM_AUTOMATION_SCHEDULE);
-        assert_eq!(
-            refiner.work_item_selector,
-            Some(default_refinement_work_item_selector())
-        );
-        assert_eq!(refiner.priority, REFINEMENT_AUTOMATION_PRIORITY);
-        assert!(refiner.prompt.contains("Do not implement the work"));
-        assert!(
-            refiner
+        assert_that!(&(refiner.activation)).is_equal_to(AutomationActivation::WorkItem);
+        assert_that!(&(refiner.effect)).is_equal_to(AutomationEffect::ConsumeWork);
+        assert_that!(&(refiner.mutability)).is_equal_to(AutomationRunMutability::ReadOnly);
+        assert_that!(&(refiner.schedule)).is_equal_to(DEFAULT_WORK_ITEM_AUTOMATION_SCHEDULE);
+        assert_that!(&(refiner.work_item_selector))
+            .is_equal_to(Some(default_refinement_work_item_selector()));
+        assert_that!(&(refiner.priority)).is_equal_to(REFINEMENT_AUTOMATION_PRIORITY);
+        assert_that!(&(refiner.prompt.contains("Do not implement the work"))).is_true();
+        assert_that!(
+            &(refiner
                 .prompt
-                .contains("Remove the `needs-refinement` label")
-        );
-        assert!(
-            refiner
+                .contains("Remove the `needs-refinement` label"))
+        )
+        .is_true();
+        assert_that!(
+            &(refiner
                 .prompt
-                .contains("Do not call `dispatch item finish`")
-        );
+                .contains("Do not call `dispatch item finish`"))
+        )
+        .is_true();
 
         let verifier = automation_by_name(&automations, DEFAULT_VERIFICATION_AUTOMATION_NAME);
-        assert_eq!(verifier.activation, AutomationActivation::WorkItem);
-        assert_eq!(verifier.effect, AutomationEffect::ConsumeWork);
-        assert_eq!(verifier.mutability, AutomationRunMutability::ReadOnly);
-        assert_eq!(verifier.schedule, DEFAULT_WORK_ITEM_AUTOMATION_SCHEDULE);
-        assert_eq!(
-            verifier.work_item_selector,
-            Some(default_verification_work_item_selector())
-        );
-        assert_eq!(verifier.priority, VERIFICATION_AUTOMATION_PRIORITY);
-        assert!(verifier.prompt.contains("Do not implement the work"));
-        assert!(
-            verifier
+        assert_that!(&(verifier.activation)).is_equal_to(AutomationActivation::WorkItem);
+        assert_that!(&(verifier.effect)).is_equal_to(AutomationEffect::ConsumeWork);
+        assert_that!(&(verifier.mutability)).is_equal_to(AutomationRunMutability::ReadOnly);
+        assert_that!(&(verifier.schedule)).is_equal_to(DEFAULT_WORK_ITEM_AUTOMATION_SCHEDULE);
+        assert_that!(&(verifier.work_item_selector))
+            .is_equal_to(Some(default_verification_work_item_selector()));
+        assert_that!(&(verifier.priority)).is_equal_to(VERIFICATION_AUTOMATION_PRIORITY);
+        assert_that!(&(verifier.prompt.contains("Do not implement the work"))).is_true();
+        assert_that!(
+            &(verifier
                 .prompt
-                .contains("Remove the `needs-verification` label")
-        );
-        assert!(
-            verifier
+                .contains("Remove the `needs-verification` label"))
+        )
+        .is_true();
+        assert_that!(
+            &(verifier
                 .prompt
-                .contains("do not invent or hardcode a state name")
-        );
+                .contains("do not invent or hardcode a state name"))
+        )
+        .is_true();
     }
 
     fn automation_by_name<'a>(
@@ -2388,8 +2392,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(trigger.mutability, AutomationRunMutability::ReadOnly);
-        assert_eq!(trigger.personality_id, Some(default_personality.id));
+        assert_that!(&(trigger.mutability)).is_equal_to(AutomationRunMutability::ReadOnly);
+        assert_that!(&(trigger.personality_id)).is_equal_to(Some(default_personality.id));
         let updated = update_trigger(
             &store,
             "demo",
@@ -2410,9 +2414,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(updated.mutability, AutomationRunMutability::Mutating);
-        assert_eq!(updated.personality_id, Some(default_personality.id));
-        assert_eq!(updated.priority, 6);
+        assert_that!(&(updated.mutability)).is_equal_to(AutomationRunMutability::Mutating);
+        assert_that!(&(updated.personality_id)).is_equal_to(Some(default_personality.id));
+        assert_that!(&(updated.priority)).is_equal_to(6);
     }
 
     #[tokio::test]
@@ -2456,13 +2460,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_ne!(updated.current_revision_id, trigger.current_revision_id);
+        assert_that!(&(updated.current_revision_id)).is_not_equal_to(trigger.current_revision_id);
 
         let revisions =
             automation_revisions::list_trigger_revisions(&store, trigger.project_id, trigger.id)
                 .await
                 .unwrap();
-        assert_eq!(revisions.len(), 2);
+        assert_that!(&(revisions.len())).is_equal_to(2);
         let original = revisions
             .iter()
             .find(|revision| revision.revision_number == 1)
@@ -2471,17 +2475,17 @@ mod tests {
             automation_revisions::restore_trigger_revision(&store, "demo", trigger.id, original.id)
                 .await
                 .unwrap();
-        assert_eq!(restored.name, "revision-target");
-        assert_eq!(restored.prompt, "Original prompt.");
+        assert_that!(&(restored.name)).is_equal_to("revision-target");
+        assert_that!(&(restored.prompt)).is_equal_to("Original prompt.");
 
         let revisions =
             automation_revisions::list_trigger_revisions(&store, trigger.project_id, trigger.id)
                 .await
                 .unwrap();
-        assert_eq!(revisions.len(), 3);
-        assert_eq!(revisions[0].revision_number, 3);
-        assert_eq!(revisions[0].operation, RevisionChangeOperation::Restore);
-        assert_eq!(restored.current_revision_id, Some(revisions[0].id));
+        assert_that!(&(revisions.len())).is_equal_to(3);
+        assert_that!(&(revisions[0].revision_number)).is_equal_to(3);
+        assert_that!(&(revisions[0].operation)).is_equal_to(RevisionChangeOperation::Restore);
+        assert_that!(&(restored.current_revision_id)).is_equal_to(Some(revisions[0].id));
     }
 
     #[tokio::test]
@@ -2526,7 +2530,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("does not exist in this project"));
+        assert_that!(&(err.to_string().contains("does not exist in this project"))).is_true();
     }
 
     #[tokio::test]
@@ -2581,22 +2585,18 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!item_matches_selector(
-            &refine_item,
-            &default_work_item_selector()
-        ));
-        assert!(item_matches_selector(
-            &refine_item,
-            &default_refinement_work_item_selector()
-        ));
-        assert!(!item_matches_selector(
-            &verify_item,
-            &default_work_item_selector()
-        ));
-        assert!(item_matches_selector(
-            &verify_item,
-            &default_verification_work_item_selector()
-        ));
+        assert_that!(&(!item_matches_selector(&refine_item, &default_work_item_selector())))
+            .is_true();
+        assert_that!(
+            &(item_matches_selector(&refine_item, &default_refinement_work_item_selector()))
+        )
+        .is_true();
+        assert_that!(&(!item_matches_selector(&verify_item, &default_work_item_selector())))
+            .is_true();
+        assert_that!(
+            &(item_matches_selector(&verify_item, &default_verification_work_item_selector()))
+        )
+        .is_true();
     }
 
     #[test]
@@ -2621,19 +2621,22 @@ mod tests {
             10,
         );
 
-        assert!(
-            work_item_automation_score(&stale_low_priority, 10, now)
-                > work_item_automation_score(&recent_lower_evaluation_count, 10, now)
-        );
-        assert!(
-            work_item_automation_score(&recent_lower_evaluation_count, 10, now)
+        assert_that!(
+            &(work_item_automation_score(&stale_low_priority, 10, now)
+                > work_item_automation_score(&recent_lower_evaluation_count, 10, now))
+        )
+        .is_true();
+        assert_that!(
+            &(work_item_automation_score(&recent_lower_evaluation_count, 10, now)
                 > work_item_automation_score(&recent_high_priority, 10, now)
-                    - (10 * PRIORITY_SCORE_SECONDS)
-        );
-        assert!(
-            work_item_automation_score(&recent_high_priority, 10, now)
-                > work_item_automation_score(&recent_lower_evaluation_count, 10, now)
-        );
+                    - (10 * PRIORITY_SCORE_SECONDS))
+        )
+        .is_true();
+        assert_that!(
+            &(work_item_automation_score(&recent_high_priority, 10, now)
+                > work_item_automation_score(&recent_lower_evaluation_count, 10, now))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -2750,8 +2753,8 @@ mod tests {
         .unwrap();
         let first_item = get_item(&store, "demo", first_item.id).await.unwrap();
 
-        assert_eq!(outcome.trigger_id, second_trigger.id);
-        assert_eq!(first_item.claimed_by.as_deref(), Some("agent-other"));
+        assert_that!(&(outcome.trigger_id)).is_equal_to(second_trigger.id);
+        assert_that!(&(first_item.claimed_by.as_deref())).is_equal_to(Some("agent-other"));
     }
 
     #[tokio::test]
@@ -2833,26 +2836,30 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(explanation.winner_trigger_id, Some(higher.id));
-        assert!(explanation.rules.iter().any(|rule| {
-            rule.trigger_id != Some(lower.id)
-                && !rule.exclusive
-                && rule.selector_matches
-                && rule.suppressed_by_exclusive
-        }));
-        assert!(
-            explanation
+        assert_that!(&(explanation.winner_trigger_id)).is_equal_to(Some(higher.id));
+        assert_that!(
+            &(explanation.rules.iter().any(|rule| {
+                rule.trigger_id != Some(lower.id)
+                    && !rule.exclusive
+                    && rule.selector_matches
+                    && rule.suppressed_by_exclusive
+            }))
+        )
+        .is_true();
+        assert_that!(
+            &(explanation
                 .rules
                 .iter()
                 .filter(|rule| !rule.selector_matches)
-                .all(|rule| !rule.suppressed_by_exclusive)
-        );
+                .all(|rule| !rule.suppressed_by_exclusive))
+        )
+        .is_true();
 
         let outcome = run_next_work_item_automation_for_project(&store, "demo", None, None, None)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(outcome.trigger_id, explanation.winner_trigger_id.unwrap());
+        assert_that!(&(outcome.trigger_id)).is_equal_to(explanation.winner_trigger_id.unwrap());
     }
 
     fn automation_view_for_score(
@@ -2939,27 +2946,26 @@ mod tests {
             .find(|trigger| trigger.name == "refine-new-work")
             .unwrap();
 
-        assert_eq!(outcomes.len(), 1);
+        assert_that!(&(outcomes.len())).is_equal_to(1);
 
         let run = outcomes[0].run.as_ref().unwrap();
         let trigger_runs = automation::list_runs_for_trigger(&store, "demo", trigger.id, None)
             .await
             .unwrap();
 
-        assert_eq!(outcomes[0].work_item_id, Some(item.id));
-        assert!(outcomes[0].run.is_some());
-        assert_eq!(run.trigger_id, Some(trigger.id));
-        assert_eq!(run.trigger_name.as_deref(), Some("refine-new-work"));
-        assert_eq!(run.mutability, AutomationRunMutability::ReadOnly);
-        assert_eq!(trigger_runs.len(), 1);
-        assert_eq!(trigger_runs[0].id, run.id);
-        assert_eq!(item.claimed_by, None);
-        assert_eq!(item.state.as_deref(), Some("open"));
-        assert!(
-            item.labels
+        assert_that!(&(outcomes[0].work_item_id)).is_equal_to(Some(item.id));
+        assert_that!(&(outcomes[0].run.is_some())).is_true();
+        assert_that!(&(run.trigger_id)).is_equal_to(Some(trigger.id));
+        assert_that!(&(run.trigger_name.as_deref())).is_equal_to(Some("refine-new-work"));
+        assert_that!(&(run.mutability)).is_equal_to(AutomationRunMutability::ReadOnly);
+        assert_that!(&(trigger_runs.len())).is_equal_to(1);
+        assert_that!(&(trigger_runs[0].id)).is_equal_to(run.id);
+        assert_that!(&(item.claimed_by)).is_equal_to(None);
+        assert_that!(&(item.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(&(item.labels
                 .iter()
-                .all(|label| label.key != crate::shared::view_models::AUTOMATION_BLOCKED_LABEL_KEY)
-        );
+                .all(|label| label.key != crate::shared::view_models::AUTOMATION_BLOCKED_LABEL_KEY)))
+        .is_true();
     }
 
     #[tokio::test]
@@ -3011,8 +3017,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(outcomes.is_empty());
-        assert!(trigger_runs.is_empty());
+        assert_that!(&(outcomes.is_empty())).is_true();
+        assert_that!(&(trigger_runs.is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -3042,17 +3048,17 @@ mod tests {
         let queued = schedule_trigger_evaluation(&store, "demo", trigger_id)
             .await
             .unwrap();
-        assert_eq!(queued.pending_evaluation_count, 1);
+        assert_that!(&(queued.pending_evaluation_count)).is_equal_to(1);
 
         let outcomes = run_due_triggers(&store).await.unwrap();
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].trigger_id, trigger_id);
-        assert!(outcomes[0].run.is_none());
+        assert_that!(&(outcomes.len())).is_equal_to(1);
+        assert_that!(&(outcomes[0].trigger_id)).is_equal_to(trigger_id);
+        assert_that!(&(outcomes[0].run.is_none())).is_true();
 
         let work_item = outcomes[0].work_item.as_ref().unwrap();
-        assert_eq!(outcomes[0].work_item_id, Some(work_item.id));
-        assert_eq!(work_item.title, "deep-review");
-        assert_eq!(work_item.description, "Perform an expensive deep review.");
+        assert_that!(&(outcomes[0].work_item_id)).is_equal_to(Some(work_item.id));
+        assert_that!(&(work_item.title)).is_equal_to("deep-review");
+        assert_that!(&(work_item.description)).is_equal_to("Perform an expensive deep review.");
 
         let trigger = list_triggers(&store, "demo")
             .await
@@ -3060,8 +3066,8 @@ mod tests {
             .into_iter()
             .find(|trigger| trigger.id == trigger_id)
             .unwrap();
-        assert_eq!(trigger.pending_evaluation_count, 0);
-        assert_eq!(trigger.evaluation_count, 1);
+        assert_that!(&(trigger.pending_evaluation_count)).is_equal_to(0);
+        assert_that!(&(trigger.evaluation_count)).is_equal_to(1);
     }
 
     #[tokio::test]
@@ -3121,8 +3127,8 @@ mod tests {
             .find(|candidate| candidate.id == trigger.id)
             .unwrap();
 
-        assert!(outcomes.is_empty());
-        assert_eq!(trigger.pending_evaluation_count, 1);
-        assert_eq!(trigger.evaluation_count, 0);
+        assert_that!(&(outcomes.is_empty())).is_true();
+        assert_that!(&(trigger.pending_evaluation_count)).is_equal_to(1);
+        assert_that!(&(trigger.evaluation_count)).is_equal_to(0);
     }
 }

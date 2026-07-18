@@ -1027,6 +1027,7 @@ pub(crate) fn markdown_to_html(markdown: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -1060,9 +1061,9 @@ mod tests {
             "../../../examples/automation/engineering-review.yaml"
         ))
         .unwrap();
-        assert_eq!(bundle.manifest.bundle_key, "engineering-review");
-        assert_eq!(bundle.manifest.personalities.len(), 2);
-        assert_eq!(bundle.manifest.automations.len(), 10);
+        assert_that!(&(bundle.manifest.bundle_key)).is_equal_to("engineering-review");
+        assert_that!(&(bundle.manifest.personalities.len())).is_equal_to(2);
+        assert_that!(&(bundle.manifest.automations.len())).is_equal_to(10);
     }
 
     #[test]
@@ -1071,7 +1072,7 @@ mod tests {
             "schema_version: 1\nbundle_key: demo\ndisplay_name: Demo\nunknown: true\n",
         )
         .unwrap_err();
-        assert!(error.to_string().contains("unknown field"));
+        assert_that!(&(error.to_string().contains("unknown field"))).is_true();
     }
 
     #[tokio::test]
@@ -1095,31 +1096,30 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            second
+        assert_that!(
+            &(second
                 .diff
                 .objects
                 .iter()
-                .all(|object| object.operation == BundleDiffOperation::Unchanged),
-            "{:#?}",
-            second.diff.objects
-        );
+                .all(|object| object.operation == BundleDiffOperation::Unchanged))
+        )
+        .with_detail_message(format!("{:#?}", second.diff.objects))
+        .is_true();
         let after = automation_triggers::list_triggers(&store, "demo")
             .await
             .unwrap();
-        assert_eq!(
-            revision_ids,
+        assert_that!(&(revision_ids)).is_equal_to(
             after
                 .iter()
                 .map(|rule| rule.current_revision_id)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
         );
 
         let exported = export_yaml(&store, "demo", "engineering-review")
             .await
             .unwrap();
         let exported = validate_yaml(&exported).unwrap();
-        assert_eq!(exported.manifest_hash, first.diff.manifest_hash);
+        assert_that!(&(exported.manifest_hash)).is_equal_to(first.diff.manifest_hash);
     }
 
     #[tokio::test]
@@ -1129,16 +1129,16 @@ mod tests {
         let first = apply_yaml(&store, "demo", yaml, None).await.unwrap();
 
         let installed = list_installed(&store, "demo").await.unwrap();
-        assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].bundle_key, "engineering-review");
-        assert_eq!(installed[0].automation_count, 10);
-        assert_eq!(installed[0].personality_count, 2);
+        assert_that!(&(installed.len())).is_equal_to(1);
+        assert_that!(&(installed[0].bundle_key)).is_equal_to("engineering-review");
+        assert_that!(&(installed[0].automation_count)).is_equal_to(10);
+        assert_that!(&(installed[0].personality_count)).is_equal_to(2);
 
         let stale = remove_bundle(&store, "demo", "engineering-review", Some("stale"))
             .await
             .unwrap_err();
-        assert!(stale.to_string().contains("bundle hash changed"));
-        assert_eq!(list_installed(&store, "demo").await.unwrap().len(), 1);
+        assert_that!(&(stale.to_string().contains("bundle hash changed"))).is_true();
+        assert_that!(&(list_installed(&store, "demo").await.unwrap().len())).is_equal_to(1);
 
         let removed = remove_bundle(
             &store,
@@ -1148,20 +1148,21 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(removed.status, "removed");
-        assert!(removed.diff.has_deletions);
-        assert!(list_installed(&store, "demo").await.unwrap().is_empty());
-        assert!(
-            export_yaml(&store, "demo", "engineering-review")
+        assert_that!(&(removed.status)).is_equal_to("removed");
+        assert_that!(&(removed.diff.has_deletions)).is_true();
+        assert_that!(&(list_installed(&store, "demo").await.unwrap().is_empty())).is_true();
+        assert_that!(
+            &(export_yaml(&store, "demo", "engineering-review")
                 .await
                 .unwrap_err()
                 .to_string()
-                .contains("has not been applied")
-        );
+                .contains("has not been applied"))
+        )
+        .is_true();
 
         let reapplied = apply_yaml(&store, "demo", yaml, None).await.unwrap();
-        assert_eq!(reapplied.status, "applied");
-        assert_eq!(list_installed(&store, "demo").await.unwrap().len(), 1);
+        assert_that!(&(reapplied.status)).is_equal_to("applied");
+        assert_that!(&(list_installed(&store, "demo").await.unwrap().len())).is_equal_to(1);
     }
 
     #[tokio::test]
@@ -1208,17 +1209,17 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("outside the bundle references"));
-        assert_eq!(list_installed(&store, "demo").await.unwrap().len(), 1);
-        assert_eq!(
-            AutomationTrigger::find()
+        assert_that!(&(error.to_string().contains("outside the bundle references"))).is_true();
+        assert_that!(&(list_installed(&store, "demo").await.unwrap().len())).is_equal_to(1);
+        assert_that!(
+            &(AutomationTrigger::find()
                 .filter(automation_trigger::Column::ProjectId.eq(project_id))
                 .filter(automation_trigger::Column::ManagedBundleKey.eq("engineering-review"))
                 .all(store.db().as_ref())
                 .await
                 .unwrap()
-                .len(),
-            10
-        );
+                .len())
+        )
+        .is_equal_to(10);
     }
 }

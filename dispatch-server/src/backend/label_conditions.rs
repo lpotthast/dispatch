@@ -203,6 +203,7 @@ fn operator_name(operator: Operator) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use crudkit_core::condition::{
         Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
     };
@@ -252,11 +253,12 @@ mod tests {
             ]))),
         ]);
 
-        assert!(
-            ValidatedLabelCondition::new(&selector)
+        assert_that!(
+            &(ValidatedLabelCondition::new(&selector)
                 .unwrap()
-                .matches(&labels)
-        );
+                .matches(&labels))
+        )
+        .is_true();
     }
 
     #[test]
@@ -268,11 +270,12 @@ mod tests {
             value: ConditionClauseValue::Bool(false),
         })]);
 
-        assert!(
-            ValidatedLabelCondition::new(&selector)
+        assert_that!(
+            &(ValidatedLabelCondition::new(&selector)
                 .unwrap()
-                .matches(&labels)
-        );
+                .matches(&labels))
+        )
+        .is_true();
     }
 
     #[test]
@@ -305,11 +308,12 @@ mod tests {
             }),
         ]);
 
-        assert!(
-            ValidatedLabelCondition::new(&selector)
+        assert_that!(
+            &(ValidatedLabelCondition::new(&selector)
                 .unwrap()
-                .matches(&labels)
-        );
+                .matches(&labels))
+        )
+        .is_true();
     }
 
     #[test]
@@ -326,10 +330,10 @@ mod tests {
             label(AUTOMATION_BLOCKED_LABEL_KEY, None),
         ];
 
-        assert!(selector.matches(&labels));
-        assert!(selector.matches(&blocked_labels));
-        assert!(selector.matches_automation_selector(&labels));
-        assert!(!selector.matches_automation_selector(&blocked_labels));
+        assert_that!(&(selector.matches(&labels))).is_true();
+        assert_that!(&(selector.matches(&blocked_labels))).is_true();
+        assert_that!(&(selector.matches_automation_selector(&labels))).is_true();
+        assert_that!(&(!selector.matches_automation_selector(&blocked_labels))).is_true();
     }
 
     #[test]
@@ -342,7 +346,7 @@ mod tests {
 
         let err = validate_condition(&selector).unwrap_err();
 
-        assert!(err.to_string().contains("unsupported operator"));
+        assert_that!(&(err.to_string().contains("unsupported operator"))).is_true();
     }
 
     #[test]
@@ -357,10 +361,11 @@ mod tests {
             value: ConditionClauseValue::String("open".to_owned()),
         })]);
 
-        assert!(
-            !ValidatedLabelCondition::new(&selector)
+        assert_that!(
+            &(!ValidatedLabelCondition::new(&selector)
                 .unwrap()
-                .matches_automation_selector(&labels)
-        );
+                .matches_automation_selector(&labels))
+        )
+        .is_true();
     }
 }

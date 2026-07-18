@@ -1,3 +1,4 @@
+use assertr::prelude::*;
 use crudkit_core::condition::{
     Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
 };
@@ -105,21 +106,23 @@ async fn claiming_item_records_agent_identity() {
         .await
         .unwrap();
 
-    assert_eq!(claimed.id, item.id);
-    assert_eq!(claimed.state.as_deref(), Some("in_progress"));
-    assert_eq!(claimed.version, item.version + 1);
-    assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
-    assert!(claimed.claimed_at.is_some());
-    assert!(
-        comments
+    assert_that!(&(claimed.id)).is_equal_to(item.id);
+    assert_that!(&(claimed.state.as_deref())).is_equal_to(Some("in_progress"));
+    assert_that!(&(claimed.version)).is_equal_to(item.version + 1);
+    assert_that!(&(claimed.claimed_by.as_deref())).is_equal_to(Some("agent-a"));
+    assert_that!(&(claimed.claimed_at.is_some())).is_true();
+    assert_that!(
+        &(comments
             .iter()
-            .any(|comment| comment.body == "Claimed by agent-a")
-    );
-    assert!(
-        events
+            .any(|comment| comment.body == "Claimed by agent-a"))
+    )
+    .is_true();
+    assert_that!(
+        &(events
             .iter()
-            .any(|event| event.event_type == WorkItemEventType::ItemClaimed)
-    );
+            .any(|event| event.event_type == WorkItemEventType::ItemClaimed))
+    )
+    .is_true();
 }
 
 #[tokio::test]
@@ -152,14 +155,17 @@ async fn progress_records_agent_comment_and_touches_item() {
         .await
         .unwrap();
 
-    assert_eq!(comment.author_type, AuthorType::Agent);
-    assert_eq!(comment.author_name.as_deref(), Some("agent-a"));
-    assert_eq!(comment.body, "Working");
-    assert_eq!(updated.version, claimed.version + 1);
-    assert_eq!(updated.comment_count, 2);
-    assert!(events.iter().any(|event| {
-        event.event_type == WorkItemEventType::ProgressAdded && event.body == "Working"
-    }));
+    assert_that!(&(comment.author_type)).is_equal_to(AuthorType::Agent);
+    assert_that!(&(comment.author_name.as_deref())).is_equal_to(Some("agent-a"));
+    assert_that!(&(comment.body)).is_equal_to("Working");
+    assert_that!(&(updated.version)).is_equal_to(claimed.version + 1);
+    assert_that!(&(updated.comment_count)).is_equal_to(2);
+    assert_that!(
+        &(events.iter().any(|event| {
+            event.event_type == WorkItemEventType::ProgressAdded && event.body == "Working"
+        }))
+    )
+    .is_true();
 }
 
 #[tokio::test]
@@ -227,20 +233,21 @@ async fn claiming_can_use_nested_label_conditions() {
         ]))),
     ]);
 
-    assert!(
-        has_claimable_item_matching_condition(&store, "demo", &selector)
+    assert_that!(
+        &(has_claimable_item_matching_condition(&store, "demo", &selector)
             .await
-            .unwrap()
-    );
+            .unwrap())
+    )
+    .is_true();
 
     let claimed = claim_item_matching_condition(&store, "demo", "agent-a", &selector)
         .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(claimed.id, matching.id);
-    assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
-    assert_eq!(claimed.state.as_deref(), Some("in_progress"));
+    assert_that!(&(claimed.id)).is_equal_to(matching.id);
+    assert_that!(&(claimed.claimed_by.as_deref())).is_equal_to(Some("agent-a"));
+    assert_that!(&(claimed.state.as_deref())).is_equal_to(Some("in_progress"));
 }
 
 #[tokio::test]
@@ -294,16 +301,17 @@ async fn blocked_items_are_skipped_by_selector_claims() {
         }),
     ]);
 
-    assert!(
-        !has_claimable_item_matching_condition(&store, "demo", &selector)
+    assert_that!(
+        &(!has_claimable_item_matching_condition(&store, "demo", &selector)
             .await
-            .unwrap()
-    );
+            .unwrap())
+    )
+    .is_true();
     let claimed = claim_item_matching_condition(&store, "demo", "agent-a", &selector)
         .await
         .unwrap();
 
-    assert!(claimed.is_none());
+    assert_that!(&(claimed.is_none())).is_true();
 }
 
 #[tokio::test]
@@ -361,11 +369,12 @@ async fn claimed_from_state_label_is_private_workflow_bookkeeping() {
     )
     .await
     .unwrap_err();
-    assert!(
-        add_claim_source
+    assert_that!(
+        &(add_claim_source
             .to_string()
-            .contains("internal workflow bookkeeping")
-    );
+            .contains("internal workflow bookkeeping"))
+    )
+    .is_true();
 
     let update_claim_source = update_label(
         &store,
@@ -378,11 +387,12 @@ async fn claimed_from_state_label_is_private_workflow_bookkeeping() {
     )
     .await
     .unwrap_err();
-    assert!(
-        update_claim_source
+    assert_that!(
+        &(update_claim_source
             .to_string()
-            .contains("internal workflow bookkeeping")
-    );
+            .contains("internal workflow bookkeeping"))
+    )
+    .is_true();
 
     let rename_to_claim_source = update_label(
         &store,
@@ -395,11 +405,12 @@ async fn claimed_from_state_label_is_private_workflow_bookkeeping() {
     )
     .await
     .unwrap_err();
-    assert!(
-        rename_to_claim_source
+    assert_that!(
+        &(rename_to_claim_source
             .to_string()
-            .contains("internal workflow bookkeeping")
-    );
+            .contains("internal workflow bookkeeping"))
+    )
+    .is_true();
 
     let delete_claim_source = delete_label(
         &store,
@@ -410,11 +421,12 @@ async fn claimed_from_state_label_is_private_workflow_bookkeeping() {
     )
     .await
     .unwrap_err();
-    assert!(
-        delete_claim_source
+    assert_that!(
+        &(delete_claim_source
             .to_string()
-            .contains("internal workflow bookkeeping")
-    );
+            .contains("internal workflow bookkeeping"))
+    )
+    .is_true();
 
     let released = release_item(
         &store,
@@ -427,7 +439,7 @@ async fn claimed_from_state_label_is_private_workflow_bookkeeping() {
     .await
     .unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("review"));
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("review"));
 }
 
 #[tokio::test]
@@ -454,20 +466,21 @@ async fn specific_selector_claims_skip_workflow_blockers() {
             .await
             .unwrap();
 
-        assert!(
-            !has_claimable_specific_item_matching_condition(&store, "demo", item.id, &selector)
+        assert_that!(
+            &(!has_claimable_specific_item_matching_condition(&store, "demo", item.id, &selector)
                 .await
-                .unwrap()
-        );
+                .unwrap())
+        )
+        .is_true();
         let claimed =
             claim_specific_item_matching_condition(&store, "demo", item.id, "agent-a", &selector)
                 .await
                 .unwrap();
         let reloaded = get_item(&store, "demo", item.id).await.unwrap();
 
-        assert!(claimed.is_none());
-        assert_eq!(reloaded.claimed_by, None);
-        assert_eq!(reloaded.state.as_deref(), Some("open"));
+        assert_that!(&(claimed.is_none())).is_true();
+        assert_that!(&(reloaded.claimed_by)).is_equal_to(None);
+        assert_that!(&(reloaded.state.as_deref())).is_equal_to(Some("open"));
     }
 }
 
@@ -498,12 +511,15 @@ async fn claiming_is_atomic_for_racing_agents() {
         .await
         .unwrap();
 
-    assert_eq!(claims.iter().filter(|claim| claim.is_some()).count(), 1);
-    assert_eq!(in_progress.len(), 1);
-    assert!(matches!(
-        in_progress[0].claimed_by.as_deref(),
-        Some("agent-a" | "agent-b")
-    ));
+    assert_that!(&(claims.iter().filter(|claim| claim.is_some()).count())).is_equal_to(1);
+    assert_that!(&(in_progress.len())).is_equal_to(1);
+    assert_that!(
+        &(matches!(
+            in_progress[0].claimed_by.as_deref(),
+            Some("agent-a" | "agent-b")
+        ))
+    )
+    .is_true();
 }
 
 #[tokio::test]
@@ -526,7 +542,7 @@ async fn claim_respects_project_scope() {
 
     let claimed = claim_item(&store, "demo", "agent-a", "open").await.unwrap();
 
-    assert!(claimed.is_none());
+    assert_that!(&(claimed.is_none())).is_true();
 }
 
 #[tokio::test]
@@ -548,7 +564,7 @@ async fn idea_item_is_skipped_until_moved_open() {
     .unwrap();
 
     let skipped = claim_item(&store, "demo", "agent-a", "open").await.unwrap();
-    assert!(skipped.is_none());
+    assert_that!(&(skipped.is_none())).is_true();
 
     let opened = move_item(
         &store,
@@ -564,9 +580,9 @@ async fn idea_item_is_skipped_until_moved_open() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(opened.state.as_deref(), Some("open"));
-    assert_eq!(claimed.id, item.id);
-    assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
+    assert_that!(&(opened.state.as_deref())).is_equal_to(Some("open"));
+    assert_that!(&(claimed.id)).is_equal_to(item.id);
+    assert_that!(&(claimed.claimed_by.as_deref())).is_equal_to(Some("agent-a"));
 }
 
 #[tokio::test]
@@ -608,8 +624,8 @@ async fn claiming_scans_past_non_matching_candidate_batch() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(claimed.id, open.id);
-    assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
+    assert_that!(&(claimed.id)).is_equal_to(open.id);
+    assert_that!(&(claimed.claimed_by.as_deref())).is_equal_to(Some("agent-a"));
 }
 
 #[tokio::test]
@@ -686,12 +702,10 @@ async fn claimed_items_include_verified_automation_source() {
 
     for view in [item, listed] {
         let claim_source = view.claim_source.expect("claim source should be present");
-        assert_eq!(claim_source.run_id, run.id);
-        assert_eq!(claim_source.trigger_id, Some(7));
-        assert_eq!(
-            claim_source.trigger_name.as_deref(),
-            Some("Refine queued item")
-        );
+        assert_that!(&(claim_source.run_id)).is_equal_to(run.id);
+        assert_that!(&(claim_source.trigger_id)).is_equal_to(Some(7));
+        assert_that!(&(claim_source.trigger_name.as_deref()))
+            .is_equal_to(Some("Refine queued item"));
     }
 }
 
@@ -775,8 +789,8 @@ async fn claimed_items_ignore_unlinked_dispatch_run_claimants() {
         .unwrap();
     let item = get_item(&store, "demo", item.id).await.unwrap();
 
-    assert_eq!(item.claimed_by.as_deref(), Some(agent_id.as_str()));
-    assert!(item.claim_source.is_none());
+    assert_that!(&(item.claimed_by.as_deref())).is_equal_to(Some(agent_id.as_str()));
+    assert_that!(&(item.claim_source.is_none())).is_true();
 }
 
 #[tokio::test]
@@ -801,10 +815,13 @@ async fn release_restores_claim_source_state_and_blocks_automation() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
-    assert!(claimed.labels.iter().any(|label| {
-        label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("ready")
-    }));
+    assert_that!(&(claimed.state.as_deref())).is_equal_to(Some(CLAIMED_STATE_LABEL));
+    assert_that!(
+        &(claimed.labels.iter().any(|label| {
+            label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("ready")
+        }))
+    )
+    .is_true();
 
     let released = release_item(
         &store,
@@ -817,25 +834,27 @@ async fn release_restores_claim_source_state_and_blocks_automation() {
     .await
     .unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("ready"));
-    assert_eq!(released.claimed_by, None);
-    assert!(
-        released
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("ready"));
+    assert_that!(&(released.claimed_by)).is_equal_to(None);
+    assert_that!(
+        &(released
             .labels
             .iter()
-            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
-    );
-    assert!(
-        released
+            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY))
+    )
+    .is_true();
+    assert_that!(
+        &(released
             .labels
             .iter()
-            .all(|label| label.key != CLAIMED_FROM_STATE_LABEL_KEY)
-    );
+            .all(|label| label.key != CLAIMED_FROM_STATE_LABEL_KEY))
+    )
+    .is_true();
 
     let claimed_again = claim_item(&store, "demo", "agent-b", "ready")
         .await
         .unwrap();
-    assert!(claimed_again.is_none());
+    assert_that!(&(claimed_again.is_none())).is_true();
 }
 
 #[tokio::test]
@@ -870,13 +889,14 @@ async fn claimable_release_clears_existing_automation_blocker() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
-    assert!(
-        claimed
+    assert_that!(&(claimed.state.as_deref())).is_equal_to(Some(CLAIMED_STATE_LABEL));
+    assert_that!(
+        &(claimed
             .labels
             .iter()
-            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
-    );
+            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY))
+    )
+    .is_true();
 
     let released = release_item(
         &store,
@@ -889,25 +909,24 @@ async fn claimable_release_clears_existing_automation_blocker() {
     .await
     .unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("open"));
-    assert_eq!(released.claimed_by, None);
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("open"));
+    assert_that!(&(released.claimed_by)).is_equal_to(None);
     for key in [
         CLAIMED_FROM_STATE_LABEL_KEY,
         AUTOMATION_BLOCKED_LABEL_KEY,
         FEEDBACK_REQUESTED_LABEL_KEY,
     ] {
-        assert!(
-            released.labels.iter().all(|label| label.key != key),
-            "claimable release should remove {key}"
-        );
+        assert_that!(&(released.labels.iter().all(|label| label.key != key)))
+            .with_detail_message(format!("claimable release should remove {key}"))
+            .is_true();
     }
 
     let claimed_again = claim_item(&store, "demo", "agent-b", "open")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(claimed_again.id, item.id);
-    assert_eq!(claimed_again.claimed_by.as_deref(), Some("agent-b"));
+    assert_that!(&(claimed_again.id)).is_equal_to(item.id);
+    assert_that!(&(claimed_again.claimed_by.as_deref())).is_equal_to(Some("agent-b"));
 }
 
 #[tokio::test]
@@ -951,26 +970,30 @@ async fn failed_automation_claim_finalization_blocks_retry() {
     let released = get_item(&store, "demo", item.id).await.unwrap();
     let comments = list_comments(&store, "demo", item.id).await.unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("open"));
-    assert_eq!(released.claimed_by, None);
-    assert!(
-        released
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("open"));
+    assert_that!(&(released.claimed_by)).is_equal_to(None);
+    assert_that!(
+        &(released
             .labels
             .iter()
-            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
-    );
-    assert!(comments.iter().any(|comment| {
-        comment.author_type == AuthorType::Agent
-            && comment.author_name.as_deref() == Some(agent_id)
-            && comment.body.contains("Automation turn failed")
-            && comment.body.contains("Run #17")
-            && comment
-                .body
-                .contains("Workspace setup failed because git was unavailable.")
-    }));
+            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY))
+    )
+    .is_true();
+    assert_that!(
+        &(comments.iter().any(|comment| {
+            comment.author_type == AuthorType::Agent
+                && comment.author_name.as_deref() == Some(agent_id)
+                && comment.body.contains("Automation turn failed")
+                && comment.body.contains("Run #17")
+                && comment
+                    .body
+                    .contains("Workspace setup failed because git was unavailable.")
+        }))
+    )
+    .is_true();
 
     let claimed_again = claim_item(&store, "demo", "agent-b", "open").await.unwrap();
-    assert!(claimed_again.is_none());
+    assert_that!(&(claimed_again.is_none())).is_true();
 }
 
 #[tokio::test]
@@ -1028,20 +1051,21 @@ async fn successful_and_cancelled_automation_claim_finalization_remains_claimabl
         .unwrap();
 
         let released = get_item(&store, "demo", item.id).await.unwrap();
-        assert_eq!(released.state.as_deref(), Some(source_state.as_str()));
-        assert_eq!(released.claimed_by, None);
-        assert!(
-            released
+        assert_that!(&(released.state.as_deref())).is_equal_to(Some(source_state.as_str()));
+        assert_that!(&(released.claimed_by)).is_equal_to(None);
+        assert_that!(
+            &(released
                 .labels
                 .iter()
-                .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
-        );
+                .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY))
+        )
+        .is_true();
 
         let claimed_again = claim_item(&store, "demo", "agent-b", &source_state)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(claimed_again.id, item.id);
+        assert_that!(&(claimed_again.id)).is_equal_to(item.id);
         release_item(
             &store,
             "demo",
@@ -1102,15 +1126,16 @@ async fn automation_claim_finalization_uses_finish_metadata_not_state_label() {
     .unwrap();
 
     let released = get_item(&store, "demo", item.id).await.unwrap();
-    assert_eq!(released.state.as_deref(), Some("open"));
-    assert_eq!(released.claimed_by, None);
-    assert!(released.finished_at.is_none());
-    assert!(
-        released
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("open"));
+    assert_that!(&(released.claimed_by)).is_equal_to(None);
+    assert_that!(&(released.finished_at.is_none())).is_true();
+    assert_that!(
+        &(released
             .labels
             .iter()
-            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
-    );
+            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY))
+    )
+    .is_true();
 }
 
 #[tokio::test]
@@ -1158,14 +1183,15 @@ async fn automation_claim_finalization_leaves_finished_items_alone() {
     .unwrap();
 
     let current = get_item(&store, "demo", item.id).await.unwrap();
-    assert_eq!(current.claimed_by.as_deref(), Some(agent_id));
-    assert!(current.finished_at.is_some());
-    assert!(
-        current
+    assert_that!(&(current.claimed_by.as_deref())).is_equal_to(Some(agent_id));
+    assert_that!(&(current.finished_at.is_some())).is_true();
+    assert_that!(
+        &(current
             .labels
             .iter()
-            .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
-    );
+            .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY))
+    )
+    .is_true();
 }
 
 #[tokio::test]
@@ -1204,41 +1230,48 @@ async fn request_feedback_restores_source_state_and_blocks_automation() {
         .await
         .unwrap();
 
-    assert_eq!(updated.state.as_deref(), Some("ready"));
-    assert_eq!(updated.claimed_by, None);
-    assert!(
-        updated
+    assert_that!(&(updated.state.as_deref())).is_equal_to(Some("ready"));
+    assert_that!(&(updated.claimed_by)).is_equal_to(None);
+    assert_that!(
+        &(updated
             .labels
             .iter()
-            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY)
-    );
-    assert!(
-        updated
+            .any(|label| label.key == AUTOMATION_BLOCKED_LABEL_KEY))
+    )
+    .is_true();
+    assert_that!(
+        &(updated
             .labels
             .iter()
-            .any(|label| label.key == FEEDBACK_REQUESTED_LABEL_KEY)
-    );
-    assert!(
-        updated
+            .any(|label| label.key == FEEDBACK_REQUESTED_LABEL_KEY))
+    )
+    .is_true();
+    assert_that!(
+        &(updated
             .labels
             .iter()
-            .all(|label| label.key != CLAIMED_FROM_STATE_LABEL_KEY)
-    );
-    assert!(comments.iter().any(|comment| {
-        comment.author_type == AuthorType::Agent
-            && comment.author_name.as_deref() == Some("agent-a")
-            && comment.body == "Which provider should this integration target?"
-    }));
-    assert!(
-        events
+            .all(|label| label.key != CLAIMED_FROM_STATE_LABEL_KEY))
+    )
+    .is_true();
+    assert_that!(
+        &(comments.iter().any(|comment| {
+            comment.author_type == AuthorType::Agent
+                && comment.author_name.as_deref() == Some("agent-a")
+                && comment.body == "Which provider should this integration target?"
+        }))
+    )
+    .is_true();
+    assert_that!(
+        &(events
             .iter()
-            .any(|event| event.event_type == WorkItemEventType::FeedbackRequested)
-    );
+            .any(|event| event.event_type == WorkItemEventType::FeedbackRequested))
+    )
+    .is_true();
 
     let claimed_again = claim_item(&store, "demo", "agent-b", "ready")
         .await
         .unwrap();
-    assert!(claimed_again.is_none());
+    assert_that!(&(claimed_again.is_none())).is_true();
 }
 
 #[tokio::test]
@@ -1271,7 +1304,7 @@ async fn feedback_requested_label_blocks_state_claims() {
 
     let claimed = claim_item(&store, "demo", "agent-a", "open").await.unwrap();
 
-    assert!(claimed.is_none());
+    assert_that!(&(claimed.is_none())).is_true();
 }
 
 #[tokio::test]
@@ -1296,7 +1329,7 @@ async fn specific_claim_release_restores_current_state() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
+    assert_that!(&(claimed.state.as_deref())).is_equal_to(Some(CLAIMED_STATE_LABEL));
 
     let released = release_item(
         &store,
@@ -1309,21 +1342,22 @@ async fn specific_claim_release_restores_current_state() {
     .await
     .unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("triage"));
-    assert_eq!(released.claimed_by, None);
-    assert!(
-        released
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("triage"));
+    assert_that!(&(released.claimed_by)).is_equal_to(None);
+    assert_that!(
+        &(released
             .labels
             .iter()
-            .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
-    );
+            .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY))
+    )
+    .is_true();
 
     let claimed_again = claim_item(&store, "demo", "agent-b", "triage")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(claimed_again.id, item.id);
-    assert_eq!(claimed_again.claimed_by.as_deref(), Some("agent-b"));
+    assert_that!(&(claimed_again.id)).is_equal_to(item.id);
+    assert_that!(&(claimed_again.claimed_by.as_deref())).is_equal_to(Some("agent-b"));
 }
 
 #[tokio::test]
@@ -1350,9 +1384,12 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
         .unwrap()
         .unwrap();
 
-    assert!(claimed.labels.iter().any(|label| {
-        label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("open")
-    }));
+    assert_that!(
+        &(claimed.labels.iter().any(|label| {
+            label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("open")
+        }))
+    )
+    .is_true();
 
     let released = release_item(
         &store,
@@ -1365,7 +1402,7 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
     .await
     .unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("open"));
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("open"));
 
     let selector_item = create_item(
         &store,
@@ -1393,10 +1430,13 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(claimed.state.as_deref(), Some(CLAIMED_STATE_LABEL));
-    assert!(claimed.labels.iter().any(|label| {
-        label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("ready")
-    }));
+    assert_that!(&(claimed.state.as_deref())).is_equal_to(Some(CLAIMED_STATE_LABEL));
+    assert_that!(
+        &(claimed.labels.iter().any(|label| {
+            label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("ready")
+        }))
+    )
+    .is_true();
 
     let released = release_item(
         &store,
@@ -1409,7 +1449,7 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
     .await
     .unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("ready"));
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("ready"));
 
     let specific_item = create_item(
         &store,
@@ -1432,9 +1472,12 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
         .unwrap()
         .unwrap();
 
-    assert!(claimed.labels.iter().any(|label| {
-        label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("triage")
-    }));
+    assert_that!(
+        &(claimed.labels.iter().any(|label| {
+            label.key == CLAIMED_FROM_STATE_LABEL_KEY && label.value.as_deref() == Some("triage")
+        }))
+    )
+    .is_true();
 
     let released = release_item(
         &store,
@@ -1447,7 +1490,7 @@ async fn new_claims_overwrite_stale_claim_source_with_current_state() {
     .await
     .unwrap();
 
-    assert_eq!(released.state.as_deref(), Some("triage"));
+    assert_that!(&(released.state.as_deref())).is_equal_to(Some("triage"));
 }
 
 #[tokio::test]
@@ -1483,7 +1526,7 @@ async fn release_requires_current_claimant() {
     .await
     .unwrap_err();
 
-    assert!(err.to_string().contains("claimed by agent-a"));
+    assert_that!(&(err.to_string().contains("claimed by agent-a"))).is_true();
 }
 
 #[tokio::test]
@@ -1532,18 +1575,17 @@ async fn finish_clears_claim_and_blocking_workflow_labels() {
         .await
         .unwrap();
 
-    assert_eq!(finished.state.as_deref(), Some(FINISHED_STATE_LABEL));
-    assert_eq!(finished.claimed_by, None);
-    assert!(finished.finished_at.is_some());
+    assert_that!(&(finished.state.as_deref())).is_equal_to(Some(FINISHED_STATE_LABEL));
+    assert_that!(&(finished.claimed_by)).is_equal_to(None);
+    assert_that!(&(finished.finished_at.is_some())).is_true();
     for key in [
         CLAIMED_FROM_STATE_LABEL_KEY,
         AUTOMATION_BLOCKED_LABEL_KEY,
         FEEDBACK_REQUESTED_LABEL_KEY,
     ] {
-        assert!(
-            finished.labels.iter().all(|label| label.key != key),
-            "finished item should not retain {key}"
-        );
+        assert_that!(&(finished.labels.iter().all(|label| label.key != key)))
+            .with_detail_message(format!("finished item should not retain {key}"))
+            .is_true();
     }
 }
 
@@ -1577,19 +1619,21 @@ async fn finish_moves_done_and_records_report() {
         .await
         .unwrap();
 
-    assert_eq!(finished.state.as_deref(), Some("done"));
-    assert_eq!(finished.claimed_by, None);
-    assert!(finished.finished_at.is_some());
-    assert!(
-        comments
+    assert_that!(&(finished.state.as_deref())).is_equal_to(Some("done"));
+    assert_that!(&(finished.claimed_by)).is_equal_to(None);
+    assert_that!(&(finished.finished_at.is_some())).is_true();
+    assert_that!(
+        &(comments
             .iter()
-            .any(|comment| comment.body == "Finished cleanly")
-    );
-    assert!(
-        events
+            .any(|comment| comment.body == "Finished cleanly"))
+    )
+    .is_true();
+    assert_that!(
+        &(events
             .iter()
-            .any(|event| event.event_type == WorkItemEventType::ItemFinished)
-    );
+            .any(|event| event.event_type == WorkItemEventType::ItemFinished))
+    )
+    .is_true();
 }
 
 #[tokio::test]
@@ -1640,13 +1684,13 @@ async fn state_and_selector_claims_do_not_reopen_finished_items() {
         .unwrap();
     let reloaded = get_item(&store, "demo", item.id).await.unwrap();
 
-    assert_eq!(moved.state.as_deref(), Some("open"));
-    assert!(moved.finished_at.is_some());
-    assert!(state_claim.is_none());
-    assert!(!selector_has_match);
-    assert!(selector_claim.is_none());
-    assert_eq!(reloaded.claimed_by, None);
-    assert!(reloaded.finished_at.is_some());
+    assert_that!(&(moved.state.as_deref())).is_equal_to(Some("open"));
+    assert_that!(&(moved.finished_at.is_some())).is_true();
+    assert_that!(&(state_claim.is_none())).is_true();
+    assert_that!(&(!selector_has_match)).is_true();
+    assert_that!(&(selector_claim.is_none())).is_true();
+    assert_that!(&(reloaded.claimed_by)).is_equal_to(None);
+    assert_that!(&(reloaded.finished_at.is_some())).is_true();
 }
 
 #[tokio::test]
@@ -1679,10 +1723,10 @@ async fn specific_claim_does_not_reopen_finished_items() {
         .unwrap();
     let reloaded = get_item(&store, "demo", item.id).await.unwrap();
 
-    assert!(claimed.is_none());
-    assert_eq!(reloaded.state.as_deref(), Some(FINISHED_STATE_LABEL));
-    assert_eq!(reloaded.claimed_by, None);
-    assert!(reloaded.finished_at.is_some());
+    assert_that!(&(claimed.is_none())).is_true();
+    assert_that!(&(reloaded.state.as_deref())).is_equal_to(Some(FINISHED_STATE_LABEL));
+    assert_that!(&(reloaded.claimed_by)).is_equal_to(None);
+    assert_that!(&(reloaded.finished_at.is_some())).is_true();
 }
 
 #[tokio::test]
@@ -1721,8 +1765,8 @@ async fn stale_claim_recovery_releases_old_claim() {
     let recovered = recover_stale_claims(&store, "demo", 10).await.unwrap();
     let item = get_item(&store, "demo", item.id).await.unwrap();
 
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].agent_id, "agent-a");
-    assert_eq!(item.state.as_deref(), Some("open"));
-    assert_eq!(item.claimed_by, None);
+    assert_that!(&(recovered.len())).is_equal_to(1);
+    assert_that!(&(recovered[0].agent_id)).is_equal_to("agent-a");
+    assert_that!(&(item.state.as_deref())).is_equal_to(Some("open"));
+    assert_that!(&(item.claimed_by)).is_equal_to(None);
 }

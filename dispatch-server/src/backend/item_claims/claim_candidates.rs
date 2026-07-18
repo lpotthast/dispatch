@@ -195,6 +195,7 @@ mod tests {
     use crate::shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY, STATE_LABEL_KEY,
     };
+    use assertr::prelude::*;
 
     fn label(key: &str, value: Option<&str>) -> WorkItemLabelView {
         WorkItemLabelView {
@@ -212,15 +213,21 @@ mod tests {
     fn state_selector_matches_current_state_and_skips_workflow_blockers() {
         let selector = ClaimSelector::state(" open ").unwrap();
 
-        assert!(selector.matches(&[label(STATE_LABEL_KEY, Some("open"))]));
-        assert!(!selector.matches(&[label(STATE_LABEL_KEY, Some("idea"))]));
-        assert!(!selector.matches(&[
-            label(STATE_LABEL_KEY, Some("open")),
-            label(AUTOMATION_BLOCKED_LABEL_KEY, None),
-        ]));
-        assert!(!selector.matches(&[
-            label(STATE_LABEL_KEY, Some("open")),
-            label(FEEDBACK_REQUESTED_LABEL_KEY, None),
-        ]));
+        assert_that!(&(selector.matches(&[label(STATE_LABEL_KEY, Some("open"))]))).is_true();
+        assert_that!(&(!selector.matches(&[label(STATE_LABEL_KEY, Some("idea"))]))).is_true();
+        assert_that!(
+            &(!selector.matches(&[
+                label(STATE_LABEL_KEY, Some("open")),
+                label(AUTOMATION_BLOCKED_LABEL_KEY, None),
+            ]))
+        )
+        .is_true();
+        assert_that!(
+            &(!selector.matches(&[
+                label(STATE_LABEL_KEY, Some("open")),
+                label(FEEDBACK_REQUESTED_LABEL_KEY, None),
+            ]))
+        )
+        .is_true();
     }
 }

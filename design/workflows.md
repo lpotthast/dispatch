@@ -123,6 +123,25 @@ Codex app-server stream transport interruptions that are consistent with host sl
 
 Dispatch repairs stale shared-asset symlinks in a project Codex home before launch. During each app-server run, Dispatch captures a bounded stderr diagnostic alongside the structured run log. When launch or execution fails, the run summary and automatic claim-release comment put the root cause reported by Codex first, followed by the SDK and transport details; a generic transport closure must not hide an available process error.
 
+## Project Deletion
+
+Project deletion is an ordered server lifecycle, not a raw project-row delete. Dispatch first
+closes run admission for the immutable project id, stops its automation scheduler, cancels every
+registered run including runs that have not spawned a child process yet, and waits for all sessions
+to finish. A session registered after deletion begins receives cancellation immediately.
+
+After processes have stopped, Dispatch removes every project-owned runtime artifact: per-run
+developer instructions, user prompts, structured output, Codex stderr diagnostics, Git policy
+files, run shim directories, isolated Git worktrees, `dispatch/*` run branches, and the project's
+managed Codex home. Missing artifacts are treated as already cleaned; any other cleanup failure
+aborts the database deletion so the operator can correct the problem and retry. Dispatch never
+deletes the configured source workspace itself.
+
+Only after cleanup succeeds does Dispatch delete the project row and its cascading project data.
+Both custom operator handlers and CrudKit deletion use this same lifecycle. Completion publishes a
+project-deleted live event containing both the deleted id and name, so a same-name replacement is
+never confused with the deleted project.
+
 ### Produced work
 
 Before production, Dispatch validates the complete produced-work specification and records an evaluation at the current trigger revision. Deduplication and item creation occur in the same transaction. A duplicate evaluation records `skipped_duplicate` and the reused unfinished item without modifying it. New items atomically receive state, labels, item execution overrides, immutable origin, and `ItemCreated` attribution.

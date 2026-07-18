@@ -18,7 +18,9 @@ use crate::{
             agent_run, agent_tool, automation_trigger, comment, personality, project, swim_lane,
             work_item, work_item_state,
         },
-        events, item_labels, items, personalities, projects,
+        events, item_labels, items, personalities,
+        project_deletion::ProjectDeletionService,
+        projects,
         storage::{Store, utc_now},
         swim_lanes,
         work_item_creation::{self, CreateWorkItem, CreateWorkItemPlan},
@@ -75,6 +77,7 @@ impl CollaborationService for NoopCollaborationService {
 #[derive(Clone)]
 pub struct ProjectResourceContext {
     store: Store,
+    deletion: ProjectDeletionService,
 }
 
 impl fmt::Debug for ProjectResourceContext {
@@ -331,24 +334,28 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
     }
 
     async fn before_delete(
+        model: &project::Model,
+        _delete_request: &DeleteRequest<CrudProjectResource>,
+        context: &ProjectResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: ProjectHookData,
+    ) -> Result<ProjectHookData, HookError<Self::Error>> {
+        context
+            .deletion
+            .delete_model(model.clone())
+            .await
+            .map_err(|err| ProjectHookError(err.to_string()))
+            .map_err(HookError::Internal)?;
+        Ok(data)
+    }
+
+    async fn after_delete(
         _model: &project::Model,
         _delete_request: &DeleteRequest<CrudProjectResource>,
         _context: &ProjectResourceContext,
         _request: RequestContext<NoAuth>,
         data: ProjectHookData,
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
-        Ok(data)
-    }
-
-    async fn after_delete(
-        model: &project::Model,
-        _delete_request: &DeleteRequest<CrudProjectResource>,
-        _context: &ProjectResourceContext,
-        _request: RequestContext<NoAuth>,
-        data: ProjectHookData,
-    ) -> Result<ProjectHookData, HookError<Self::Error>> {
-        events::publish_project_list_changed();
-        events::publish_project_changed(&model.name);
         Ok(data)
     }
 }
@@ -2316,7 +2323,7 @@ pub struct CrudContexts {
     pub work_item_state: Arc<CrudContext<CrudWorkItemStateResource>>,
 }
 
-pub fn build_contexts(store: Store) -> CrudContexts {
+pub fn build_contexts(store: Store, project_deletion: ProjectDeletionService) -> CrudContexts {
     let db = store.db();
     let repository = Arc::new(SeaOrmRepo::new(db.clone()));
     let validation_result_repository = Arc::new(
@@ -2328,6 +2335,7 @@ pub fn build_contexts(store: Store) -> CrudContexts {
         project: Arc::new(CrudContext {
             res_context: Arc::new(ProjectResourceContext {
                 store: store.clone(),
+                deletion: project_deletion,
             }),
             repository: repository.clone(),
             validators: vec![],
@@ -2421,6 +2429,7 @@ pub fn build_contexts(store: Store) -> CrudContexts {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -2461,7 +2470,7 @@ mod tests {
         let state = normalize_work_item_create_state(Some(" review ".to_owned()))
             .expect("state should normalize");
 
-        assert_eq!(state, "review");
+        assert_that!(&(state)).is_equal_to("review");
     }
 
     #[test]
@@ -2470,8 +2479,8 @@ mod tests {
         let blank = normalize_work_item_create_state(Some("  ".to_owned()))
             .expect("blank state should default");
 
-        assert_eq!(missing, DEFAULT_STATE_LABEL);
-        assert_eq!(blank, DEFAULT_STATE_LABEL);
+        assert_that!(&(missing)).is_equal_to(DEFAULT_STATE_LABEL);
+        assert_that!(&(blank)).is_equal_to(DEFAULT_STATE_LABEL);
     }
 
     #[test]
@@ -2481,7 +2490,7 @@ mod tests {
 
         match err {
             HookError::UnprocessableEntity { reason } => {
-                assert!(reason.contains("cannot contain '='"));
+                assert_that!(&(reason.contains("cannot contain '='"))).is_true();
             }
             other => panic!("expected unprocessable state error, got {other:?}"),
         }
@@ -2508,38 +2517,42 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(created.version, 1);
-        assert!(created.agent_model_override.is_none());
-        assert_eq!(
-            created.agent_reasoning_effort_override.as_deref(),
-            Some("medium")
-        );
+        assert_that!(&(created.version)).is_equal_to(1);
+        assert_that!(&(created.agent_model_override.is_none())).is_true();
+        assert_that!(&(created.agent_reasoning_effort_override.as_deref()))
+            .is_equal_to(Some("medium"));
 
         let labels = work_item_labels::for_item(store.db().as_ref(), project_id, created.id)
             .await
             .unwrap();
-        assert!(labels.iter().any(|label| {
-            label.key == STATE_LABEL_KEY && label.value.as_deref() == Some("review")
-        }));
-        assert!(
-            labels
+        assert_that!(
+            &(labels.iter().any(|label| {
+                label.key == STATE_LABEL_KEY && label.value.as_deref() == Some("review")
+            }))
+        )
+        .is_true();
+        assert_that!(
+            &(labels.iter().any(|label| {
+                label.key == "priority" && label.value.as_deref() == Some("high")
+            }))
+        )
+        .is_true();
+        assert_that!(
+            &(labels
                 .iter()
-                .any(|label| { label.key == "priority" && label.value.as_deref() == Some("high") })
-        );
-        assert!(
-            labels
-                .iter()
-                .any(|label| label.key == "needs-verification" && label.value.is_none())
-        );
+                .any(|label| label.key == "needs-verification" && label.value.is_none()))
+        )
+        .is_true();
 
         let events = list_events(&store, "demo", Some(created.id), None)
             .await
             .unwrap();
-        assert!(
-            events
+        assert_that!(
+            &(events
                 .iter()
-                .any(|event| event.event_type == WorkItemEventType::ItemCreated)
-        );
+                .any(|event| event.event_type == WorkItemEventType::ItemCreated))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -2572,22 +2585,21 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(updated.version, created.version + 1);
-        assert_eq!(updated.title, "After update");
-        assert_eq!(updated.agent_model_override.as_deref(), Some("gpt-5.5"));
-        assert_eq!(
-            updated.agent_reasoning_effort_override.as_deref(),
-            Some("high")
-        );
+        assert_that!(&(updated.version)).is_equal_to(created.version + 1);
+        assert_that!(&(updated.title)).is_equal_to("After update");
+        assert_that!(&(updated.agent_model_override.as_deref())).is_equal_to(Some("gpt-5.5"));
+        assert_that!(&(updated.agent_reasoning_effort_override.as_deref()))
+            .is_equal_to(Some("high"));
 
         let events = list_events(&store, "demo", Some(created.id), None)
             .await
             .unwrap();
-        assert!(
-            events
+        assert_that!(
+            &(events
                 .iter()
-                .any(|event| event.event_type == WorkItemEventType::ItemUpdated)
-        );
+                .any(|event| event.event_type == WorkItemEventType::ItemUpdated))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -2624,26 +2636,33 @@ mod tests {
 
         let deleted = repository.delete(source.clone()).await.unwrap();
 
-        assert_eq!(deleted.entities_affected, 1);
-        assert!(get_item(&store, "demo", source.id).await.is_err());
-        assert!(
-            list_item_relationships(&store, "demo", target.id)
+        assert_that!(&(deleted.entities_affected)).is_equal_to(1);
+        assert_that!(&(get_item(&store, "demo", source.id).await.is_err())).is_true();
+        assert_that!(
+            &(list_item_relationships(&store, "demo", target.id)
                 .await
                 .unwrap()
-                .is_empty()
-        );
+                .is_empty())
+        )
+        .is_true();
 
         let project_events = list_events(&store, "demo", None, None).await.unwrap();
-        assert!(project_events.iter().any(|event| {
-            event.event_type == WorkItemEventType::ItemDeleted && event.body == "Deleted item"
-        }));
+        assert_that!(
+            &(project_events.iter().any(|event| {
+                event.event_type == WorkItemEventType::ItemDeleted && event.body == "Deleted item"
+            }))
+        )
+        .is_true();
         let target_events = list_events(&store, "demo", Some(target.id), None)
             .await
             .unwrap();
-        assert!(target_events.iter().any(|event| {
-            event.event_type == WorkItemEventType::RelationshipDeleted
-                && event.body
-                    == format!("Deleted relationships touching removed item #{}", source.id)
-        }));
+        assert_that!(
+            &(target_events.iter().any(|event| {
+                event.event_type == WorkItemEventType::RelationshipDeleted
+                    && event.body
+                        == format!("Deleted relationships touching removed item #{}", source.id)
+            }))
+        )
+        .is_true();
     }
 }

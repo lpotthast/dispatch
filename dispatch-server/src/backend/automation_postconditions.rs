@@ -324,6 +324,7 @@ fn failure(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use crudkit_core::condition::{
         Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
     };
@@ -424,8 +425,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.status, SemanticPostconditionStatus::NotConfigured);
-        assert!(result.failures.is_empty());
+        assert_that!(&(result.status)).is_equal_to(SemanticPostconditionStatus::NotConfigured);
+        assert_that!(&(result.failures.is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -561,8 +562,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.status, SemanticPostconditionStatus::Passed);
-        assert!(result.failures.is_empty());
+        assert_that!(&(result.status)).is_equal_to(SemanticPostconditionStatus::Passed);
+        assert_that!(&(result.failures.is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -601,8 +602,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.status, SemanticPostconditionStatus::Failed);
-        assert_eq!(result.failures[0].assertion, "label_added");
+        assert_that!(&(result.status)).is_equal_to(SemanticPostconditionStatus::Failed);
+        assert_that!(&(result.failures[0].assertion)).is_equal_to("label_added");
     }
 
     #[tokio::test]
@@ -645,8 +646,8 @@ mod tests {
                     ..Default::default()
                 }],
             };
-            assert_eq!(
-                evaluate(
+            assert_that!(
+                &(evaluate(
                     &store,
                     "demo",
                     run_id,
@@ -656,9 +657,9 @@ mod tests {
                 )
                 .await
                 .unwrap()
-                .status,
-                SemanticPostconditionStatus::Passed
-            );
+                .status)
+            )
+            .is_equal_to(SemanticPostconditionStatus::Passed);
         }
     }
 }

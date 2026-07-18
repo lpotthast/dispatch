@@ -1,6 +1,6 @@
 use crate::{
     frontend::{
-        components::{ActivePage, cached_query, selected_project_signal, top_bar},
+        components::{ActivePage, TopBar, cached_query, selected_project_signal},
         live_events::{api_docs_event_matches, refetch_on_live_event},
         services::{api_docs_service, project_cache},
     },
@@ -54,13 +54,15 @@ pub fn PageApiDocs() -> impl IntoView {
             .map(|page| page.codex_status)
             .unwrap_or_default()
     });
-    let topbar = top_bar(
-        active_project_names,
-        selected_project.into(),
-        ActivePage::Api,
-        Signal::derive(|| None),
-        codex_status,
-    );
+    let topbar = view! {
+        <TopBar
+            active_project_names
+            selected_project=selected_project.into()
+            active=ActivePage::Api
+            automation=Signal::derive(|| None)
+            codex_status
+        />
+    };
 
     view! {
         <Title text="Dispatch API"/>
@@ -70,14 +72,15 @@ pub fn PageApiDocs() -> impl IntoView {
                 <section class="page-heading">
                     <h1>"Dispatch API"</h1>
                 </section>
-                {dispatch_labels_panel()}
-                {custom_endpoints_panel()}
+                <DispatchLabelsPanel/>
+                <CustomEndpointsPanel/>
             </main>
         </div>
     }
 }
 
-fn dispatch_labels_panel() -> impl IntoView {
+#[component]
+fn DispatchLabelsPanel() -> impl IntoView {
     view! {
         <section class="dispatch-labels panel">
             <div class="panel-heading">
@@ -105,7 +108,8 @@ fn dispatch_labels_panel() -> impl IntoView {
     }
 }
 
-fn custom_endpoints_panel() -> impl IntoView {
+#[component]
+fn CustomEndpointsPanel() -> impl IntoView {
     let custom_endpoints = [
         "GET /api/projects/{project}/memory",
         "PUT /api/projects/{project}/memory",

@@ -1361,6 +1361,7 @@ dependencies = [
  "leptos_router",
  "paste",
  "pulldown-cmark",
+ "reqwest",
  "rootcause 0.13.0",
  "sea-orm",
  "sea-orm-migration",

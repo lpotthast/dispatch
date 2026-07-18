@@ -36,9 +36,9 @@ impl BoardService {
             |selected_project| Box::pin(load_board_page(selected_project, api_base_url())),
             |project| Box::pin(load_board_items_section(project)),
         );
-        service.page_cache = Some(LocalStorageCache::persistent("dispatch.query.board.v1"));
+        service.page_cache = Some(LocalStorageCache::persistent("dispatch.query.board.v2"));
         service.items_cache = Some(LocalStorageCache::persistent(
-            "dispatch.query.board-items.v1",
+            "dispatch.query.board-items.v2",
         ));
         service
     }
@@ -58,15 +58,21 @@ impl BoardService {
         &self,
         selected_project: Option<String>,
     ) -> Result<BoardPage, ServerFnError> {
+        let lifecycle_epoch = self.page_cache.map(|cache| cache.capture_lifecycle_epoch());
         let key = selected_project.clone();
         let page = self.load_page.execute(selected_project).await?;
-        if let (Some(cache), Some((project, section))) =
-            (self.items_cache, board_items_section_from_page(&page))
-        {
-            cache.store(&project, &section);
-        }
-        if let Some(cache) = self.page_cache {
-            cache.store(&key, &page);
+        if lifecycle_epoch.is_some_and(|epoch| {
+            self.page_cache
+                .is_some_and(|cache| cache.lifecycle_epoch_is(epoch))
+        }) {
+            if let (Some(cache), Some((project, section))) =
+                (self.items_cache, board_items_section_from_page(&page))
+            {
+                cache.store(&project, &section);
+            }
+            if let Some(cache) = self.page_cache {
+                cache.store(&key, &page);
+            }
         }
         Ok(page)
     }
@@ -83,12 +89,29 @@ impl BoardService {
         &self,
         project: String,
     ) -> Result<BoardItemsSection, ServerFnError> {
+        let lifecycle_epoch = self
+            .items_cache
+            .map(|cache| cache.capture_lifecycle_epoch());
         let key = project.clone();
         let items = self.load_items.execute(project).await?;
-        if let Some(cache) = self.items_cache {
+        if lifecycle_epoch.is_some_and(|epoch| {
+            self.items_cache
+                .is_some_and(|cache| cache.lifecycle_epoch_is(epoch))
+        }) && let Some(cache) = self.items_cache
+        {
             cache.store(&key, &items);
         }
         Ok(items)
+    }
+
+    #[cfg(not(feature = "ssr"))]
+    pub(crate) fn clear_cache(&self) {
+        if let Some(cache) = self.page_cache {
+            cache.clear();
+        }
+        if let Some(cache) = self.items_cache {
+            cache.clear();
+        }
     }
 }
 

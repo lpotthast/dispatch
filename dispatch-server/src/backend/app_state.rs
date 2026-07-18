@@ -3,7 +3,8 @@ use std::sync::{Arc, LazyLock, RwLock};
 use crate::{
     backend::{
         automation_controller::AutomationController, codex_app_server::CodexStatusRefresh,
-        process_sessions::ProcessSessionRegistry, storage::Store,
+        process_sessions::ProcessSessionRegistry, project_deletion::ProjectDeletionService,
+        storage::Store,
     },
     shared::view_models::CodexAppServerStatusView,
 };
@@ -13,6 +14,7 @@ pub(crate) struct AppState {
     pub(crate) store: Store,
     pub(crate) sessions: ProcessSessionRegistry,
     pub(crate) automation_controller: AutomationController,
+    pub(crate) project_deletion: ProjectDeletionService,
     pub(crate) codex_status: Arc<tokio::sync::RwLock<CodexAppServerStatusView>>,
     pub(crate) codex_status_refresh: CodexStatusRefresh,
 }

@@ -3,8 +3,8 @@ use leptos_routes::routes;
 #[routes]
 pub mod routes {
     use crate::frontend::{
-        MainLayout, PageApiDocs, PageBoard, PageCodex, PageErr404, PageError, PageItem,
-        PageProjects, PageRunLog, PageRuns, PageTriggers,
+        MainLayout, PageApiDocs, PageBoard, PageErr404, PageError, PageItem, PageProject,
+        PageProjects, PageRunLog, PageRuns, PageSystem, PageTriggers,
     };
 
     fallback!(PageErr404);
@@ -14,6 +14,11 @@ pub mod routes {
     #[route("/projects")]
     mod projects {
         page!(PageProjects);
+    }
+
+    #[route("/project")]
+    mod project {
+        page!(PageProject);
     }
 
     #[route("/automation")]
@@ -26,9 +31,14 @@ pub mod routes {
         page!(PageRuns);
     }
 
+    #[route("/system")]
+    mod system {
+        page!(PageSystem);
+    }
+
     #[route("/codex")]
-    mod codex {
-        page!(PageCodex);
+    mod legacy_codex {
+        page!(PageSystem);
     }
 
     #[route("/api/docs")]

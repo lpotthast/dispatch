@@ -1,12 +1,12 @@
 use crate::{
     frontend::{
-        components::{ActivePage, LiveRunsSection, cached_query, selected_project_signal, top_bar},
+        components::{ActivePage, LiveRunsSection, TopBar, cached_query, selected_project_signal},
         live_events::{refetch_on_live_event, runs_page_event_matches},
         services::{project_cache, run_service},
     },
     shared::view_models::{
         AgentRunOutputPiece, AgentRunView, AutomationStatusView, CodexAppServerStatusView,
-        ProjectView, WorkspaceEditorView,
+        ProjectView,
     },
 };
 use leptos::prelude::*;
@@ -21,7 +21,6 @@ pub struct RunsPage {
     pub automation_status: Option<AutomationStatusView>,
     pub automation_running: bool,
     pub run_sessions: Vec<BoardRunSessionView>,
-    pub workspace_editors: Vec<WorkspaceEditorView>,
     pub codex_status: CodexAppServerStatusView,
 }
 
@@ -74,13 +73,15 @@ pub fn PageRuns() -> impl IntoView {
             .map(|page| page.codex_status)
             .unwrap_or_default()
     });
-    let topbar = top_bar(
-        active_project_names,
-        selected_project.into(),
-        ActivePage::Runs,
-        Signal::derive(|| None),
-        codex_status,
-    );
+    let topbar = view! {
+        <TopBar
+            active_project_names
+            selected_project=selected_project.into()
+            active=ActivePage::Runs
+            automation=Signal::derive(|| None)
+            codex_status
+        />
+    };
 
     view! {
         <Title text="Runs"/>
@@ -94,15 +95,16 @@ pub fn PageRuns() -> impl IntoView {
                     result
                         .value
                         .get()
-                        .map(runs_content)
-                        .unwrap_or_else(runs_shell)
+                        .map(|page| view! { <RunsContent page/> }.into_any())
+                        .unwrap_or_else(|| view! { <RunsShell/> }.into_any())
                 }}
             </main>
         </div>
     }
 }
 
-fn runs_shell() -> AnyView {
+#[component]
+fn RunsShell() -> impl IntoView {
     view! {
         <section class="automation">
             <div class="panel-heading">
@@ -115,10 +117,10 @@ fn runs_shell() -> AnyView {
             </div>
         </section>
     }
-    .into_any()
 }
 
-fn runs_content(page: RunsPage) -> AnyView {
+#[component]
+fn RunsContent(page: RunsPage) -> impl IntoView {
     let RunsPage {
         projects: _,
         active_project_names: _,
@@ -126,7 +128,6 @@ fn runs_content(page: RunsPage) -> AnyView {
         automation_status,
         automation_running,
         run_sessions,
-        workspace_editors,
         codex_status: _,
     } = page;
 
@@ -137,7 +138,6 @@ fn runs_content(page: RunsPage) -> AnyView {
                 initial_status=automation_status
                 initial_running=automation_running
                 initial_run_sessions=run_sessions
-                workspace_editors=workspace_editors
             />
         }
         .into_any()

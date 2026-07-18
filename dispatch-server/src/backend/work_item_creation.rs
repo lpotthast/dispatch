@@ -213,6 +213,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use sea_orm::ActiveValue::Set;
 
     use super::*;
@@ -243,30 +244,25 @@ mod tests {
         let plan = CreateWorkItemPlan::new(create_work_item()).unwrap();
         let insert = plan.into_insert(42, "2026-06-19T00:00:00Z".to_owned());
 
-        assert_eq!(insert.state_label, "open");
-        assert_eq!(
-            insert.initial_labels,
-            vec![
-                item_labels::NormalizedLabel {
-                    key: "priority".to_owned(),
-                    value: Some("high".to_owned()),
-                },
-                item_labels::NormalizedLabel {
-                    key: "needs-verification".to_owned(),
-                    value: None,
-                },
-            ]
-        );
+        assert_that!(&(insert.state_label)).is_equal_to("open");
+        assert_that!(&(insert.initial_labels)).is_equal_to(vec![
+            item_labels::NormalizedLabel {
+                key: "priority".to_owned(),
+                value: Some("high".to_owned()),
+            },
+            item_labels::NormalizedLabel {
+                key: "needs-verification".to_owned(),
+                value: None,
+            },
+        ]);
 
         let active = insert.active;
-        assert_eq!(active.project_id, Set(42));
-        assert_eq!(active.title, Set("Create me".to_owned()));
-        assert_eq!(active.agent_model_override, Set(None));
-        assert_eq!(
-            active.agent_reasoning_effort_override,
-            Set(Some("medium".to_owned()))
-        );
-        assert_eq!(active.version, Set(1));
+        assert_that!(&(active.project_id)).is_equal_to(Set(42));
+        assert_that!(&(active.title)).is_equal_to(Set("Create me".to_owned()));
+        assert_that!(&(active.agent_model_override)).is_equal_to(Set(None));
+        assert_that!(&(active.agent_reasoning_effort_override))
+            .is_equal_to(Set(Some("medium".to_owned())));
+        assert_that!(&(active.version)).is_equal_to(Set(1));
     }
 
     #[test]
@@ -276,17 +272,19 @@ mod tests {
             ..create_work_item()
         })
         .unwrap_err();
-        assert!(err.to_string().contains("item title cannot be empty"));
+        assert_that!(&(err.to_string().contains("item title cannot be empty"))).is_true();
 
         let err = CreateWorkItemPlan::new(CreateWorkItem {
             state: " ".to_owned(),
             ..create_work_item()
         })
         .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("state label value cannot be empty")
-        );
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("state label value cannot be empty"))
+        )
+        .is_true();
 
         let err = CreateWorkItemPlan::new(CreateWorkItem {
             initial_labels: vec![CreateWorkItemLabelRequest {
@@ -296,8 +294,8 @@ mod tests {
             ..create_work_item()
         })
         .unwrap_err();
-        assert!(err.to_string().contains("invalid initial labels"));
-        assert!(err.to_string().contains("use the state selector"));
+        assert_that!(&(err.to_string().contains("invalid initial labels"))).is_true();
+        assert_that!(&(err.to_string().contains("use the state selector"))).is_true();
     }
 
     #[test]
@@ -308,9 +306,11 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("agent model override must be one of")
-        );
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("agent model override must be one of"))
+        )
+        .is_true();
     }
 }

@@ -21,6 +21,11 @@ Project data includes:
 
 All item and automation API calls are project-scoped. Missing project context is an error for agent-facing operations.
 
+The database project id, not the reusable project name, is the lifecycle identity. Deleting a
+project cascades through every project-owned database record. Recreating the same name creates a
+new id and therefore a fresh scope; work items, events, automation runs, and other records from the
+deleted id cannot attach to the replacement project.
+
 The project system prompt is trusted project-owned instruction text included in the developer instructions for automation runs. It remains subordinate to Dispatch's execution contract and effective run policy. Every project system prompt write creates a project-level `SystemPromptChanged` event with the full prompt snapshot after the write. System prompt events carry optional actor and agent-run attribution so a prompt change can be traced back to the Dispatch user or agent/session that wrote it.
 
 Project memory is the project-owned shared historical reference for agents. Because agents may write it, Dispatch includes memory in the user prompt rather than developer instructions and explicitly tells agents to verify drift-prone facts instead of treating memory as current policy. Every project memory write creates a project-level `MemoryChanged` event with the full memory snapshot after the write. Memory events carry optional actor and agent-run attribution so a memory change can be traced back to the Dispatch agent/session that wrote it.

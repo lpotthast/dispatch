@@ -665,6 +665,7 @@ fn trimmed_label_value(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -785,7 +786,9 @@ mod tests {
         let mut chunk = [0; 1024];
         let header_end = loop {
             let read = stream.read(&mut chunk).unwrap();
-            assert!(read > 0, "client closed before request headers completed");
+            assert_that!(&(read > 0))
+                .with_detail_message("client closed before request headers completed")
+                .is_true();
             buffer.extend_from_slice(&chunk[..read]);
             if let Some(header_end) = find_header_end(&buffer) {
                 break header_end;
@@ -803,7 +806,9 @@ mod tests {
         let body_start = header_end + b"\r\n\r\n".len();
         while buffer.len() < body_start + content_length {
             let read = stream.read(&mut chunk).unwrap();
-            assert!(read > 0, "client closed before request body completed");
+            assert_that!(&(read > 0))
+                .with_detail_message("client closed before request body completed")
+                .is_true();
             buffer.extend_from_slice(&chunk[..read]);
         }
         let request_line = headers.lines().next().unwrap().to_owned();
@@ -822,9 +827,9 @@ mod tests {
     fn create_item_request_without_labels_has_empty_initial_labels() {
         let request = create_work_item_request(create_args(&[]));
 
-        assert_eq!(request.title, "Title");
-        assert_eq!(request.description, "Description");
-        assert!(request.initial_labels.is_empty());
+        assert_that!(&(request.title)).is_equal_to("Title");
+        assert_that!(&(request.description)).is_equal_to("Description");
+        assert_that!(&(request.initial_labels.is_empty())).is_true();
     }
 
     #[test]
@@ -839,12 +844,10 @@ mod tests {
             json: true,
         });
 
-        assert_eq!(request.state.as_deref(), Some("idea"));
-        assert_eq!(request.agent_model_override.as_deref(), Some("gpt-5-codex"));
-        assert_eq!(
-            request.agent_reasoning_effort_override,
-            Some(AgentReasoningEffort::High)
-        );
+        assert_that!(&(request.state.as_deref())).is_equal_to(Some("idea"));
+        assert_that!(&(request.agent_model_override.as_deref())).is_equal_to(Some("gpt-5-codex"));
+        assert_that!(&(request.agent_reasoning_effort_override))
+            .is_equal_to(Some(AgentReasoningEffort::High));
     }
 
     #[test]
@@ -855,13 +858,13 @@ mod tests {
             "token=a=b",
         ]));
 
-        assert_eq!(request.initial_labels.len(), 3);
-        assert_eq!(request.initial_labels[0].key, "type");
-        assert_eq!(request.initial_labels[0].value.as_deref(), Some("feature"));
-        assert_eq!(request.initial_labels[1].key, "needs-verification");
-        assert!(request.initial_labels[1].value.is_none());
-        assert_eq!(request.initial_labels[2].key, "token");
-        assert_eq!(request.initial_labels[2].value.as_deref(), Some("a=b"));
+        assert_that!(&(request.initial_labels.len())).is_equal_to(3);
+        assert_that!(&(request.initial_labels[0].key)).is_equal_to("type");
+        assert_that!(&(request.initial_labels[0].value.as_deref())).is_equal_to(Some("feature"));
+        assert_that!(&(request.initial_labels[1].key)).is_equal_to("needs-verification");
+        assert_that!(&(request.initial_labels[1].value.is_none())).is_true();
+        assert_that!(&(request.initial_labels[2].key)).is_equal_to("token");
+        assert_that!(&(request.initial_labels[2].value.as_deref())).is_equal_to(Some("a=b"));
     }
 
     #[test]
@@ -872,12 +875,12 @@ mod tests {
             " empty = ",
         ]));
 
-        assert_eq!(request.initial_labels[0].key, "type");
-        assert_eq!(request.initial_labels[0].value.as_deref(), Some("feature"));
-        assert_eq!(request.initial_labels[1].key, "needs-verification");
-        assert!(request.initial_labels[1].value.is_none());
-        assert_eq!(request.initial_labels[2].key, "empty");
-        assert!(request.initial_labels[2].value.is_none());
+        assert_that!(&(request.initial_labels[0].key)).is_equal_to("type");
+        assert_that!(&(request.initial_labels[0].value.as_deref())).is_equal_to(Some("feature"));
+        assert_that!(&(request.initial_labels[1].key)).is_equal_to("needs-verification");
+        assert_that!(&(request.initial_labels[1].value.is_none())).is_true();
+        assert_that!(&(request.initial_labels[2].key)).is_equal_to("empty");
+        assert_that!(&(request.initial_labels[2].value.is_none())).is_true();
     }
 
     #[test]
@@ -889,17 +892,15 @@ mod tests {
             "state=blocked",
         ]));
 
-        assert_eq!(request.initial_labels[0].key, "dup");
-        assert_eq!(request.initial_labels[0].value.as_deref(), Some("one"));
-        assert_eq!(request.initial_labels[1].key, "dup");
-        assert_eq!(request.initial_labels[1].value.as_deref(), Some("two"));
-        assert_eq!(request.initial_labels[2].key, "");
-        assert_eq!(
-            request.initial_labels[2].value.as_deref(),
-            Some("missing-key")
-        );
-        assert_eq!(request.initial_labels[3].key, "state");
-        assert_eq!(request.initial_labels[3].value.as_deref(), Some("blocked"));
+        assert_that!(&(request.initial_labels[0].key)).is_equal_to("dup");
+        assert_that!(&(request.initial_labels[0].value.as_deref())).is_equal_to(Some("one"));
+        assert_that!(&(request.initial_labels[1].key)).is_equal_to("dup");
+        assert_that!(&(request.initial_labels[1].value.as_deref())).is_equal_to(Some("two"));
+        assert_that!(&(request.initial_labels[2].key)).is_equal_to("");
+        assert_that!(&(request.initial_labels[2].value.as_deref()))
+            .is_equal_to(Some("missing-key"));
+        assert_that!(&(request.initial_labels[3].key)).is_equal_to("state");
+        assert_that!(&(request.initial_labels[3].value.as_deref())).is_equal_to(Some("blocked"));
     }
 
     #[tokio::test]
@@ -934,21 +935,15 @@ mod tests {
 
         let request = request_rx.recv().unwrap();
         server_handle.join().unwrap();
-        assert_eq!(
-            request.request_line,
-            "POST /api/projects/demo/items HTTP/1.1"
-        );
+        assert_that!(&(request.request_line)).is_equal_to("POST /api/projects/demo/items HTTP/1.1");
 
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
-        assert_eq!(body["title"], "Created through CLI");
-        assert_eq!(body["description"], "Body");
-        assert_eq!(body["state"], "open");
-        assert_eq!(
-            body["initial_labels"],
-            json!([
-                { "key": "type", "value": "feature" },
-                { "key": "needs-verification", "value": null }
-            ])
-        );
+        assert_that!(&(body["title"])).is_equal_to("Created through CLI");
+        assert_that!(&(body["description"])).is_equal_to("Body");
+        assert_that!(&(body["state"])).is_equal_to("open");
+        assert_that!(&(body["initial_labels"])).is_equal_to(json!([
+            { "key": "type", "value": "feature" },
+            { "key": "needs-verification", "value": null }
+        ]));
     }
 }

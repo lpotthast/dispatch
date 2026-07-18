@@ -169,6 +169,7 @@ pub(crate) fn validate_item_text(title: &str, description: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use sea_orm::ActiveValue::Set;
 
     use super::*;
@@ -196,7 +197,7 @@ mod tests {
     fn empty_update_is_rejected_before_applying_to_model() {
         let err = WorkItemUpdatePlan::new(UpdateWorkItem::default()).unwrap_err();
 
-        assert!(err.to_string().contains("requires at least one field"));
+        assert_that!(&(err.to_string().contains("requires at least one field"))).is_true();
     }
 
     #[test]
@@ -208,13 +209,13 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(plan.expect_version(), Some(4));
+        assert_that!(&(plan.expect_version())).is_equal_to(Some(4));
 
         let applied = plan.apply_to(work_item()).unwrap();
 
-        assert_eq!(applied.state.as_deref(), Some("review"));
-        assert!(!applied.record_item_updated_event);
-        assert_eq!(applied.active.version, Set(5));
+        assert_that!(&(applied.state.as_deref())).is_equal_to(Some("review"));
+        assert_that!(&(!applied.record_item_updated_event)).is_true();
+        assert_that!(&(applied.active.version)).is_equal_to(Set(5));
     }
 
     #[test]
@@ -227,9 +228,9 @@ mod tests {
 
         let applied = plan.apply_to(work_item()).unwrap();
 
-        assert!(applied.record_item_updated_event);
-        assert_eq!(applied.active.agent_model_override, Set(None));
-        assert_eq!(applied.active.version, Set(5));
+        assert_that!(&(applied.record_item_updated_event)).is_true();
+        assert_that!(&(applied.active.agent_model_override)).is_equal_to(Set(None));
+        assert_that!(&(applied.active.version)).is_equal_to(Set(5));
     }
 
     #[test]
@@ -242,10 +243,12 @@ mod tests {
 
         let err = plan.apply_to(work_item()).unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("agent model override must be one of")
-        );
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("agent model override must be one of"))
+        )
+        .is_true();
     }
 
     #[test]
@@ -258,6 +261,6 @@ mod tests {
 
         let err = plan.apply_to(work_item()).unwrap_err();
 
-        assert!(err.to_string().contains("item title cannot be empty"));
+        assert_that!(&(err.to_string().contains("item title cannot be empty"))).is_true();
     }
 }

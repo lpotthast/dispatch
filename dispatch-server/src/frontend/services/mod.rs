@@ -10,22 +10,20 @@ mod request;
 mod runs;
 
 pub(crate) use api_docs::ApiDocsService;
-pub(crate) use automation::{
-    AutomationService, apply_bundle_yaml, detach_automation_personality, detach_automation_rule,
-    diff_bundle_yaml, explain_automation_route, export_bundle_yaml, list_installed_bundles,
-    load_automation_personality_inspector, load_automation_rule_inspector, remove_installed_bundle,
-    restore_automation_personality_revision, restore_automation_rule_revision,
-    validate_bundle_yaml,
-};
+pub(crate) use automation::AutomationService;
 pub(crate) use board::BoardService;
 pub(crate) use codex::CodexService;
 pub(crate) use items::ItemService;
-pub(crate) use projects::{ProjectService, project_cache};
+pub(crate) use projects::{CommitPolicyUpdate, ProjectService, project_cache};
 pub(crate) use runs::RunService;
 
-use leptos::prelude::{expect_context, provide_context};
+use leptos::prelude::*;
+
+#[derive(Clone, Copy)]
+struct ProjectLifecycleEpoch(RwSignal<u64>);
 
 pub(crate) fn provide_frontend_services() {
+    provide_context(ProjectLifecycleEpoch(RwSignal::new(0)));
     projects::provide_project_cache();
     provide_context(ApiDocsService::production());
     provide_context(AutomationService::production());
@@ -34,6 +32,17 @@ pub(crate) fn provide_frontend_services() {
     provide_context(ItemService::production());
     provide_context(ProjectService::production());
     provide_context(RunService::production());
+}
+
+fn project_lifecycle_epoch_signal() -> RwSignal<u64> {
+    expect_context::<ProjectLifecycleEpoch>().0
+}
+
+#[cfg(not(feature = "ssr"))]
+pub(crate) fn advance_project_lifecycle_epoch() {
+    expect_context::<ProjectLifecycleEpoch>()
+        .0
+        .update(|epoch| *epoch = epoch.wrapping_add(1));
 }
 
 pub(crate) fn api_docs_service() -> ApiDocsService {

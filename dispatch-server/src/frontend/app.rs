@@ -1,5 +1,8 @@
 use crate::frontend::{
-    live_events::LiveEventsProvider, routes::routes, services::provide_frontend_services,
+    components::{WorkspaceBar, provide_workspace_dock_size},
+    live_events::LiveEventsProvider,
+    routes::routes,
+    services::provide_frontend_services,
 };
 use crudkit_leptos::crud_instance_mgr::CrudInstanceMgr;
 use leptonic::components::prelude::{LeptonicTheme, Root};
@@ -55,11 +58,13 @@ pub fn App() -> impl IntoView {
 #[component]
 pub fn MainLayout() -> impl IntoView {
     provide_frontend_services();
+    provide_workspace_dock_size();
 
     view! {
         <CrudInstanceMgr>
             <LiveEventsProvider/>
             <Outlet/>
+            <WorkspaceBar/>
         </CrudInstanceMgr>
     }
 }

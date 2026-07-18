@@ -295,6 +295,7 @@ fn commit_shas_after(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -329,9 +330,9 @@ mod tests {
 
         let evaluation = evaluate_commit_outcome(temp.path(), &baseline);
 
-        assert_eq!(evaluation.outcome, AgentCommitOutcome::SkippedNoGitRepo);
-        assert!(evaluation.shas.is_empty());
-        assert!(!evaluation.validation_failed);
+        assert_that!(&(evaluation.outcome)).is_equal_to(AgentCommitOutcome::SkippedNoGitRepo);
+        assert_that!(&(evaluation.shas.is_empty())).is_true();
+        assert_that!(&(!evaluation.validation_failed)).is_true();
     }
 
     #[test]
@@ -344,9 +345,9 @@ mod tests {
 
         let evaluation = evaluate_commit_outcome(temp.path(), &baseline);
 
-        assert_eq!(evaluation.outcome, AgentCommitOutcome::SkippedNoChanges);
-        assert!(evaluation.shas.is_empty());
-        assert!(!evaluation.validation_failed);
+        assert_that!(&(evaluation.outcome)).is_equal_to(AgentCommitOutcome::SkippedNoChanges);
+        assert_that!(&(evaluation.shas.is_empty())).is_true();
+        assert_that!(&(!evaluation.validation_failed)).is_true();
     }
 
     #[test]
@@ -361,9 +362,9 @@ mod tests {
 
         let evaluation = evaluate_commit_outcome(temp.path(), &baseline);
 
-        assert_eq!(evaluation.outcome, AgentCommitOutcome::Committed);
-        assert_eq!(evaluation.shas, vec![created_sha]);
-        assert!(!evaluation.validation_failed);
+        assert_that!(&(evaluation.outcome)).is_equal_to(AgentCommitOutcome::Committed);
+        assert_that!(&(evaluation.shas)).is_equal_to(vec![created_sha]);
+        assert_that!(&(!evaluation.validation_failed)).is_true();
     }
 
     #[test]
@@ -377,9 +378,9 @@ mod tests {
 
         let evaluation = evaluate_commit_outcome(temp.path(), &baseline);
 
-        assert_eq!(evaluation.outcome, AgentCommitOutcome::MissingRequired);
-        assert!(evaluation.shas.is_empty());
-        assert!(evaluation.validation_failed);
+        assert_that!(&(evaluation.outcome)).is_equal_to(AgentCommitOutcome::MissingRequired);
+        assert_that!(&(evaluation.shas.is_empty())).is_true();
+        assert_that!(&(evaluation.validation_failed)).is_true();
     }
 
     #[test]
@@ -394,9 +395,9 @@ mod tests {
 
         let evaluation = evaluate_commit_outcome(temp.path(), &baseline);
 
-        assert_eq!(evaluation.outcome, AgentCommitOutcome::MissingRequired);
-        assert!(evaluation.shas.is_empty());
-        assert!(evaluation.validation_failed);
+        assert_that!(&(evaluation.outcome)).is_equal_to(AgentCommitOutcome::MissingRequired);
+        assert_that!(&(evaluation.shas.is_empty())).is_true();
+        assert_that!(&(evaluation.validation_failed)).is_true();
     }
 
     #[test]
@@ -410,9 +411,9 @@ mod tests {
 
         let evaluation = evaluate_commit_outcome(temp.path(), &baseline);
 
-        assert_eq!(evaluation.outcome, AgentCommitOutcome::NotRequired);
-        assert!(evaluation.shas.is_empty());
-        assert!(!evaluation.validation_failed);
+        assert_that!(&(evaluation.outcome)).is_equal_to(AgentCommitOutcome::NotRequired);
+        assert_that!(&(evaluation.shas.is_empty())).is_true();
+        assert_that!(&(!evaluation.validation_failed)).is_true();
     }
 
     #[test]
@@ -426,8 +427,8 @@ mod tests {
             AutomationRunMutability::ReadOnly,
         );
 
-        assert_eq!(evaluation.outcome, AgentCommitOutcome::NotRequired);
-        assert!(evaluation.shas.is_empty());
-        assert!(!evaluation.validation_failed);
+        assert_that!(&(evaluation.outcome)).is_equal_to(AgentCommitOutcome::NotRequired);
+        assert_that!(&(evaluation.shas.is_empty())).is_true();
+        assert_that!(&(!evaluation.validation_failed)).is_true();
     }
 }

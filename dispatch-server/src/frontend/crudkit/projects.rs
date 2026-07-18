@@ -1,31 +1,36 @@
 use super::*;
 
-pub(crate) fn projects_panel(api_base_url: String) -> impl IntoView + 'static {
+#[component]
+pub(crate) fn ProjectsPanel(api_base_url: String) -> impl IntoView + 'static {
     view! {
         <section class="project-management panel">
             <div class="panel-heading">
                 <h2>"Projects"</h2>
             </div>
             <div class="crudkit-projects" data-crudkit-leptos="projects">
-                {projects_crudkit_instance(api_base_url)}
+                <ProjectsCrudkitInstance api_base_url/>
             </div>
         </section>
     }
 }
 
-fn projects_crudkit_instance(api_base_url: String) -> impl IntoView + 'static {
+#[component]
+fn ProjectsCrudkitInstance(api_base_url: String) -> impl IntoView + 'static {
     let (context, set_context) = signal(None::<CrudInstanceContext>);
     reload_crudkit_on_live_event(context, |event| {
         matches!(
             event,
-            UiEvent::ProjectListChanged { .. } | UiEvent::ProjectChanged { .. }
+            UiEvent::ProjectListChanged { .. }
+                | UiEvent::ProjectChanged { .. }
+                | UiEvent::ProjectDeleted { .. }
         )
     });
+    let config = projects_crudkit_config(api_base_url);
 
     view! {
         <CrudInstance
             name="projects"
-            config=projects_crudkit_config(api_base_url)
+            config
             on_context_created=Callback::new(move |context| set_context.set(Some(context)))
         />
     }
@@ -34,7 +39,7 @@ fn projects_crudkit_instance(api_base_url: String) -> impl IntoView + 'static {
 fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
     CrudInstanceConfig {
         api_base_url,
-        view: SerializableCrudView::List,
+        initial_view: CrudView::table(),
         list_columns: vec![
             Header::showing(
                 ReadProjectField::Id,
@@ -292,7 +297,8 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
         model_handler: ModelHandler::new::<CreateProject, ReadProject, CrudProject>(),
         actions: vec![],
         entity_actions: vec![],
-        navigation: CrudNavigationConfig::default(),
+        builtin_view_controls: CrudBuiltinViewControls::default(),
+        view_registry: CrudViewRegistry::default(),
         read_field_renderer: FieldRendererRegistry::builder()
             .register(
                 ReadProjectField::PathExists,

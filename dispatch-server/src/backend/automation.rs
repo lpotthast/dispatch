@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt, fs,
+    future::Future,
     io::{ErrorKind, SeekFrom},
     path::{Path, PathBuf},
     process::Command as StdCommand,
@@ -96,6 +97,20 @@ pub struct AutomationTriggerOrigin {
     pub trigger_revision_id: Option<i64>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ItemRunPreview {
+    pub id: i64,
+    pub status: AgentRunStatus,
+    pub result_summary: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ItemRunPreviews {
+    pub total: usize,
+    pub latest: Vec<ItemRunPreview>,
+}
+
 struct LaunchDetails {
     work_item_id: Option<i64>,
     command: String,
@@ -185,6 +200,7 @@ struct CodexStreamRecoveryContext<'a> {
 
 struct AgentProcessStart {
     run_id: i64,
+    project_id: i64,
     project_name: String,
     tool_name: AgentToolName,
     codex_binary: PathBuf,
@@ -354,10 +370,20 @@ fn single_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn cancellation_requested(cancellation: &Option<watch::Receiver<bool>>) -> bool {
+struct RunCancellation {
+    session: Option<watch::Receiver<bool>>,
+    external: Option<watch::Receiver<bool>>,
+}
+
+fn cancellation_requested(cancellation: &RunCancellation) -> bool {
     cancellation
+        .session
         .as_ref()
         .is_some_and(|cancellation| *cancellation.borrow())
+        || cancellation
+            .external
+            .as_ref()
+            .is_some_and(|cancellation| *cancellation.borrow())
 }
 
 struct StartedAutomationRun {
@@ -392,7 +418,28 @@ pub async fn start_automation_with_sessions_until(
     cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentRunView> {
     let started = begin_automation_run(store, project_name, start).await?;
-    complete_started_automation_run(store, started, sessions, codex_status, cancellation).await
+    let run_id = started.run.id;
+    let cancellation = register_pending_session(&started, sessions.as_ref(), cancellation).await;
+    let store = store.clone();
+    let sessions_for_completion = sessions.clone();
+    let result = await_automation_execution(async move {
+        complete_started_automation_run(&store, started, sessions, codex_status, cancellation).await
+    })
+    .await;
+    if let Some(sessions) = sessions_for_completion {
+        sessions.finish(run_id).await;
+    }
+    result
+}
+
+async fn await_automation_execution<T, F>(execution: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T>> + Send + 'static,
+{
+    tokio::spawn(execution)
+        .await
+        .context("automation execution task terminated unexpectedly")?
 }
 
 pub async fn start_one_automation_run_in_background(
@@ -404,9 +451,20 @@ pub async fn start_one_automation_run_in_background(
 ) -> Result<AgentRunView> {
     let started = begin_automation_run(&store, &project_name, start).await?;
     let initial_run = model_to_view(started.run.clone())?;
+    let run_id = started.run.id;
+    let cancellation = register_pending_session(&started, sessions.as_ref(), None).await;
     let project_for_task = started.project_name.clone();
     tokio::spawn(async move {
-        match complete_started_automation_run(&store, started, sessions, codex_status, None).await {
+        let sessions_for_completion = sessions.clone();
+        let result = await_automation_execution(async move {
+            complete_started_automation_run(&store, started, sessions, codex_status, cancellation)
+                .await
+        })
+        .await;
+        if let Some(sessions) = sessions_for_completion {
+            sessions.finish(run_id).await;
+        }
+        match result {
             Ok(run) if run.status == AgentRunStatus::Failed => {
                 tracing::error!(
                     run_id = run.id,
@@ -434,6 +492,34 @@ pub async fn start_one_automation_run_in_background(
         }
     });
     Ok(initial_run)
+}
+
+async fn register_pending_session(
+    started: &StartedAutomationRun,
+    sessions: Option<&ProcessSessionRegistry>,
+    fallback_cancellation: Option<watch::Receiver<bool>>,
+) -> RunCancellation {
+    let Some(sessions) = sessions else {
+        return RunCancellation {
+            session: None,
+            external: fallback_cancellation,
+        };
+    };
+    RunCancellation {
+        session: Some(
+            sessions
+                .begin(ProcessSessionStart {
+                    run_id: started.run.id,
+                    project_id: started.project.id,
+                    project_name: started.project_name.clone(),
+                    tool_name: started.tool.as_storage().to_owned(),
+                    command: String::new(),
+                    working_dir: started.project.path.clone().unwrap_or_default(),
+                })
+                .await,
+        ),
+        external: fallback_cancellation,
+    }
 }
 
 async fn begin_automation_run(
@@ -492,7 +578,7 @@ async fn complete_started_automation_run(
     started: StartedAutomationRun,
     sessions: Option<ProcessSessionRegistry>,
     codex_status: Option<codex_app_server::SharedCodexStatus>,
-    cancellation: Option<watch::Receiver<bool>>,
+    cancellation: RunCancellation,
 ) -> Result<AgentRunView> {
     let StartedAutomationRun {
         project_name,
@@ -718,7 +804,7 @@ async fn complete_started_automation_run(
     } = launch;
     run = prepared_run;
 
-    let output = run_agent_process(process_start, sessions, cancellation).await;
+    let output = run_agent_process(process_start, sessions, cancellation.external).await;
     match output {
         Ok(mut output) => {
             run = update_run_process_id(store, run, output.process_id).await?;
@@ -1152,6 +1238,7 @@ async fn prepare_automation_launch(
     let commit_baseline = capture_commit_baseline(Path::new(&run.working_dir), commit_required);
     let process_start = AgentProcessStart {
         run_id: run.id,
+        project_id: project.id,
         project_name: project_name.to_owned(),
         tool_name: tool,
         codex_binary,
@@ -1371,6 +1458,44 @@ pub async fn list_runs_for_item(
     Ok(views)
 }
 
+pub(crate) async fn list_item_run_previews(
+    store: &Store,
+    project_name: &str,
+    item_ids: &[i64],
+) -> Result<HashMap<i64, ItemRunPreviews>> {
+    if item_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let project_id = projects::project_id(store, project_name).await?;
+    let runs = AgentRun::find()
+        .filter(agent_run::Column::ProjectId.eq(project_id))
+        .filter(agent_run::Column::WorkItemId.is_in(item_ids.iter().copied()))
+        .order_by_desc(agent_run::Column::CreatedAt)
+        .order_by_desc(agent_run::Column::Id)
+        .all(store.db().as_ref())
+        .await
+        .context("failed to list Board item agent runs")?;
+
+    let mut previews = HashMap::<i64, ItemRunPreviews>::new();
+    for run in runs {
+        let Some(item_id) = run.work_item_id else {
+            continue;
+        };
+        let item = previews.entry(item_id).or_default();
+        item.total += 1;
+        if item.latest.len() < 3 {
+            item.latest.push(ItemRunPreview {
+                id: run.id,
+                status: AgentRunStatus::from_str(&run.status)?,
+                result_summary: run.result_summary,
+                created_at: run.created_at,
+            });
+        }
+    }
+    Ok(previews)
+}
+
 pub async fn list_runs_for_trigger(
     store: &Store,
     project_name: &str,
@@ -1509,7 +1634,8 @@ pub async fn read_run_log_with_active_session(
     run_id: i64,
 ) -> Result<RunLogView> {
     let mut run_log = read_run_log(store, project_name, run_id).await?;
-    if let Some(session) = sessions.get_for_project(project_name, run_id).await {
+    let project_id = projects::project_id(store, project_name).await?;
+    if let Some(session) = sessions.get_for_project(project_id, run_id).await {
         run_log.active = true;
         if !session.output.is_empty() {
             run_log.output = session.output;
@@ -1889,6 +2015,7 @@ async fn run_agent_process(
             registry
                 .begin(ProcessSessionStart {
                     run_id: start.run_id,
+                    project_id: start.project_id,
                     project_name: start.project_name.clone(),
                     tool_name: start.tool_name.to_string(),
                     command: command_label.clone(),
@@ -1899,7 +2026,6 @@ async fn run_agent_process(
     } else {
         None
     };
-    let run_id = start.run_id;
     let codex_stderr_path = start.codex_stderr_path.clone();
 
     let result = run_agent_process_inner(
@@ -1910,9 +2036,6 @@ async fn run_agent_process(
     )
     .await;
 
-    if let Some(registry) = &sessions {
-        registry.finish(run_id).await;
-    }
     match result {
         Ok(output) => Ok(output),
         Err(err) => Err(attach_codex_stderr(err, &codex_stderr_path).await),
@@ -2603,7 +2726,7 @@ async fn update_run_cleanup(
     Ok(updated)
 }
 
-fn automation_log_dir() -> PathBuf {
+pub(crate) fn automation_log_dir() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home).join(".dispatch").join("runs");
     }
@@ -2718,6 +2841,7 @@ fn parse_commit_shas(raw: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -2731,6 +2855,21 @@ mod tests {
         },
     };
     use crate::shared::view_models::AUTOMATION_BLOCKED_LABEL_KEY;
+
+    #[tokio::test]
+    async fn awaited_automation_execution_uses_a_fresh_task_boundary() {
+        let (caller, execution) = tokio::spawn(async {
+            let caller = tokio::task::id();
+            let execution = await_automation_execution(async { Ok(tokio::task::id()) })
+                .await
+                .unwrap();
+            (caller, execution)
+        })
+        .await
+        .unwrap();
+
+        assert_that!(&(caller)).is_not_equal_to(execution);
+    }
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
@@ -2754,6 +2893,151 @@ mod tests {
         (temp, store)
     }
 
+    async fn create_preview_test_run(
+        store: &Store,
+        project_id: i64,
+        item_id: i64,
+        created_at: &str,
+        status: AgentRunStatus,
+    ) -> AgentRunModel {
+        let run = create_run(
+            store,
+            project_id,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::Mutating,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut active: AgentRunActiveModel = run.into();
+        active.work_item_id = Set(Some(item_id));
+        active.status = Set(status.as_storage().to_owned());
+        active.result_summary = Set(format!("summary {created_at}"));
+        active.created_at = Set(created_at.to_owned());
+        active.updated_at = Set(created_at.to_owned());
+        active.update(store.db().as_ref()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn item_run_previews_are_batched_scoped_and_limited_to_newest_three() {
+        let (temp, store) = test_store().await;
+        create_project(
+            &store,
+            CreateProject {
+                name: "other".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+        let demo = get_project(&store, "demo").await.unwrap();
+        let other = get_project(&store, "other").await.unwrap();
+        let target = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Target".to_owned(),
+                description: "Target description".to_owned(),
+                state: "backlog".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let unrelated = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Unrelated".to_owned(),
+                description: "Unrelated description".to_owned(),
+                state: "backlog".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let other_item = create_item(
+            &store,
+            "other",
+            CreateWorkItem {
+                title: "Other project".to_owned(),
+                description: "Other project description".to_owned(),
+                state: "backlog".to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut target_runs = Vec::new();
+        for (created_at, status) in [
+            ("2026-07-14T10:00:01Z", AgentRunStatus::Completed),
+            ("2026-07-14T10:00:02Z", AgentRunStatus::Failed),
+            ("2026-07-14T10:00:03Z", AgentRunStatus::Cancelled),
+            ("2026-07-14T10:00:04Z", AgentRunStatus::Running),
+        ] {
+            target_runs.push(
+                create_preview_test_run(&store, demo.id, target.id, created_at, status).await,
+            );
+        }
+        create_preview_test_run(
+            &store,
+            demo.id,
+            unrelated.id,
+            "2026-07-14T10:00:05Z",
+            AgentRunStatus::Completed,
+        )
+        .await;
+        create_preview_test_run(
+            &store,
+            other.id,
+            other_item.id,
+            "2026-07-14T10:00:06Z",
+            AgentRunStatus::Completed,
+        )
+        .await;
+
+        let previews = list_item_run_previews(&store, "demo", &[target.id, other_item.id])
+            .await
+            .unwrap();
+        let target_preview = previews.get(&target.id).unwrap();
+
+        assert_that!(&(target_preview.total)).is_equal_to(4);
+        assert_that!(
+            &(target_preview
+                .latest
+                .iter()
+                .map(|run| run.id)
+                .collect::<Vec<_>>())
+        )
+        .is_equal_to(
+            target_runs[1..]
+                .iter()
+                .rev()
+                .map(|run| run.id)
+                .collect::<Vec<_>>(),
+        );
+        assert_that!(&(target_preview.latest[0].status)).is_equal_to(AgentRunStatus::Running);
+        assert_that!(&(!previews.contains_key(&unrelated.id))).is_true();
+        assert_that!(&(!previews.contains_key(&other_item.id))).is_true();
+    }
+
     #[test]
     fn raw_effort_thread_start_params_preserve_launch_options() {
         let options = ThreadOptions::builder()
@@ -2770,19 +3054,15 @@ mod tests {
 
         let params = thread_start_params_with_raw_effort(&options, "max");
 
-        assert_eq!(params.cwd.as_deref(), Some("/tmp/dispatch-work"));
-        assert_eq!(params.approval_policy.as_deref(), Some("never"));
-        assert_eq!(params.sandbox.as_deref(), Some("workspace-write"));
-        assert_eq!(params.effort.as_deref(), Some("max"));
-        assert_eq!(
-            params.developer_instructions.as_deref(),
-            Some("Use Dispatch policy.")
-        );
-        assert_eq!(
-            params.extra.get("networkAccessEnabled"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        assert!(params.extra.contains_key("config"));
+        assert_that!(&(params.cwd.as_deref())).is_equal_to(Some("/tmp/dispatch-work"));
+        assert_that!(&(params.approval_policy.as_deref())).is_equal_to(Some("never"));
+        assert_that!(&(params.sandbox.as_deref())).is_equal_to(Some("workspace-write"));
+        assert_that!(&(params.effort.as_deref())).is_equal_to(Some("max"));
+        assert_that!(&(params.developer_instructions.as_deref()))
+            .is_equal_to(Some("Use Dispatch policy."));
+        assert_that!(&(params.extra.get("networkAccessEnabled")))
+            .is_equal_to(Some(&serde_json::Value::Bool(true)));
+        assert_that!(&(params.extra.contains_key("config"))).is_true();
     }
 
     #[tokio::test]
@@ -2852,6 +3132,7 @@ mod tests {
         let _cancel = sessions
             .begin(ProcessSessionStart {
                 run_id: run.id,
+                project_id: run.project_id,
                 project_name: "demo".to_owned(),
                 tool_name: "codex".to_owned(),
                 command: "codex app-server".to_owned(),
@@ -2876,18 +3157,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(run_log.active);
-        assert_eq!(
-            run_log.developer_instructions.as_deref(),
-            Some("Follow Dispatch policy.")
-        );
-        assert_eq!(
-            run_log.user_prompt.as_deref(),
-            Some("Implement the requested change.")
-        );
-        assert_eq!(run_log.output.len(), 1);
-        assert_eq!(run_log.output[0].title, "active");
-        assert_eq!(run_log.output[0].body, "active output");
+        assert_that!(&(run_log.active)).is_true();
+        assert_that!(&(run_log.developer_instructions.as_deref()))
+            .is_equal_to(Some("Follow Dispatch policy."));
+        assert_that!(&(run_log.user_prompt.as_deref()))
+            .is_equal_to(Some("Implement the requested change."));
+        assert_that!(&(run_log.output.len())).is_equal_to(1);
+        assert_that!(&(run_log.output[0].title)).is_equal_to("active");
+        assert_that!(&(run_log.output[0].body)).is_equal_to("active output");
     }
 
     #[tokio::test]
@@ -2924,19 +3201,20 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            model_to_view(mutating).unwrap().mutability,
-            AutomationRunMutability::Mutating
-        );
-        assert_eq!(
-            model_to_view(read_only).unwrap().mutability,
-            AutomationRunMutability::ReadOnly
-        );
-        assert!(
-            !automation_admission::can_start_run(&store, "demo", AutomationRunMutability::Mutating)
-                .await
-                .unwrap()
-        );
+        assert_that!(&(model_to_view(mutating).unwrap().mutability))
+            .is_equal_to(AutomationRunMutability::Mutating);
+        assert_that!(&(model_to_view(read_only).unwrap().mutability))
+            .is_equal_to(AutomationRunMutability::ReadOnly);
+        assert_that!(
+            &(!automation_admission::can_start_run(
+                &store,
+                "demo",
+                AutomationRunMutability::Mutating
+            )
+            .await
+            .unwrap())
+        )
+        .is_true();
         let settings = get_settings(&store, "demo").await.unwrap();
         let err = automation_admission::enforce_start_allowed(
             &store,
@@ -2946,20 +3224,25 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("mutating"));
-        assert!(err.to_string().contains("limit is 1"));
-        assert!(
-            automation_admission::can_start_run(&store, "demo", AutomationRunMutability::ReadOnly)
-                .await
-                .unwrap()
-        );
+        assert_that!(&(err.to_string().contains("mutating"))).is_true();
+        assert_that!(&(err.to_string().contains("limit is 1"))).is_true();
+        assert_that!(
+            &(automation_admission::can_start_run(
+                &store,
+                "demo",
+                AutomationRunMutability::ReadOnly
+            )
+            .await
+            .unwrap())
+        )
+        .is_true();
 
         let status = automation_status(&store, "demo").await.unwrap();
-        assert_eq!(status.running_runs, 2);
-        assert_eq!(status.running_mutating_runs, 1);
-        assert_eq!(status.running_read_only_runs, 1);
-        assert_eq!(status.allowed_mutating_runs, 1);
-        assert_eq!(status.settings.max_read_only_agents, 2);
+        assert_that!(&(status.running_runs)).is_equal_to(2);
+        assert_that!(&(status.running_mutating_runs)).is_equal_to(1);
+        assert_that!(&(status.running_read_only_runs)).is_equal_to(1);
+        assert_that!(&(status.allowed_mutating_runs)).is_equal_to(1);
+        assert_that!(&(status.settings.max_read_only_agents)).is_equal_to(2);
 
         create_run(
             &store,
@@ -2975,11 +3258,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            !automation_admission::can_start_run(&store, "demo", AutomationRunMutability::ReadOnly)
-                .await
-                .unwrap()
-        );
+        assert_that!(
+            &(!automation_admission::can_start_run(
+                &store,
+                "demo",
+                AutomationRunMutability::ReadOnly
+            )
+            .await
+            .unwrap())
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -2996,11 +3284,16 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            !automation_admission::can_start_run(&store, "demo", AutomationRunMutability::ReadOnly)
-                .await
-                .unwrap()
-        );
+        assert_that!(
+            &(!automation_admission::can_start_run(
+                &store,
+                "demo",
+                AutomationRunMutability::ReadOnly
+            )
+            .await
+            .unwrap())
+        )
+        .is_true();
         let err = automation_admission::enforce_start_allowed(
             &store,
             "demo",
@@ -3009,8 +3302,8 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("read-only"));
-        assert!(err.to_string().contains("limit is 0"));
+        assert_that!(&(err.to_string().contains("read-only"))).is_true();
+        assert_that!(&(err.to_string().contains("limit is 0"))).is_true();
     }
 
     #[tokio::test]
@@ -3036,11 +3329,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(run.effective_timeout_seconds, Some(90));
-        assert_eq!(
-            run.effective_concurrency_group.as_deref(),
-            Some("shared-validation")
-        );
+        assert_that!(&(run.effective_timeout_seconds)).is_equal_to(Some(90));
+        assert_that!(&(run.effective_concurrency_group.as_deref()))
+            .is_equal_to(Some("shared-validation"));
         let settings = get_settings(&store, "demo").await.unwrap();
 
         let cap_error = automation_admission::enforce_rule_start_allowed(
@@ -3056,7 +3347,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(cap_error.to_string().contains("rule already has 1"));
+        assert_that!(&(cap_error.to_string().contains("rule already has 1"))).is_true();
 
         let group_error = automation_admission::enforce_rule_start_allowed(
             &store,
@@ -3071,11 +3362,12 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            group_error
+        assert_that!(
+            &(group_error
                 .to_string()
-                .contains("concurrency group 'shared-validation'")
-        );
+                .contains("concurrency group 'shared-validation'"))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -3107,90 +3399,84 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            effective_agent_model(
+        assert_that!(
+            &(effective_agent_model(
                 &settings,
                 Some(&item),
                 &AutomationExecutionPolicy::default()
             )
-            .as_deref(),
-            Some("gpt-5.6-terra")
-        );
-        assert_eq!(
-            effective_agent_reasoning_effort(
+            .as_deref())
+        )
+        .is_equal_to(Some("gpt-5.6-terra"));
+        assert_that!(
+            &(effective_agent_reasoning_effort(
                 &settings,
                 Some(&item),
                 &AutomationExecutionPolicy::default(),
-            ),
-            Some(AgentReasoningEffort::Medium)
-        );
+            ))
+        )
+        .is_equal_to(Some(AgentReasoningEffort::Medium));
 
         let rule = AutomationExecutionPolicy {
             model: Some("gpt-5.6-rule".to_owned()),
             reasoning_effort: Some(AgentReasoningEffort::Low),
             ..Default::default()
         };
-        assert_eq!(
-            effective_agent_model(&settings, None, &rule).as_deref(),
-            Some("gpt-5.6-rule")
-        );
-        assert_eq!(
-            effective_agent_reasoning_effort(&settings, None, &rule),
-            Some(AgentReasoningEffort::Low)
-        );
+        assert_that!(&(effective_agent_model(&settings, None, &rule).as_deref()))
+            .is_equal_to(Some("gpt-5.6-rule"));
+        assert_that!(&(effective_agent_reasoning_effort(&settings, None, &rule)))
+            .is_equal_to(Some(AgentReasoningEffort::Low));
     }
 
     #[test]
     fn codex_stream_recovery_classifies_transport_interruptions() {
-        assert_eq!(
-            recoverable_codex_stream_error_reason(&ClientError::TransportClosed),
-            Some("transport closed")
-        );
-        assert_eq!(
-            recoverable_codex_stream_error_reason(&ClientError::TransportSend(
+        assert_that!(&(recoverable_codex_stream_error_reason(&ClientError::TransportClosed)))
+            .is_equal_to(Some("transport closed"));
+        assert_that!(
+            &(recoverable_codex_stream_error_reason(&ClientError::TransportSend(
                 "event channel receive failed: channel closed".to_owned()
-            )),
-            Some("transport send failed")
-        );
-        assert_eq!(
-            recoverable_codex_stream_error_reason(&ClientError::Io(std::io::Error::from(
+            )))
+        )
+        .is_equal_to(Some("transport send failed"));
+        assert_that!(
+            &(recoverable_codex_stream_error_reason(&ClientError::Io(std::io::Error::from(
                 ErrorKind::BrokenPipe
-            ))),
-            Some("transport I/O interrupted")
-        );
-        assert_eq!(
-            recoverable_codex_stream_error_reason(&ClientError::Timeout {
+            ))))
+        )
+        .is_equal_to(Some("transport I/O interrupted"));
+        assert_that!(
+            &(recoverable_codex_stream_error_reason(&ClientError::Timeout {
                 method: "turn/start".to_owned(),
                 timeout_ms: 30_000,
-            }),
-            Some("request timed out")
-        );
+            }))
+        )
+        .is_equal_to(Some("request timed out"));
     }
 
     #[test]
     fn codex_stream_recovery_leaves_non_retryable_errors_terminal() {
-        assert_eq!(
-            recoverable_codex_stream_error_reason(&ClientError::TransportSend(
+        assert_that!(
+            &(recoverable_codex_stream_error_reason(&ClientError::TransportSend(
                 "thread id unavailable after start/resume".to_owned()
-            )),
-            None
-        );
-        assert_eq!(
-            recoverable_codex_stream_error_reason(&ClientError::InvalidMessage(
+            )))
+        )
+        .is_equal_to(None);
+        assert_that!(
+            &(recoverable_codex_stream_error_reason(&ClientError::InvalidMessage(
                 "expected JSON object".to_owned()
-            )),
-            None
-        );
-        assert_eq!(
-            recoverable_codex_stream_error_reason(&ClientError::Rpc {
+            )))
+        )
+        .is_equal_to(None);
+        assert_that!(
+            &(recoverable_codex_stream_error_reason(&ClientError::Rpc {
                 error: codex_app_server_sdk::RpcError {
                     code: -32_000,
                     message: "model rejected the request".to_owned(),
                     data: None,
                 },
-            }),
-            None
-        );
+            }))
+        )
+        .is_equal_to(None);
     }
 
     #[test]
@@ -3204,11 +3490,11 @@ mod tests {
             Duration::from_secs(2),
         );
 
-        assert_eq!(piece.kind, AgentRunOutputKind::System);
-        assert_eq!(piece.title, "recoverable stream interruption");
-        assert!(piece.body.contains("reconnect attempt 1/"));
-        assert_eq!(piece.metadata["recoverable"], true);
-        assert_eq!(piece.metadata["thread_id"], "thread-1");
+        assert_that!(&(piece.kind)).is_equal_to(AgentRunOutputKind::System);
+        assert_that!(&(piece.title)).is_equal_to("recoverable stream interruption");
+        assert_that!(&(piece.body.contains("reconnect attempt 1/"))).is_true();
+        assert_that!(&(piece.metadata["recoverable"])).is_equal_to(true);
+        assert_that!(&(piece.metadata["thread_id"])).is_equal_to("thread-1");
     }
 
     #[test]
@@ -3216,10 +3502,8 @@ mod tests {
         let stderr = "2026-07-10T13:08:04Z ERROR stale state path\n\
                       Error: No such file or directory (os error 2)\n";
 
-        assert_eq!(
-            codex_stderr_root_cause(stderr).as_deref(),
-            Some("No such file or directory (os error 2)")
-        );
+        assert_that!(&(codex_stderr_root_cause(stderr).as_deref()))
+            .is_equal_to(Some("No such file or directory (os error 2)"));
     }
 
     #[test]
@@ -3229,17 +3513,15 @@ mod tests {
                         0: failed to open state database\n\
                         1: Permission denied (os error 13)\n";
 
-        assert_eq!(
-            codex_stderr_root_cause(stderr).as_deref(),
-            Some("Permission denied (os error 13)")
-        );
+        assert_that!(&(codex_stderr_root_cause(stderr).as_deref()))
+            .is_equal_to(Some("Permission denied (os error 13)"));
     }
 
     #[test]
     fn codex_stderr_does_not_promote_ordinary_error_logs() {
         let stderr = "2026-07-10T13:08:04Z ERROR codex_rollout::list: stale state path\n";
 
-        assert_eq!(codex_stderr_root_cause(stderr), None);
+        assert_that!(&(codex_stderr_root_cause(stderr))).is_equal_to(None);
     }
 
     #[tokio::test]
@@ -3254,13 +3536,11 @@ mod tests {
 
         let tail = read_codex_stderr_tail(&stderr_path, 96).await.unwrap();
 
-        assert!(tail.starts_with("[earlier stderr omitted]"));
-        assert!(tail.len() < body.len());
-        assert!(tail.contains("Error: Permission denied (os error 13)"));
-        assert_eq!(
-            codex_stderr_root_cause(&tail).as_deref(),
-            Some("Permission denied (os error 13)")
-        );
+        assert_that!(&(tail.starts_with("[earlier stderr omitted]"))).is_true();
+        assert_that!(&(tail.len() < body.len())).is_true();
+        assert_that!(&(tail.contains("Error: Permission denied (os error 13)"))).is_true();
+        assert_that!(&(codex_stderr_root_cause(&tail).as_deref()))
+            .is_equal_to(Some("Permission denied (os error 13)"));
     }
 
     #[tokio::test]
@@ -3286,12 +3566,15 @@ mod tests {
         let err = attach_codex_stderr(err, &stderr_path).await;
         let (message, root_cause) = automation_failure_message(&err);
 
-        assert_eq!(root_cause, "No such file or directory (os error 2)");
-        assert!(message.starts_with(
-            "Codex automation failed. Root cause: No such file or directory (os error 2)"
-        ));
-        assert!(message.contains("transport error: transport closed"));
-        assert!(message.contains("Codex app-server reported on stderr"));
+        assert_that!(&(root_cause)).is_equal_to("No such file or directory (os error 2)");
+        assert_that!(
+            &(message.starts_with(
+                "Codex automation failed. Root cause: No such file or directory (os error 2)"
+            ))
+        )
+        .is_true();
+        assert_that!(&(message.contains("transport error: transport closed"))).is_true();
+        assert_that!(&(message.contains("Codex app-server reported on stderr"))).is_true();
     }
 
     #[tokio::test]
@@ -3311,7 +3594,7 @@ mod tests {
             .unwrap()
             .unwrap_err();
 
-        assert!(is_automation_cancelled(&err));
+        assert_that!(&(is_automation_cancelled(&err))).is_true();
     }
 
     #[tokio::test]
@@ -3325,8 +3608,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(!is_automation_cancelled(&err));
-        assert!(err.to_string().contains("permanent Codex SDK failure"));
+        assert_that!(&(!is_automation_cancelled(&err))).is_true();
+        assert_that!(&(err.to_string().contains("permanent Codex SDK failure"))).is_true();
     }
 
     #[tokio::test]
@@ -3396,14 +3679,16 @@ mod tests {
         let cancelled = stop_automation(&store, "demo").await.unwrap();
         let item = get_item(&store, "demo", item.id).await.unwrap();
 
-        assert_eq!(cancelled.len(), 1);
-        assert_eq!(cancelled[0].status, AgentRunStatus::Cancelled);
-        assert_eq!(item.state.as_deref(), Some("ready"));
-        assert_eq!(item.claimed_by, None);
-        assert!(
-            item.labels
+        assert_that!(&(cancelled.len())).is_equal_to(1);
+        assert_that!(&(cancelled[0].status)).is_equal_to(AgentRunStatus::Cancelled);
+        assert_that!(&(item.state.as_deref())).is_equal_to(Some("ready"));
+        assert_that!(&(item.claimed_by)).is_equal_to(None);
+        assert_that!(
+            &(item
+                .labels
                 .iter()
-                .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY)
-        );
+                .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY))
+        )
+        .is_true();
     }
 }

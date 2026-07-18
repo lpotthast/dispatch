@@ -9,8 +9,9 @@ use crate::{
         storage::Store, swim_lanes, work_item_states, workspace,
     },
     frontend::{
-        ApiDocsPage, BoardItemsSection, BoardPage, BoardRunSessionView, CodexStatusPage, ItemPage,
-        ProjectsPage, RunLogPage, RunsPage, RunsSection, TriggersPage,
+        ApiDocsPage, BoardItemView, BoardItemsSection, BoardPage, BoardRunPreview,
+        BoardRunSessionView, CodexStatusPage, ItemPage, ProjectPage, ProjectsPage, RunLogPage,
+        RunsPage, RunsSection, TriggersPage, WorkspaceBarData,
     },
     shared::view_models::{AgentRunView, CodexAppServerStatusView, ProcessSessionView},
 };
@@ -25,7 +26,7 @@ pub(crate) async fn board_page_data(
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
     let selected_project = selected_project
-        .or_else(|| projects.first().map(|project| project.name.as_str()))
+        .filter(|selected| projects.iter().any(|project| project.name == *selected))
         .map(ToOwned::to_owned);
 
     let selected_project_view = selected_project
@@ -33,9 +34,6 @@ pub(crate) async fn board_page_data(
         .and_then(|project| projects.iter().find(|candidate| candidate.name == project))
         .cloned();
 
-    let mut settings = None;
-    let mut system_prompt_events = Vec::new();
-    let mut memory_events = Vec::new();
     let mut automation_status = None;
     let mut automation_running = false;
     let mut project_items = Vec::new();
@@ -43,22 +41,17 @@ pub(crate) async fn board_page_data(
     let mut project_work_item_states = Vec::new();
     let mut label_suggestions = Vec::new();
     let mut misconfigured_item_count = 0;
-    if let Some(project) = selected_project_view
-        .as_ref()
-        .map(|project| project.name.as_str())
-    {
-        settings = Some(projects::get_settings(store, project).await?);
-        system_prompt_events = projects::list_system_prompt_events(store, project).await?;
-        memory_events = projects::list_memory_events(store, project).await?;
-        let status = automation::automation_status(store, project).await?;
-        automation_running = automation_controller.is_project_running(project).await;
+    if let Some(project) = selected_project_view.as_ref() {
+        let status = automation::automation_status(store, &project.name).await?;
+        automation_running = automation_controller.is_project_running(project.id).await;
         automation_status = Some(status);
-        project_items = items::list_items(store, project, None).await?;
-        project_swim_lanes = swim_lanes::list_swim_lanes(store, project).await?;
-        project_work_item_states = work_item_states::list_work_item_states(store, project).await?;
-        label_suggestions = item_label_service::list_project_labels(store, project).await?;
+        project_items = board_items(store, &project.name).await?;
+        project_swim_lanes = swim_lanes::list_swim_lanes(store, &project.name).await?;
+        project_work_item_states =
+            work_item_states::list_work_item_states(store, &project.name).await?;
+        label_suggestions = item_label_service::list_project_labels(store, &project.name).await?;
         misconfigured_item_count =
-            items::count_items_outside_work_item_states(store, project).await?;
+            items::count_items_outside_work_item_states(store, &project.name).await?;
     }
 
     Ok(BoardPage {
@@ -66,10 +59,6 @@ pub(crate) async fn board_page_data(
         active_project_names,
         selected_project,
         selected_project_view,
-        settings,
-        workspace_editors: workspace::available_workspace_editors(),
-        system_prompt_events,
-        memory_events,
         automation_status,
         automation_running,
         items: project_items,
@@ -84,12 +73,39 @@ pub(crate) async fn board_page_data(
 
 pub(crate) async fn board_items_section(store: &Store, project: &str) -> Result<BoardItemsSection> {
     Ok(BoardItemsSection {
-        items: items::list_items(store, project, None).await?,
+        items: board_items(store, project).await?,
         swim_lanes: swim_lanes::list_swim_lanes(store, project).await?,
         work_item_states: work_item_states::list_work_item_states(store, project).await?,
         misconfigured_item_count: items::count_items_outside_work_item_states(store, project)
             .await?,
     })
+}
+
+async fn board_items(store: &Store, project: &str) -> Result<Vec<BoardItemView>> {
+    let items = items::list_items(store, project, None).await?;
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let mut run_previews = automation::list_item_run_previews(store, project, &item_ids).await?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| {
+            let previews = run_previews.remove(&item.id).unwrap_or_default();
+            BoardItemView {
+                item,
+                run_count: previews.total,
+                recent_runs: previews
+                    .latest
+                    .into_iter()
+                    .map(|run| BoardRunPreview {
+                        id: run.id,
+                        status: run.status,
+                        result_summary: run.result_summary,
+                        created_at: run.created_at,
+                    })
+                    .collect(),
+            }
+        })
+        .collect())
 }
 
 pub(crate) async fn runs_page_data(
@@ -102,7 +118,7 @@ pub(crate) async fn runs_page_data(
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
     let selected_project = selected_project
-        .or_else(|| projects.first().map(|project| project.name.as_str()))
+        .filter(|selected| projects.iter().any(|project| project.name == *selected))
         .map(ToOwned::to_owned);
     let selected_project_view = selected_project
         .as_deref()
@@ -129,7 +145,6 @@ pub(crate) async fn runs_page_data(
         automation_status,
         automation_running,
         run_sessions,
-        workspace_editors: workspace::available_workspace_editors(),
         codex_status,
     })
 }
@@ -140,9 +155,10 @@ pub(crate) async fn runs_section(
     automation_controller: &AutomationController,
     project: &str,
 ) -> Result<RunsSection> {
+    let project_id = projects::project_id(store, project).await?;
     let automation_status = automation::automation_status(store, project).await?;
-    let automation_running = automation_controller.is_project_running(project).await;
-    let active_sessions = sessions.list_for_project(project).await;
+    let automation_running = automation_controller.is_project_running(project_id).await;
+    let active_sessions = sessions.list_for_project(project_id).await;
     let run_sessions = board_run_sessions(
         store,
         project,
@@ -223,10 +239,11 @@ pub(crate) async fn trigger_run_sessions(
     project: &str,
     trigger_id: i64,
 ) -> Result<Vec<BoardRunSessionView>> {
+    let project_id = projects::project_id(store, project).await?;
     let runs = automation::list_runs_for_trigger(store, project, trigger_id, None).await?;
     let run_ids = runs.iter().map(|run| run.id).collect::<HashSet<_>>();
     let active_sessions = sessions
-        .list_for_project(project)
+        .list_for_project(project_id)
         .await
         .into_iter()
         .filter(|session| run_ids.contains(&session.run_id))
@@ -282,7 +299,6 @@ pub(crate) async fn run_log_page_data(
         active_project_names,
         project: project.to_owned(),
         run_log,
-        workspace_editors: workspace::available_workspace_editors(),
         codex_status,
     })
 }
@@ -291,19 +307,64 @@ pub(crate) async fn projects_page_data(
     store: &Store,
     automation_controller: &AutomationController,
     codex_status: CodexAppServerStatusView,
-    selected_project: Option<&str>,
-    api_base_url: String,
 ) -> Result<ProjectsPage> {
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
-    let selected_project = selected_project
-        .or_else(|| projects.first().map(|project| project.name.as_str()))
-        .map(ToOwned::to_owned);
 
     Ok(ProjectsPage {
         projects,
         active_project_names,
+        codex_status,
+    })
+}
+
+pub(crate) async fn workspace_bar_data(
+    store: &Store,
+    selected_project: Option<&str>,
+) -> Result<WorkspaceBarData> {
+    let projects = projects::list_projects(store).await?;
+    let project = selected_project
+        .and_then(|project| projects.iter().find(|candidate| candidate.name == project))
+        .cloned();
+
+    Ok(WorkspaceBarData {
+        project,
+        workspace_editors: workspace::available_workspace_editors(),
+    })
+}
+
+pub(crate) async fn project_page_data(
+    store: &Store,
+    automation_controller: &AutomationController,
+    codex_status: CodexAppServerStatusView,
+    selected_project: Option<&str>,
+    api_base_url: String,
+) -> Result<ProjectPage> {
+    let projects = projects::list_projects(store).await?;
+    let active_project_names = active_project_names(store, automation_controller).await?;
+    let selected_project = selected_project
+        .filter(|selected| projects.iter().any(|project| project.name == *selected))
+        .map(ToOwned::to_owned);
+    let selected_project_view = selected_project
+        .as_deref()
+        .and_then(|project| projects.iter().find(|candidate| candidate.name == project))
+        .cloned();
+    let (system_prompt_events, memory_events) = if let Some(project) = selected_project.as_deref() {
+        (
+            projects::list_system_prompt_events(store, project).await?,
+            projects::list_memory_events(store, project).await?,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    Ok(ProjectPage {
+        projects,
+        active_project_names,
         selected_project,
+        selected_project_view,
+        system_prompt_events,
+        memory_events,
         api_base_url,
         codex_status,
     })
@@ -319,7 +380,7 @@ pub(crate) async fn triggers_page_data(
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
     let selected_project = selected_project
-        .or_else(|| projects.first().map(|project| project.name.as_str()))
+        .filter(|selected| projects.iter().any(|project| project.name == *selected))
         .map(ToOwned::to_owned);
     let selected_project_view = selected_project
         .as_deref()
@@ -333,14 +394,19 @@ pub(crate) async fn triggers_page_data(
     } else {
         Vec::new()
     };
+    let settings = if let Some(project) = selected_project.as_deref() {
+        Some(projects::get_settings(store, project).await?)
+    } else {
+        None
+    };
 
     Ok(TriggersPage {
         projects,
         active_project_names,
         selected_project,
         selected_project_view,
+        settings,
         personalities: project_personalities,
-        workspace_editors: workspace::available_workspace_editors(),
         api_base_url,
         codex_status,
     })
@@ -355,7 +421,7 @@ pub(crate) async fn codex_status_page_data(
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
     let selected_project = selected_project
-        .or_else(|| projects.first().map(|project| project.name.as_str()))
+        .filter(|selected| projects.iter().any(|project| project.name == *selected))
         .map(ToOwned::to_owned);
 
     Ok(CodexStatusPage {
@@ -375,7 +441,7 @@ pub(crate) async fn api_docs_page_data(
     let projects = projects::list_projects(store).await?;
     let active_project_names = active_project_names(store, automation_controller).await?;
     let selected_project = selected_project
-        .or_else(|| projects.first().map(|project| project.name.as_str()))
+        .filter(|selected| projects.iter().any(|project| project.name == *selected))
         .map(ToOwned::to_owned);
 
     Ok(ApiDocsPage {

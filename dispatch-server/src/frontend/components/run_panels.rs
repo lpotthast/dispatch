@@ -10,7 +10,7 @@ use crate::{
     },
     shared::view_models::{
         AgentCommitOutcome, AgentRunStatus, AgentRunTokenUsageView, AgentRunView,
-        AutomationStatusView, WorkspaceEditorView,
+        AutomationStatusView,
     },
 };
 use leptos::prelude::*;
@@ -19,7 +19,7 @@ use leptos_router::{
     hooks::{use_navigate, use_query_map},
 };
 
-use super::{cached_query, encode_path, run_output_view, run_workspace_actions};
+use super::{RunOutput, cached_query, encode_path};
 
 #[component]
 pub(crate) fn LiveRunsSection(
@@ -27,7 +27,6 @@ pub(crate) fn LiveRunsSection(
     initial_status: AutomationStatusView,
     initial_running: bool,
     initial_run_sessions: Vec<BoardRunSessionView>,
-    workspace_editors: Vec<WorkspaceEditorView>,
 ) -> impl IntoView + 'static {
     let (automation_status, set_automation_status) = signal(initial_status);
     let (automation_running, set_automation_running) = signal(initial_running);
@@ -81,17 +80,16 @@ pub(crate) fn LiveRunsSection(
             title="Runs"
             status_note=status_note
             run_sessions=run_sessions
-            workspace_editors=workspace_editors
             sync_selection_with_url=true
             empty_message="No runs yet."
         />
     }
 }
 
-pub(crate) fn trigger_runs_panel(
+#[component]
+pub(crate) fn TriggerRunsPanel(
     project: String,
     selected_trigger_id: Memo<Option<i64>>,
-    workspace_editors: Vec<WorkspaceEditorView>,
 ) -> impl IntoView + 'static {
     let service = automation_service();
     let project_for_loader = project.clone();
@@ -145,23 +143,19 @@ pub(crate) fn trigger_runs_panel(
     view! {
         {move || {
             if selected_trigger_id.get().is_some() {
-                let schedule_action = selected_trigger_id.get().map(|trigger_id| {
-                    format!(
-                        "/projects/{}/automation/triggers/{}/schedule-evaluation",
-                        encode_path(&project_for_view),
-                        trigger_id
-                    )
-                });
+                let selected_trigger_id = selected_trigger_id.get();
                 view! {
-                    {schedule_action.map(|action| {
+                    {selected_trigger_id.map(|trigger_id| {
                         view! {
                             <section class="automation trigger-actions panel">
                                 <div class="panel-heading">
                                     <h2>"Selected automation"</h2>
                                 </div>
-                                <form method="post" action=action>
-                                    <button type="submit">"Queue evaluation"</button>
-                                </form>
+                                <QueueAutomationEvaluation
+                                    project=project_for_view.clone()
+                                    trigger_id
+                                    refresh=trigger_runs.refresh
+                                />
                             </section>
                         }
                     })}
@@ -170,7 +164,6 @@ pub(crate) fn trigger_runs_panel(
                         title="Runs for selected automation"
                         status_note=Signal::derive(|| None::<String>)
                         run_sessions=run_sessions
-                        workspace_editors=workspace_editors.clone()
                         sync_selection_with_url=false
                         empty_message="No runs for this automation yet."
                     />
@@ -191,12 +184,45 @@ pub(crate) fn trigger_runs_panel(
 }
 
 #[component]
+fn QueueAutomationEvaluation(
+    project: String,
+    trigger_id: i64,
+    refresh: Callback<()>,
+) -> impl IntoView {
+    let service = automation_service();
+    let (pending, set_pending) = signal(false);
+    let queue = move |_| {
+        if pending.get_untracked() {
+            return;
+        }
+        set_pending.set(true);
+        let service = service.clone();
+        let project = project.clone();
+        leptos::task::spawn_local(async move {
+            if service
+                .schedule_trigger_evaluation(project, trigger_id)
+                .await
+                .is_ok()
+            {
+                refresh.run(());
+            }
+            set_pending.set(false);
+        });
+    };
+
+    view! {
+        <button type="button" disabled=move || pending.get() on:click=queue>
+            "Queue evaluation"
+        </button>
+    }
+}
+
+#[component]
 fn RunSessionsPanel(
     project: String,
     title: &'static str,
     #[prop(into)] status_note: Signal<Option<String>>,
     #[prop(into)] run_sessions: ReadSignal<Vec<BoardRunSessionView>>,
-    workspace_editors: Vec<WorkspaceEditorView>,
     sync_selection_with_url: bool,
     empty_message: &'static str,
 ) -> impl IntoView + 'static {
@@ -309,7 +335,6 @@ fn RunSessionsPanel(
         view! { <div class="run-session-list">{sessions}</div> }.into_any()
     };
     let detail_project = project.clone();
-    let detail_workspace_editors = workspace_editors.clone();
     let run_detail = move || {
         let detail_sessions = run_sessions.get();
         let selected = selected_run_id
@@ -335,7 +360,6 @@ fn RunSessionsPanel(
                 run_session_detail(
                     &detail_project,
                     session,
-                    detail_workspace_editors.clone(),
                     show_thinking_history,
                     toggle_thinking_history,
                 )
@@ -457,7 +481,6 @@ pub(crate) fn recorded_field(value: &str) -> String {
 fn run_session_detail(
     project: &str,
     session: BoardRunSessionView,
-    workspace_editors: Vec<WorkspaceEditorView>,
     show_thinking_history: bool,
     toggle_thinking_history: Callback<()>,
 ) -> AnyView {
@@ -485,14 +508,16 @@ fn run_session_detail(
     let origin = run_origin_label(&session.run);
     let work_item = run_work_item_link(project, session.run.work_item_id);
     let command = recorded_field(&session.run.command);
-    let working_dir = run_workspace_actions(project, &session.run, workspace_editors, href.clone());
+    let working_dir = recorded_field(&session.run.working_dir);
     let status_class = run_status_class(session.run.status);
-    let output = run_output_view(
-        session.output.clone(),
-        session.active,
-        show_thinking_history,
-        toggle_thinking_history,
-    );
+    let output = view! {
+        <RunOutput
+            output=session.output.clone()
+            active=session.active
+            show_thinking_history
+            toggle_thinking_history
+        />
+    };
     let developer_instructions = session
         .developer_instructions
         .unwrap_or_else(|| "No developer instructions have been written yet.".to_owned());

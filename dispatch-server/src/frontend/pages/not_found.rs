@@ -1,4 +1,4 @@
-use super::error::error_content;
+use super::error::ErrorContent;
 use leptos::prelude::*;
 #[cfg(feature = "ssr")]
 use leptos_axum::{ResponseOptions, ResponseParts};
@@ -16,6 +16,6 @@ pub fn PageErr404() -> impl IntoView {
 
     view! {
         <Title text="Not found"/>
-        {error_content("Page not found.".to_owned())}
+        <ErrorContent message="Page not found.".to_owned()/>
     }
 }

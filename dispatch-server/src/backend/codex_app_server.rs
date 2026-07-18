@@ -143,7 +143,7 @@ impl ManagedCodexAppServer {
     }
 }
 
-/// Deduplicates detailed status probes across `/codex` page loads, live events, and browser tabs.
+/// Deduplicates detailed status probes across `/system` page loads, live events, and browser tabs.
 #[derive(Clone, Default)]
 pub(crate) struct CodexStatusRefresh {
     last_detailed_refresh: Arc<Mutex<Option<DetailedStatusCache>>>,
@@ -1691,6 +1691,7 @@ fn utf8_path(path: &Path, description: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use std::path::{Path, PathBuf};
 
     use tempfile::TempDir;
@@ -1718,9 +1719,9 @@ mod tests {
 
         let status = app_server_status(&store).await;
 
-        assert!(!status.available);
-        assert!(status.message.contains("Codex app-server is unavailable"));
-        assert!(status.install_prompt.contains("Install Codex"));
+        assert_that!(&(!status.available)).is_true();
+        assert_that!(&(status.message.contains("Codex app-server is unavailable"))).is_true();
+        assert_that!(&(status.install_prompt.contains("Install Codex"))).is_true();
     }
 
     #[test]
@@ -1730,10 +1731,7 @@ mod tests {
             Path::new("/Users/test/.dispatch/codex"),
         );
 
-        assert_eq!(
-            command,
-            "CODEX_HOME=/Users/test/.dispatch/codex CODEX_SQLITE_HOME=/Users/test/.dispatch/codex /opt/codex/bin/codex login"
-        );
+        assert_that!(&(command)).is_equal_to("CODEX_HOME=/Users/test/.dispatch/codex CODEX_SQLITE_HOME=/Users/test/.dispatch/codex /opt/codex/bin/codex login");
     }
 
     #[test]
@@ -1743,10 +1741,7 @@ mod tests {
             Path::new("/Users/test/Dispatch Home/codex"),
         );
 
-        assert_eq!(
-            command,
-            "CODEX_HOME='/Users/test/Dispatch Home/codex' CODEX_SQLITE_HOME='/Users/test/Dispatch Home/codex' '/Applications/Codex CLI/codex' login"
-        );
+        assert_that!(&(command)).is_equal_to("CODEX_HOME='/Users/test/Dispatch Home/codex' CODEX_SQLITE_HOME='/Users/test/Dispatch Home/codex' '/Applications/Codex CLI/codex' login");
     }
 
     #[test]
@@ -1768,8 +1763,9 @@ mod tests {
 
         let guidance = operator_guidance(&status).join("\n");
 
-        assert!(guidance.contains("CODEX_HOME=/Users/test/.dispatch/codex codex login"));
-        assert!(!guidance.contains(CODEX_INSTALL_PROMPT));
+        assert_that!(&(guidance.contains("CODEX_HOME=/Users/test/.dispatch/codex codex login")))
+            .is_true();
+        assert_that!(&(!guidance.contains(CODEX_INSTALL_PROMPT))).is_true();
     }
 
     #[test]
@@ -1785,8 +1781,8 @@ mod tests {
 
         let message = auth_failure_message(AccountOperation::RateLimits, &error).unwrap();
 
-        assert!(message.contains("managed Codex home"));
-        assert!(message.contains("Log out"));
+        assert_that!(&(message.contains("managed Codex home"))).is_true();
+        assert_that!(&(message.contains("Log out"))).is_true();
     }
 
     #[test]
@@ -1802,13 +1798,11 @@ mod tests {
         .unwrap();
         let account = response.account.as_ref().unwrap();
 
-        assert_eq!(response.requires_openai_auth, Some(true));
-        assert_eq!(account.auth_method(), "chatgpt");
-        assert_eq!(account.label().as_deref(), Some("operator@example.com"));
-        assert_eq!(
-            account.plan_type().as_ref().map(CodexPlanType::as_str),
-            Some("pro")
-        );
+        assert_that!(&(response.requires_openai_auth)).is_equal_to(Some(true));
+        assert_that!(&(account.auth_method())).is_equal_to("chatgpt");
+        assert_that!(&(account.label().as_deref())).is_equal_to(Some("operator@example.com"));
+        assert_that!(&(account.plan_type().as_ref().map(CodexPlanType::as_str)))
+            .is_equal_to(Some("pro"));
     }
 
     #[test]
@@ -1831,19 +1825,14 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(
-            response.plan_type().as_ref().map(CodexPlanType::as_str),
-            Some("plus")
-        );
+        assert_that!(&(response.plan_type().as_ref().map(CodexPlanType::as_str)))
+            .is_equal_to(Some("plus"));
         let limits = response.into_views();
-        assert_eq!(limits.len(), 1);
-        assert_eq!(limits[0].label, "codex");
-        assert_eq!(limits[0].primary_used_percent, Some(42));
-        assert_eq!(limits[0].primary_window_minutes, Some(300));
-        assert_eq!(
-            limits[0].reached_type.as_deref(),
-            Some("rate_limit_reached")
-        );
+        assert_that!(&(limits.len())).is_equal_to(1);
+        assert_that!(&(limits[0].label)).is_equal_to("codex");
+        assert_that!(&(limits[0].primary_used_percent)).is_equal_to(Some(42));
+        assert_that!(&(limits[0].primary_window_minutes)).is_equal_to(Some(300));
+        assert_that!(&(limits[0].reached_type.as_deref())).is_equal_to(Some("rate_limit_reached"));
     }
 
     #[test]
@@ -1854,7 +1843,7 @@ mod tests {
             }
         }));
 
-        assert!(matches!(result, Err(ClientError::Serialization(_))));
+        assert_that!(&(matches!(result, Err(ClientError::Serialization(_))))).is_true();
     }
 
     #[test]
@@ -1867,8 +1856,8 @@ mod tests {
         .account
         .unwrap();
 
-        assert_eq!(account.auth_method(), "futureProvider");
-        assert_eq!(account.label().as_deref(), Some("futureProvider"));
+        assert_that!(&(account.auth_method())).is_equal_to("futureProvider");
+        assert_that!(&(account.label().as_deref())).is_equal_to(Some("futureProvider"));
 
         let response = deserialize_response::<RateLimitsReadResponse>(serde_json::json!({
             "rateLimits": {
@@ -1879,8 +1868,8 @@ mod tests {
         .unwrap();
         let limits = response.into_views();
 
-        assert_eq!(limits[0].plan_type.as_deref(), Some("future_plan"));
-        assert_eq!(limits[0].reached_type.as_deref(), Some("future_limit"));
+        assert_that!(&(limits[0].plan_type.as_deref())).is_equal_to(Some("future_plan"));
+        assert_that!(&(limits[0].reached_type.as_deref())).is_equal_to(Some("future_limit"));
     }
 
     #[test]
@@ -1895,11 +1884,8 @@ mod tests {
         .unwrap();
         let limits = response.into_views();
 
-        assert_eq!(limits[0].primary_used_percent, Some(wide_percentage));
-        assert_eq!(
-            limits[0].individual_remaining_percent,
-            Some(wide_percentage)
-        );
+        assert_that!(&(limits[0].primary_used_percent)).is_equal_to(Some(wide_percentage));
+        assert_that!(&(limits[0].individual_remaining_percent)).is_equal_to(Some(wide_percentage));
     }
 
     #[test]
@@ -1917,11 +1903,11 @@ mod tests {
         .unwrap();
         let summary = CodexUsageSummaryView::from(response.summary.unwrap());
 
-        assert_eq!(summary.lifetime_tokens, Some(1200));
-        assert_eq!(summary.peak_daily_tokens, Some(300));
-        assert_eq!(summary.current_streak_days, Some(4));
-        assert_eq!(summary.longest_streak_days, Some(9));
-        assert_eq!(summary.longest_running_turn_seconds, Some(75));
+        assert_that!(&(summary.lifetime_tokens)).is_equal_to(Some(1200));
+        assert_that!(&(summary.peak_daily_tokens)).is_equal_to(Some(300));
+        assert_that!(&(summary.current_streak_days)).is_equal_to(Some(4));
+        assert_that!(&(summary.longest_streak_days)).is_equal_to(Some(9));
+        assert_that!(&(summary.longest_running_turn_seconds)).is_equal_to(Some(75));
     }
 
     #[test]
@@ -1932,14 +1918,14 @@ mod tests {
         ensure_codex_home_at(&codex_home).unwrap();
 
         let config = fs::read_to_string(codex_config_path_for_home(&codex_home)).unwrap();
-        assert!(config.contains("[features]"));
-        assert!(config.contains("check_for_update_on_startup = false"));
-        assert!(config.contains("apps = false"));
-        assert!(config.contains("memories = false"));
-        assert!(config.contains("remote_plugin = false"));
-        assert!(config.contains("[memories]"));
-        assert!(config.contains("use_memories = false"));
-        assert!(config.contains("generate_memories = false"));
+        assert_that!(&(config.contains("[features]"))).is_true();
+        assert_that!(&(config.contains("check_for_update_on_startup = false"))).is_true();
+        assert_that!(&(config.contains("apps = false"))).is_true();
+        assert_that!(&(config.contains("memories = false"))).is_true();
+        assert_that!(&(config.contains("remote_plugin = false"))).is_true();
+        assert_that!(&(config.contains("[memories]"))).is_true();
+        assert_that!(&(config.contains("use_memories = false"))).is_true();
+        assert_that!(&(config.contains("generate_memories = false"))).is_true();
     }
 
     #[test]
@@ -1951,20 +1937,20 @@ mod tests {
         write_project_codex_config(temp.path(), &settings).unwrap();
 
         let config = fs::read_to_string(codex_config_path_for_home(temp.path())).unwrap();
-        assert!(config.contains("approval_policy = \"never\""));
-        assert!(config.contains("sandbox_mode = \"workspace-write\""));
-        assert!(config.contains("network_access = true"));
-        assert!(config.contains("writable_roots = [\"/tmp/dispatch-browser\"]"));
-        assert!(config.contains("check_for_update_on_startup = false"));
-        assert!(config.contains("apps = false"));
-        assert!(config.contains("memories = false"));
-        assert!(config.contains("remote_plugin = false"));
+        assert_that!(&(config.contains("approval_policy = \"never\""))).is_true();
+        assert_that!(&(config.contains("sandbox_mode = \"workspace-write\""))).is_true();
+        assert_that!(&(config.contains("network_access = true"))).is_true();
+        assert_that!(&(config.contains("writable_roots = [\"/tmp/dispatch-browser\"]"))).is_true();
+        assert_that!(&(config.contains("check_for_update_on_startup = false"))).is_true();
+        assert_that!(&(config.contains("apps = false"))).is_true();
+        assert_that!(&(config.contains("memories = false"))).is_true();
+        assert_that!(&(config.contains("remote_plugin = false"))).is_true();
     }
 
     #[test]
     fn readiness_probe_omits_optional_usage_request() {
-        assert!(!StatusProbe::Readiness.includes_usage());
-        assert!(StatusProbe::Detailed.includes_usage());
+        assert_that!(&(!StatusProbe::Readiness.includes_usage())).is_true();
+        assert_that!(&(StatusProbe::Detailed.includes_usage())).is_true();
     }
 
     #[tokio::test]
@@ -1991,9 +1977,9 @@ mod tests {
             .refresh_if_stale(&store, &shared, Duration::from_secs(60))
             .await;
 
-        assert_eq!(cached.checked_at, "recent-detailed-status");
-        assert!(cached.available);
-        assert!(cached.usable);
+        assert_that!(&(cached.checked_at)).is_equal_to("recent-detailed-status");
+        assert_that!(&(cached.available)).is_true();
+        assert_that!(&(cached.usable)).is_true();
     }
 
     #[tokio::test]
@@ -2009,9 +1995,9 @@ mod tests {
         publish_readiness_snapshot(&shared, readiness).await;
 
         let shared = shared.read().await;
-        assert_eq!(shared.checked_at, "pre-run-readiness");
-        assert!(shared.available);
-        assert!(shared.usable);
+        assert_that!(&(shared.checked_at)).is_equal_to("pre-run-readiness");
+        assert_that!(&(shared.available)).is_true();
+        assert_that!(&(shared.usable)).is_true();
     }
 
     #[cfg(unix)]
@@ -2043,12 +2029,13 @@ mod tests {
             };
         stalled_server.abort();
 
-        assert!(
-            error
+        assert_that!(
+            &(error
                 .to_string()
-                .contains("timed out during the WebSocket handshake")
-        );
-        assert!(started_at.elapsed() < Duration::from_secs(3));
+                .contains("timed out during the WebSocket handshake"))
+        )
+        .is_true();
+        assert_that!(&(started_at.elapsed() < Duration::from_secs(3))).is_true();
     }
 
     #[cfg(unix)]
@@ -2088,12 +2075,13 @@ while :; do sleep 1; done
         .expect("fake app-server did not become ready");
         process.shutdown().await.unwrap();
 
-        assert!(exited.exists());
-        assert!(
-            fs::read_to_string(stderr_path)
+        assert_that!(&(exited.exists())).is_true();
+        assert_that!(
+            &(fs::read_to_string(stderr_path)
                 .unwrap()
-                .contains("fake app-server started")
-        );
+                .contains("fake app-server started"))
+        )
+        .is_true();
     }
 
     #[cfg(unix)]
@@ -2119,10 +2107,8 @@ while :; do sleep 1; done
         )
         .unwrap();
 
-        assert_eq!(
-            fs::read_link(project_home.join("installation_id")).unwrap(),
-            shared_home.join("installation_id")
-        );
+        assert_that!(&(fs::read_link(project_home.join("installation_id")).unwrap()))
+            .is_equal_to(shared_home.join("installation_id"));
     }
 
     #[cfg(unix)]
@@ -2140,7 +2126,7 @@ while :; do sleep 1; done
 
         link_shared_codex_entry(&shared_home, &project_home, SharedCodexEntry::Auth).unwrap();
 
-        assert!(fs::symlink_metadata(project_home.join("auth.json")).is_err());
+        assert_that!(&(fs::symlink_metadata(project_home.join("auth.json")).is_err())).is_true();
     }
 
     #[test]
@@ -2157,13 +2143,13 @@ while :; do sleep 1; done
 
         let rules = git_rules_for_policy(&settings);
 
-        assert!(rules.contains("pattern = [\"git\", \"add\"]"));
-        assert!(rules.contains("pattern = [\"git\", \"commit\"]"));
-        assert!(rules.contains("pattern = [\"git\", \"push\"]"));
-        assert!(rules.contains("pattern = [\"git\", \"push\", \"--force\"]"));
-        assert!(rules.contains("pattern = [\"git\", \"reset\"]"));
-        assert!(rules.contains("pattern = [\"git\", \"reset\", \"--hard\"]"));
-        assert!(rules.contains("decision = \"forbidden\""));
+        assert_that!(&(rules.contains("pattern = [\"git\", \"add\"]"))).is_true();
+        assert_that!(&(rules.contains("pattern = [\"git\", \"commit\"]"))).is_true();
+        assert_that!(&(rules.contains("pattern = [\"git\", \"push\"]"))).is_true();
+        assert_that!(&(rules.contains("pattern = [\"git\", \"push\", \"--force\"]"))).is_true();
+        assert_that!(&(rules.contains("pattern = [\"git\", \"reset\"]"))).is_true();
+        assert_that!(&(rules.contains("pattern = [\"git\", \"reset\", \"--hard\"]"))).is_true();
+        assert_that!(&(rules.contains("decision = \"forbidden\""))).is_true();
     }
 
     fn project_settings() -> ProjectSettingsView {

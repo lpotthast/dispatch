@@ -73,6 +73,7 @@ impl<Input, Output> ServiceRequest<Input, Output> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -92,7 +93,7 @@ mod tests {
             })
         });
 
-        assert_eq!(request.execute(41).await.unwrap(), 42);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_that!(&(request.execute(41).await.unwrap())).is_equal_to(42);
+        assert_that!(&(calls.load(Ordering::SeqCst))).is_equal_to(1);
     }
 }

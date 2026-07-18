@@ -47,12 +47,24 @@ impl ApiDocsService {
         &self,
         selected_project: Option<String>,
     ) -> Result<ApiDocsPage, ServerFnError> {
+        let lifecycle_epoch = self.cache.map(|cache| cache.capture_lifecycle_epoch());
         let key = selected_project.clone();
         let page = self.load_page.execute(selected_project).await?;
-        if let Some(cache) = self.cache {
+        if lifecycle_epoch.is_some_and(|epoch| {
+            self.cache
+                .is_some_and(|cache| cache.lifecycle_epoch_is(epoch))
+        }) && let Some(cache) = self.cache
+        {
             cache.store(&("page", key), &page);
         }
         Ok(page)
+    }
+
+    #[cfg(not(feature = "ssr"))]
+    pub(crate) fn clear_cache(&self) {
+        if let Some(cache) = self.cache {
+            cache.clear();
+        }
     }
 }
 

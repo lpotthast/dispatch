@@ -52,7 +52,8 @@ impl AutomationTableKind {
     }
 }
 
-pub(crate) fn automation_triggers_crudkit_instance(
+#[component]
+pub(crate) fn AutomationTriggersCrudkitInstance(
     api_base_url: String,
     project: String,
     project_id: i64,
@@ -69,11 +70,12 @@ pub(crate) fn automation_triggers_crudkit_instance(
         set_context.set(Some(context));
         on_context_created.run(context);
     });
+    let config = automation_triggers_crudkit_config(api_base_url, project_id, personalities, kind);
 
     view! {
         <CrudInstance
             name=kind.instance_name()
-            config=automation_triggers_crudkit_config(api_base_url, project_id, personalities, kind)
+            config
             on_context_created=created
         />
     }
@@ -465,7 +467,7 @@ fn automation_triggers_crudkit_config(
 
     CrudInstanceConfig {
         api_base_url,
-        view: SerializableCrudView::List,
+        initial_view: CrudView::table(),
         list_columns,
         create_elements: CreateElements::Custom(vec![Elem::Enclosing(Enclosing::None(Group {
             layout: Layout::default(),
@@ -486,7 +488,8 @@ fn automation_triggers_crudkit_config(
         model_handler: automation_trigger_model_handler(project_id, kind, &personalities),
         actions: vec![],
         entity_actions: vec![],
-        navigation: CrudNavigationConfig::default(),
+        builtin_view_controls: CrudBuiltinViewControls::default(),
+        view_registry: CrudViewRegistry::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(

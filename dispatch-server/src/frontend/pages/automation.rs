@@ -1,27 +1,23 @@
 use crate::{
     frontend::{
         components::{
-            ActivePage, cached_query, encode_path, selected_project_signal, top_bar,
-            trigger_runs_panel,
+            ActivePage, TopBar, TriggerRunsPanel, cached_query, encode_path,
+            selected_project_signal,
         },
         crudkit::{
-            AutomationTableKind, PersonalitiesPanel, automation_triggers_crudkit_instance,
+            AutomationTableKind, AutomationTriggersCrudkitInstance, PersonalitiesPanel,
             selected_trigger_id_from_context,
         },
-        services::{
-            apply_bundle_yaml, automation_service, detach_automation_rule, diff_bundle_yaml,
-            explain_automation_route, export_bundle_yaml, list_installed_bundles,
-            load_automation_rule_inspector, project_cache, remove_installed_bundle,
-            restore_automation_rule_revision, validate_bundle_yaml,
-        },
+        services::{CommitPolicyUpdate, automation_service, project_cache, project_service},
     },
     shared::view_models::{
-        AutomationEvaluationView, AutomationRevisionView, AutomationTriggerView,
-        CodexAppServerStatusView, PersonalityView, ProjectView, RevisionAnalyticsView,
-        WorkspaceEditorView,
+        AgentGitCommandPolicy, AutomationEvaluationView, AutomationRevisionView,
+        AutomationTriggerView, CodexAppServerStatusView, PersonalityView, ProjectSettingsView,
+        ProjectView, RevisionAnalyticsView,
     },
 };
 use crudkit_leptos::crud_instance::CrudInstanceContext;
+use leptonic::components::prelude::Toggle;
 use leptos::prelude::*;
 use leptos_meta::Title;
 use serde::{Deserialize, Serialize};
@@ -32,8 +28,8 @@ pub struct TriggersPage {
     pub active_project_names: Vec<String>,
     pub selected_project: Option<String>,
     pub selected_project_view: Option<ProjectView>,
+    pub settings: Option<ProjectSettingsView>,
     pub personalities: Vec<PersonalityView>,
-    pub workspace_editors: Vec<WorkspaceEditorView>,
     pub api_base_url: String,
     pub codex_status: CodexAppServerStatusView,
 }
@@ -64,6 +60,21 @@ pub fn PageTriggers() -> impl IntoView {
         },
     );
     project_cache().track(result.value, |page| &page.projects);
+    let initial_auto_commit = result
+        .value
+        .get_untracked()
+        .and_then(|page| page.settings.map(|settings| settings.auto_commit))
+        .unwrap_or(false);
+    let (auto_commit, set_auto_commit) = signal(initial_auto_commit);
+    Effect::new(move |_| {
+        if let Some(value) = result
+            .value
+            .get()
+            .and_then(|page| page.settings.map(|settings| settings.auto_commit))
+        {
+            set_auto_commit.set(value);
+        }
+    });
     let active_project_names = Signal::derive(move || {
         result
             .value
@@ -78,13 +89,15 @@ pub fn PageTriggers() -> impl IntoView {
             .map(|page| page.codex_status)
             .unwrap_or_default()
     });
-    let topbar = top_bar(
-        active_project_names,
-        selected_project.into(),
-        ActivePage::Triggers,
-        Signal::derive(|| None),
-        codex_status,
-    );
+    let topbar = view! {
+        <TopBar
+            active_project_names
+            selected_project=selected_project.into()
+            active=ActivePage::Triggers
+            automation=Signal::derive(|| None)
+            codex_status
+        />
+    };
 
     view! {
         <Title text="Automation"/>
@@ -94,19 +107,29 @@ pub fn PageTriggers() -> impl IntoView {
                 <section class="page-heading">
                     <h1>"Automation"</h1>
                 </section>
-                {move || {
-                    result
-                        .value
-                        .get()
-                        .map(triggers_content)
-                        .unwrap_or_else(triggers_shell)
-                }}
+                <div class="automation-sections">
+                    {move || {
+                        result
+                            .value
+                            .get()
+                            .map(|page| view! {
+                                <TriggersContent
+                                    page
+                                    auto_commit
+                                    set_auto_commit
+                                    refresh=result.refresh
+                                />
+                            }.into_any())
+                            .unwrap_or_else(|| view! { <TriggersShell/> }.into_any())
+                    }}
+                </div>
             </main>
         </div>
     }
 }
 
-fn triggers_shell() -> AnyView {
+#[component]
+fn TriggersShell() -> impl IntoView {
     view! {
         <>
             <section class="personalities panel">
@@ -118,24 +141,34 @@ fn triggers_shell() -> AnyView {
             <section class="automation-triggers panel">
                 <div class="panel-heading"><h2>"Work-producing automations"</h2></div>
             </section>
+            <section class="project-settings automation-policy-shell">
+                <div class="commit-policy"><h2>"Automation policy"</h2></div>
+            </section>
         </>
     }
-    .into_any()
 }
 
-fn triggers_content(page: TriggersPage) -> AnyView {
+#[component]
+fn TriggersContent(
+    page: TriggersPage,
+    auto_commit: ReadSignal<bool>,
+    set_auto_commit: WriteSignal<bool>,
+    refresh: Callback<()>,
+) -> impl IntoView {
     let TriggersPage {
         projects: _,
         active_project_names: _,
         selected_project,
         selected_project_view,
+        settings,
         personalities,
-        workspace_editors,
         api_base_url,
         codex_status: _,
     } = page;
 
-    if let (Some(project), Some(project_view)) = (selected_project, selected_project_view) {
+    if let (Some(project), Some(project_view), Some(settings)) =
+        (selected_project, selected_project_view, settings)
+    {
         let (consumer_context, set_consumer_context) = signal(None::<CrudInstanceContext>);
         let (producer_context, set_producer_context) = signal(None::<CrudInstanceContext>);
         let selected_trigger_id = Memo::new(move |_| {
@@ -148,31 +181,39 @@ fn triggers_content(page: TriggersPage) -> AnyView {
                         .and_then(selected_trigger_id_from_context)
                 })
         });
-        let consuming_triggers = automation_triggers_crudkit_instance(
-            api_base_url.clone(),
-            project.clone(),
-            project_view.id,
-            personalities.clone(),
-            AutomationTableKind::Consuming,
-            Callback::new(move |context| set_consumer_context.set(Some(context))),
-        );
-        let producing_triggers = automation_triggers_crudkit_instance(
-            api_base_url.clone(),
-            project.clone(),
-            project_view.id,
-            Vec::new(),
-            AutomationTableKind::Producing,
-            Callback::new(move |context| set_producer_context.set(Some(context))),
-        );
-        let trigger_runs = trigger_runs_panel(
-            project.clone(),
-            selected_trigger_id,
-            workspace_editors.clone(),
-        );
-        let inspector = automation_rule_inspector(project.clone(), selected_trigger_id);
+        let consuming_triggers = view! {
+            <AutomationTriggersCrudkitInstance
+                api_base_url=api_base_url.clone()
+                project=project.clone()
+                project_id=project_view.id
+                personalities=personalities.clone()
+                kind=AutomationTableKind::Consuming
+                on_context_created=Callback::new(move |context| {
+                    set_consumer_context.set(Some(context));
+                })
+            />
+        };
+        let producing_triggers = view! {
+            <AutomationTriggersCrudkitInstance
+                api_base_url=api_base_url.clone()
+                project=project.clone()
+                project_id=project_view.id
+                personalities=Vec::new()
+                kind=AutomationTableKind::Producing
+                on_context_created=Callback::new(move |context| {
+                    set_producer_context.set(Some(context));
+                })
+            />
+        };
+        let trigger_runs = view! {
+            <TriggerRunsPanel project=project.clone() selected_trigger_id/>
+        };
+        let inspector = view! {
+            <AutomationRuleInspector project=project.clone() selected_trigger_id/>
+        };
         view! {
             <>
-                    {bundle_administration(project.clone())}
+                    <BundleAdministration project=project.clone()/>
                     <PersonalitiesPanel
                         api_base_url=api_base_url
                         project=project.clone()
@@ -194,6 +235,13 @@ fn triggers_content(page: TriggersPage) -> AnyView {
                             {producing_triggers}
                         </div>
                     </section>
+                    <AutomationPolicy
+                        project=project.clone()
+                        settings
+                        auto_commit
+                        set_auto_commit
+                        refresh
+                    />
                     {inspector}
                     {trigger_runs}
             </>
@@ -210,7 +258,170 @@ fn triggers_content(page: TriggersPage) -> AnyView {
     }
 }
 
-fn automation_rule_inspector(project: String, selected_trigger_id: Memo<Option<i64>>) -> AnyView {
+#[component]
+fn AutomationPolicy(
+    project: String,
+    settings: ProjectSettingsView,
+    auto_commit: ReadSignal<bool>,
+    set_auto_commit: WriteSignal<bool>,
+    refresh: Callback<()>,
+) -> impl IntoView + 'static {
+    let (commit_standard, set_commit_standard) = signal(settings.commit_standard);
+    let (max_read_only_agents, set_max_read_only_agents) = signal(settings.max_read_only_agents);
+    let (revert_strategy, set_revert_strategy) = signal(settings.revert_strategy);
+    let git_policy = settings.agent_git_command_policy;
+    let (git_add, set_git_add) = signal(git_policy.add);
+    let (git_commit, set_git_commit) = signal(git_policy.commit);
+    let (git_push, set_git_push) = signal(git_policy.push);
+    let (git_reset, set_git_reset) = signal(git_policy.reset);
+    let (git_hard_reset, set_git_hard_reset) = signal(git_policy.hard_reset);
+    let service = project_service();
+    let (pending, set_pending) = signal(false);
+    let save = move |_| {
+        if pending.get_untracked() {
+            return;
+        }
+        set_pending.set(true);
+        let service = service.clone();
+        let project = project.clone();
+        let update = CommitPolicyUpdate {
+            max_read_only_agents: max_read_only_agents.get_untracked(),
+            auto_commit: auto_commit.get_untracked(),
+            commit_standard: commit_standard.get_untracked(),
+            revert_strategy: revert_strategy.get_untracked(),
+            agent_git_command_policy: AgentGitCommandPolicy {
+                add: git_add.get_untracked(),
+                commit: git_commit.get_untracked(),
+                push: git_push.get_untracked(),
+                reset: git_reset.get_untracked(),
+                hard_reset: git_hard_reset.get_untracked(),
+            },
+        };
+        leptos::task::spawn_local(async move {
+            if service.update_commit_policy(project, update).await.is_ok() {
+                refresh.run(());
+            }
+            set_pending.set(false);
+        });
+    };
+
+    view! {
+        <section class="project-settings automation-policy-settings">
+            <div class="commit-policy">
+                <h2>"Automation policy"</h2>
+                <div class="commit-policy-controls">
+                    <label for="project-max-read-only-agents">"Read-only agents"</label>
+                    <input
+                        id="project-max-read-only-agents"
+                        type="number"
+                        min="0"
+                        step="1"
+                        prop:value=move || max_read_only_agents.get().to_string()
+                        on:input=move |event| {
+                            if let Ok(value) = event_target_value(&event).parse() {
+                                set_max_read_only_agents.set(value);
+                            }
+                        }
+                    />
+                    <label class="checkbox-row auto-commit-policy-control">
+                        <span>"Auto-Commit"</span>
+                        <Toggle
+                            state=auto_commit
+                            set_state=set_auto_commit
+                            attr:id="project-auto-commit"
+                            attr:aria-label="Auto-Commit"
+                        />
+                    </label>
+                    <label for="project-commit-standard">"Commit standard"</label>
+                    <textarea
+                        id="project-commit-standard"
+                        placeholder="Commit message standard"
+                        prop:value=move || commit_standard.get()
+                        on:input=move |event| set_commit_standard.set(event_target_value(&event))
+                    ></textarea>
+                    <label for="project-revert-strategy">"Failure revert"</label>
+                    <select
+                        id="project-revert-strategy"
+                        prop:value=move || revert_strategy.get().as_storage()
+                        on:change=move |event| {
+                            if let Ok(value) = event_target_value(&event).parse() {
+                                set_revert_strategy.set(value);
+                            }
+                        }
+                    >
+                        <option value="manual">"revert manually"</option>
+                        <option value="git_reset">"git reset"</option>
+                    </select>
+                    <div class="git-command-policy">
+                        <label class="checkbox-row" for="project-git-add">
+                            <input
+                                id="project-git-add"
+                                type="checkbox"
+                                prop:checked=move || git_add.get()
+                                on:change=move |event| set_git_add.set(event_target_checked(&event))
+                            />
+                            <span>"git add"</span>
+                        </label>
+                        <label class="checkbox-row" for="project-git-commit">
+                            <input
+                                id="project-git-commit"
+                                type="checkbox"
+                                prop:checked=move || git_commit.get()
+                                on:change=move |event| set_git_commit.set(event_target_checked(&event))
+                            />
+                            <span>"git commit"</span>
+                        </label>
+                        <label class="checkbox-row" for="project-git-push">
+                            <input
+                                id="project-git-push"
+                                type="checkbox"
+                                prop:checked=move || git_push.get()
+                                on:change=move |event| set_git_push.set(event_target_checked(&event))
+                            />
+                            <span>"git push"</span>
+                        </label>
+                        <label class="checkbox-row" for="project-git-reset">
+                            <input
+                                id="project-git-reset"
+                                type="checkbox"
+                                prop:checked=move || git_reset.get()
+                                on:change=move |event| set_git_reset.set(event_target_checked(&event))
+                            />
+                            <span>"git reset"</span>
+                        </label>
+                    </div>
+                    <label for="project-git-hard-reset">"Hard reset"</label>
+                    <select
+                        id="project-git-hard-reset"
+                        prop:value=move || git_hard_reset.get().as_storage()
+                        on:change=move |event| {
+                            if let Ok(value) = event_target_value(&event).parse() {
+                                set_git_hard_reset.set(value);
+                            }
+                        }
+                    >
+                        <option value="isolated_workspaces">
+                            "isolated branches/worktrees only"
+                        </option>
+                        <option value="never">"never"</option>
+                    </select>
+                    <button type="button" disabled=move || pending.get() on:click=save>
+                        "Save policy"
+                    </button>
+                </div>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn AutomationRuleInspector(
+    project: String,
+    selected_trigger_id: Memo<Option<i64>>,
+) -> impl IntoView {
+    let service = automation_service();
+    let load_service = service.clone();
+    let route_service = service;
     let (inspector, set_inspector) = signal(None::<AutomationRuleInspectorView>);
     let (error, set_error) = signal(None::<String>);
     let refresh = RwSignal::new(0_u64);
@@ -222,8 +433,9 @@ fn automation_rule_inspector(project: String, selected_trigger_id: Memo<Option<i
         set_error.set(None);
         if let Some(trigger_id) = trigger_id {
             let project = project_for_load.clone();
+            let service = load_service.clone();
             leptos::task::spawn_local(async move {
-                match load_automation_rule_inspector(project, trigger_id).await {
+                match service.load_rule_inspector(project, trigger_id).await {
                     Ok(value) if selected_trigger_id.get_untracked() == Some(trigger_id) => {
                         set_inspector.set(Some(value));
                     }
@@ -244,12 +456,14 @@ fn automation_rule_inspector(project: String, selected_trigger_id: Memo<Option<i
         {move || {
             selected_trigger_id.get().map(|_| {
                 let project_for_route = project_for_route.clone();
+                let service = route_service.clone();
                 let explain_route = move |_| {
                     match route_item_id.get_untracked().trim().parse::<i64>() {
                         Ok(item_id) => {
                             let project = project_for_route.clone();
+                            let service = service.clone();
                             leptos::task::spawn_local(async move {
-                                let text = match explain_automation_route(project, item_id).await {
+                                let text = match service.explain_route(project, item_id).await {
                                     Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_default(),
                                     Err(error) => format!("Routing explanation failed: {error}"),
                                 };
@@ -260,12 +474,14 @@ fn automation_rule_inspector(project: String, selected_trigger_id: Memo<Option<i
                     }
                 };
                 let content = match inspector.get() {
-                    Some(value) => automation_rule_inspector_content(
-                        value,
-                        project.clone(),
-                        refresh,
-                        set_error,
-                    ),
+                    Some(value) => view! {
+                        <AutomationRuleInspectorContent
+                            inspector=value
+                            project=project.clone()
+                            refresh
+                            set_error
+                        />
+                    }.into_any(),
                     None => view! {
                         <p class="muted">
                             {error.get().unwrap_or_else(|| "Loading revision history…".to_owned())}
@@ -300,12 +516,16 @@ fn automation_rule_inspector(project: String, selected_trigger_id: Memo<Option<i
     .into_any()
 }
 
-fn automation_rule_inspector_content(
+#[component]
+fn AutomationRuleInspectorContent(
     inspector: AutomationRuleInspectorView,
     project: String,
     refresh: RwSignal<u64>,
     set_error: WriteSignal<Option<String>>,
-) -> AnyView {
+) -> impl IntoView {
+    let service = automation_service();
+    let detach_service = service.clone();
+    let restore_service = service;
     let trigger = inspector.trigger;
     let trigger_id = trigger.id;
     let managed = trigger.managed_bundle_key.is_some();
@@ -314,10 +534,12 @@ fn automation_rule_inspector_content(
     });
     let detach = managed.then(|| {
         let project = project.clone();
+        let service = detach_service.clone();
         move |_| {
             let project = project.clone();
+            let service = service.clone();
             leptos::task::spawn_local(async move {
-                match detach_automation_rule(project, trigger_id).await {
+                match service.detach_rule(project, trigger_id).await {
                     Ok(_) => refresh.update(|value| *value += 1),
                     Err(error) => set_error.set(Some(format!("Detach failed: {error}"))),
                 }
@@ -344,10 +566,15 @@ fn automation_rule_inspector_content(
             let revision_id = revision.id;
             let current = current_revision_id == Some(revision_id);
             let project = project.clone();
+            let service = restore_service.clone();
             let restore = move |_| {
                 let project = project.clone();
+                let service = service.clone();
                 leptos::task::spawn_local(async move {
-                    match restore_automation_rule_revision(project, trigger_id, revision_id).await {
+                    match service
+                        .restore_rule_revision(project, trigger_id, revision_id)
+                        .await
+                    {
                         Ok(_) => refresh.update(|value| *value += 1),
                         Err(error) => set_error.set(Some(format!("Restore failed: {error}"))),
                     }
@@ -427,7 +654,14 @@ fn automation_rule_inspector_content(
     .into_any()
 }
 
-fn bundle_administration(project: String) -> AnyView {
+#[component]
+fn BundleAdministration(project: String) -> impl IntoView {
+    let service = automation_service();
+    let inventory_service = service.clone();
+    let validate_service = service.clone();
+    let diff_service = service.clone();
+    let apply_service = service.clone();
+    let rows_service = service;
     let (yaml, set_yaml) = signal(String::new());
     let (loaded_file_name, set_loaded_file_name) = signal(Option::<String>::None);
     let (allow_deletions, set_allow_deletions) = signal(false);
@@ -440,8 +674,9 @@ fn bundle_administration(project: String) -> AnyView {
     Effect::new(move |_| {
         installed_refresh.get();
         let project = project_for_inventory.clone();
+        let service = inventory_service.clone();
         leptos::task::spawn_local(async move {
-            match list_installed_bundles(project).await {
+            match service.list_installed_bundles(project).await {
                 Ok(bundles) => set_installed.set(bundles),
                 Err(error) => set_result.set(format!("Could not load installed bundles: {error}")),
             }
@@ -450,8 +685,9 @@ fn bundle_administration(project: String) -> AnyView {
 
     let validate = move |_| {
         let yaml = yaml.get_untracked();
+        let service = validate_service.clone();
         leptos::task::spawn_local(async move {
-            let text = match validate_bundle_yaml(yaml).await {
+            let text = match service.validate_bundle_yaml(yaml).await {
                 Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_default(),
                 Err(error) => format!("Validation failed: {error}"),
             };
@@ -462,8 +698,9 @@ fn bundle_administration(project: String) -> AnyView {
     let diff = move |_| {
         let yaml = yaml.get_untracked();
         let project = project_for_diff.clone();
+        let service = diff_service.clone();
         leptos::task::spawn_local(async move {
-            let text = match diff_bundle_yaml(project, yaml).await {
+            let text = match service.diff_bundle_yaml(project, yaml).await {
                 Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_default(),
                 Err(error) => format!("Diff failed: {error}"),
             };
@@ -475,8 +712,12 @@ fn bundle_administration(project: String) -> AnyView {
         let yaml = yaml.get_untracked();
         let project = project_for_apply.clone();
         let allow_deletions = allow_deletions.get_untracked();
+        let service = apply_service.clone();
         leptos::task::spawn_local(async move {
-            match apply_bundle_yaml(project, yaml, allow_deletions).await {
+            match service
+                .apply_bundle_yaml(project, yaml, allow_deletions)
+                .await
+            {
                 Ok(value) => {
                     set_result.set(serde_json::to_string_pretty(&value).unwrap_or_default());
                     set_pending_removal.set(None);
@@ -493,17 +734,20 @@ fn bundle_administration(project: String) -> AnyView {
     let project_for_rows = project.clone();
     let installed_rows = move || {
         let project = project_for_rows.clone();
+        let service = rows_service.clone();
         installed
             .get()
             .into_iter()
             .map(|bundle| {
                 let export_project = project.clone();
                 let export_key = bundle.bundle_key.clone();
+                let export_service = service.clone();
                 let export = move |_| {
                     let project = export_project.clone();
                     let bundle_key = export_key.clone();
+                    let service = export_service.clone();
                     leptos::task::spawn_local(async move {
-                        match export_bundle_yaml(project, bundle_key).await {
+                        match service.export_bundle_yaml(project, bundle_key).await {
                             Ok(value) => {
                                 set_yaml.set(value.yaml);
                                 set_loaded_file_name.set(None);
@@ -516,6 +760,7 @@ fn bundle_administration(project: String) -> AnyView {
                 let remove_project = project.clone();
                 let remove_key = bundle.bundle_key.clone();
                 let remove_hash = bundle.manifest_hash.clone();
+                let remove_service = service.clone();
                 let remove = move |_| {
                     if pending_removal.get_untracked().as_deref() != Some(remove_key.as_str()) {
                         set_pending_removal.set(Some(remove_key.clone()));
@@ -528,8 +773,12 @@ fn bundle_administration(project: String) -> AnyView {
                     let project = remove_project.clone();
                     let bundle_key = remove_key.clone();
                     let expected_hash = remove_hash.clone();
+                    let service = remove_service.clone();
                     leptos::task::spawn_local(async move {
-                        match remove_installed_bundle(project, bundle_key, expected_hash).await {
+                        match service
+                            .remove_installed_bundle(project, bundle_key, expected_hash)
+                            .await
+                        {
                             Ok(value) => {
                                 set_result.set(
                                     serde_json::to_string_pretty(&value).unwrap_or_default(),

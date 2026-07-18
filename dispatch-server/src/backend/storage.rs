@@ -100,6 +100,7 @@ fn absolute_path(path: PathBuf) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use sea_orm::{ConnectionTrait, Statement};
     use tempfile::TempDir;
 
@@ -126,7 +127,7 @@ mod tests {
             .unwrap();
         let count: i64 = row.try_get("", "count").unwrap();
 
-        assert_eq!(count as usize, Migrator::migrations().len());
+        assert_that!(&(count as usize)).is_equal_to(Migrator::migrations().len());
     }
 
     #[tokio::test]
@@ -177,9 +178,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(row.try_get::<i64>("", "developer_count").unwrap(), 1);
-        assert_eq!(row.try_get::<i64>("", "user_count").unwrap(), 1);
-        assert_eq!(row.try_get::<i64>("", "combined_count").unwrap(), 0);
+        assert_that!(&(row.try_get::<i64>("", "developer_count").unwrap())).is_equal_to(1);
+        assert_that!(&(row.try_get::<i64>("", "user_count").unwrap())).is_equal_to(1);
+        assert_that!(&(row.try_get::<i64>("", "combined_count").unwrap())).is_equal_to(0);
 
         let run = db
             .query_one(Statement::from_string(
@@ -194,15 +195,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            run.try_get::<String>("", "developer_instructions_path")
-                .unwrap(),
-            "/tmp/combined-prompt.md"
-        );
-        assert_eq!(
-            run.try_get::<String>("", "user_prompt_path").unwrap(),
-            "/tmp/combined-prompt.md"
-        );
+        assert_that!(
+            &(run
+                .try_get::<String>("", "developer_instructions_path")
+                .unwrap())
+        )
+        .is_equal_to("/tmp/combined-prompt.md");
+        assert_that!(&(run.try_get::<String>("", "user_prompt_path").unwrap()))
+            .is_equal_to("/tmp/combined-prompt.md");
     }
 
     #[tokio::test]
@@ -271,29 +271,22 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].try_get::<i64>("", "id").unwrap(), 41);
-        assert_eq!(
-            rows[0].try_get::<String>("", "prompt_path").unwrap(),
-            shared_prompt_path.to_string_lossy()
-        );
+        assert_that!(&(rows.len())).is_equal_to(2);
+        assert_that!(&(rows[0].try_get::<i64>("", "id").unwrap())).is_equal_to(41);
+        assert_that!(&(rows[0].try_get::<String>("", "prompt_path").unwrap()))
+            .is_equal_to(shared_prompt_path.to_string_lossy());
 
         let combined_prompt_path = temp.path().join("run-42.prompt.md");
-        assert_eq!(rows[1].try_get::<i64>("", "id").unwrap(), 42);
-        assert_eq!(
-            rows[1].try_get::<String>("", "prompt_path").unwrap(),
-            combined_prompt_path.to_string_lossy()
-        );
-        assert_eq!(
-            fs::read_to_string(combined_prompt_path).unwrap(),
-            concat!(
-                "# Dispatch Automation Prompt\n\n",
-                "## Developer Instructions\n\n",
-                "Follow Dispatch policy.\n\n",
-                "## User Prompt\n\n",
-                "Implement the requested change.\n",
-            )
-        );
+        assert_that!(&(rows[1].try_get::<i64>("", "id").unwrap())).is_equal_to(42);
+        assert_that!(&(rows[1].try_get::<String>("", "prompt_path").unwrap()))
+            .is_equal_to(combined_prompt_path.to_string_lossy());
+        assert_that!(&(fs::read_to_string(combined_prompt_path).unwrap())).is_equal_to(concat!(
+            "# Dispatch Automation Prompt\n\n",
+            "## Developer Instructions\n\n",
+            "Follow Dispatch policy.\n\n",
+            "## User Prompt\n\n",
+            "Implement the requested change.\n",
+        ));
 
         let columns = db
             .query_one(Statement::from_string(
@@ -310,9 +303,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(columns.try_get::<i64>("", "developer_count").unwrap(), 0);
-        assert_eq!(columns.try_get::<i64>("", "user_count").unwrap(), 0);
-        assert_eq!(columns.try_get::<i64>("", "combined_count").unwrap(), 1);
+        assert_that!(&(columns.try_get::<i64>("", "developer_count").unwrap())).is_equal_to(0);
+        assert_that!(&(columns.try_get::<i64>("", "user_count").unwrap())).is_equal_to(0);
+        assert_that!(&(columns.try_get::<i64>("", "combined_count").unwrap())).is_equal_to(1);
     }
 
     #[tokio::test]
@@ -363,7 +356,7 @@ mod tests {
             .unwrap();
         let count: i64 = row.try_get("", "count").unwrap();
 
-        assert_eq!(count, 0);
+        assert_that!(&(count)).is_equal_to(0);
     }
 
     #[tokio::test]
@@ -433,15 +426,10 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(
-            project.try_get::<i64>("", "max_read_only_agents").unwrap(),
-            2
-        );
-        assert_eq!(
-            trigger.try_get::<String>("", "mutability").unwrap(),
-            "mutating"
-        );
-        assert_eq!(run.try_get::<String>("", "mutability").unwrap(), "mutating");
+        assert_that!(&(project.try_get::<i64>("", "max_read_only_agents").unwrap())).is_equal_to(2);
+        assert_that!(&(trigger.try_get::<String>("", "mutability").unwrap()))
+            .is_equal_to("mutating");
+        assert_that!(&(run.try_get::<String>("", "mutability").unwrap())).is_equal_to("mutating");
     }
 
     #[tokio::test]
@@ -494,12 +482,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let default_id: i64 = personality.try_get("", "id").unwrap();
-        assert_eq!(
-            personality
+        assert_that!(
+            &(personality
                 .try_get::<String>("", "personality_description")
-                .unwrap(),
-            ""
-        );
+                .unwrap())
+        )
+        .is_equal_to("");
 
         let trigger = db
             .query_one(Statement::from_string(
@@ -514,14 +502,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            trigger.try_get::<i64>("", "personality_id").unwrap(),
-            default_id
-        );
-        assert_eq!(
-            trigger.try_get::<String>("", "personality_name").unwrap(),
-            "Default"
-        );
+        assert_that!(&(trigger.try_get::<i64>("", "personality_id").unwrap()))
+            .is_equal_to(default_id);
+        assert_that!(&(trigger.try_get::<String>("", "personality_name").unwrap()))
+            .is_equal_to("Default");
     }
 
     #[test]
@@ -574,6 +558,6 @@ mod tests {
             "m20260714_000039_add_work_item_groups",
         ];
 
-        assert_eq!(names.as_slice(), expected.as_slice());
+        assert_that!(&(names.as_slice())).is_equal_to(expected.as_slice());
     }
 }

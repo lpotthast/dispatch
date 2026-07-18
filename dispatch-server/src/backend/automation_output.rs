@@ -504,6 +504,7 @@ fn review_mode_piece(review: &ReviewModeItem, title: &'static str) -> OutputPiec
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -543,15 +544,12 @@ mod tests {
 
         let usage = token_usage_from_output_pieces(&pieces).unwrap();
 
-        assert_eq!(
-            usage,
-            AgentRunTokenUsageView {
-                input_tokens: 20,
-                cached_input_tokens: 5,
-                output_tokens: 7,
-                total_tokens: 27,
-            }
-        );
+        assert_that!(&(usage)).is_equal_to(AgentRunTokenUsageView {
+            input_tokens: 20,
+            cached_input_tokens: 5,
+            output_tokens: 7,
+            total_tokens: 27,
+        });
     }
 
     #[tokio::test]
@@ -564,10 +562,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0].kind, AgentRunOutputKind::Legacy);
-        assert_eq!(output[0].title, "legacy log");
-        assert_eq!(output[0].body, "old text log");
-        assert_eq!(output[0].metadata["format"], "plain_text");
+        assert_that!(&(output.len())).is_equal_to(1);
+        assert_that!(&(output[0].kind)).is_equal_to(AgentRunOutputKind::Legacy);
+        assert_that!(&(output[0].title)).is_equal_to("legacy log");
+        assert_that!(&(output[0].body)).is_equal_to("old text log");
+        assert_that!(&(output[0].metadata["format"])).is_equal_to("plain_text");
     }
 }

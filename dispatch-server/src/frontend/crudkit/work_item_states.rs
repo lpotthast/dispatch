@@ -12,13 +12,14 @@ pub(crate) fn WorkItemStatesPanel(
                 <h2>"Work item states"</h2>
             </div>
             <div class="crudkit-work-item-states" data-crudkit-leptos="work-item-states">
-                {work_item_states_crudkit_instance(api_base_url, project, project_id)}
+                <WorkItemStatesCrudkitInstance api_base_url project project_id/>
             </div>
         </section>
     }
 }
 
-fn work_item_states_crudkit_instance(
+#[component]
+fn WorkItemStatesCrudkitInstance(
     api_base_url: String,
     project: String,
     project_id: i64,
@@ -28,11 +29,12 @@ fn work_item_states_crudkit_instance(
         event_scopes_named_project(event, Some(project.as_str()))
             && matches!(event, UiEvent::WorkItemStateChanged { .. })
     });
+    let config = work_item_states_crudkit_config(api_base_url, project_id);
 
     view! {
         <CrudInstance
             name="work-item-states"
-            config=work_item_states_crudkit_config(api_base_url, project_id)
+            config
             on_context_created=Callback::new(move |context| set_context.set(Some(context)))
         />
     }
@@ -41,7 +43,7 @@ fn work_item_states_crudkit_instance(
 fn work_item_states_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
     CrudInstanceConfig {
         api_base_url,
-        view: SerializableCrudView::List,
+        initial_view: CrudView::table(),
         list_columns: vec![
             Header::showing(
                 ReadWorkItemStateField::Identifier,
@@ -138,7 +140,8 @@ fn work_item_states_crudkit_config(api_base_url: String, project_id: i64) -> Cru
         model_handler: work_item_state_model_handler(project_id),
         actions: vec![],
         entity_actions: vec![],
-        navigation: CrudNavigationConfig::default(),
+        builtin_view_controls: CrudBuiltinViewControls::default(),
+        view_registry: CrudViewRegistry::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder().build(),
         update_field_renderer: FieldRendererRegistry::builder().build(),

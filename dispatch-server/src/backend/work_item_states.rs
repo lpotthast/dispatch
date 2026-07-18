@@ -121,6 +121,7 @@ fn model_to_view(model: WorkItemStateModel) -> WorkItemStateView {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -154,6 +155,6 @@ mod tests {
             .map(|state| state.identifier)
             .collect::<Vec<_>>();
 
-        assert_eq!(states, vec!["idea", "open", "in_progress", "done"]);
+        assert_that!(&(states)).is_equal_to(vec!["idea", "open", "in_progress", "done"]);
     }
 }

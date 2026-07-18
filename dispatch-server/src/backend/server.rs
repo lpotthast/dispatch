@@ -13,6 +13,7 @@ use crate::backend::{
     automation_controller::AutomationController,
     automation_triggers, codex_app_server, crudkit_resources, events, http,
     process_sessions::ProcessSessionRegistry,
+    project_deletion::ProjectDeletionService,
     projects,
     storage::Store,
 };
@@ -23,9 +24,14 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
     automation::set_server_api_url(local_api_url(bind));
     events::install();
 
-    let contexts = crudkit_resources::build_contexts(store.clone());
     let sessions = ProcessSessionRegistry::new();
     let automation_controller = AutomationController::new();
+    let project_deletion = ProjectDeletionService::new(
+        store.clone(),
+        automation_controller.clone(),
+        sessions.clone(),
+    );
+    let contexts = crudkit_resources::build_contexts(store.clone(), project_deletion.clone());
     let codex_status = codex_app_server::app_server_readiness(&store).await;
     if !codex_status.usable {
         tracing::warn!(
@@ -39,6 +45,7 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
         store: store.clone(),
         sessions: sessions.clone(),
         automation_controller: automation_controller.clone(),
+        project_deletion,
         codex_status: codex_status.clone(),
         codex_status_refresh: codex_app_server::CodexStatusRefresh::default(),
     };

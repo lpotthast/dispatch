@@ -1,8 +1,5 @@
 use super::*;
-use crate::frontend::services::{
-    detach_automation_personality, load_automation_personality_inspector,
-    restore_automation_personality_revision,
-};
+use crate::frontend::services::automation_service;
 
 #[component]
 pub(crate) fn PersonalitiesPanel(
@@ -22,7 +19,8 @@ pub(crate) fn PersonalitiesPanel(
             set_selected_personality_id.set(Some(personality_id));
         }
     });
-    let inspector = personality_inspector(project, selected_personality_id);
+    let inspector = view! { <PersonalityInspector project selected_personality_id/> };
+    let config = personalities_crudkit_config(api_base_url, project_id);
 
     view! {
         <section id="personalities" class="personalities-admin panel">
@@ -32,7 +30,7 @@ pub(crate) fn PersonalitiesPanel(
             <div class="crudkit-personalities" data-crudkit-leptos="personalities">
                 <CrudInstance
                     name="personalities"
-                    config=personalities_crudkit_config(api_base_url, project_id)
+                    config
                     on_context_created=Callback::new(move |context| set_context.set(Some(context)))
                 />
             </div>
@@ -41,10 +39,12 @@ pub(crate) fn PersonalitiesPanel(
     }
 }
 
-fn personality_inspector(
+#[component]
+fn PersonalityInspector(
     project: String,
     selected_personality_id: ReadSignal<Option<i64>>,
-) -> AnyView {
+) -> impl IntoView {
+    let service = automation_service();
     let (inspector, set_inspector) = signal(None::<AutomationPersonalityInspectorView>);
     let (error, set_error) = signal(None::<String>);
     let refresh = RwSignal::new(0_u64);
@@ -56,8 +56,12 @@ fn personality_inspector(
         set_error.set(None);
         if let Some(personality_id) = personality_id {
             let project = project_for_load.clone();
+            let service = service.clone();
             leptos::task::spawn_local(async move {
-                match load_automation_personality_inspector(project, personality_id).await {
+                match service
+                    .load_personality_inspector(project, personality_id)
+                    .await
+                {
                     Ok(value)
                         if selected_personality_id.get_untracked() == Some(personality_id) =>
                     {
@@ -77,12 +81,14 @@ fn personality_inspector(
     view! {
         {move || selected_personality_id.get().map(|personality_id| {
             let content = match inspector.get() {
-                Some(inspector) => personality_inspector_content(
-                    inspector,
-                    project.clone(),
-                    refresh,
-                    set_error,
-                ),
+                Some(inspector) => view! {
+                    <PersonalityInspectorContent
+                        inspector
+                        project=project.clone()
+                        refresh
+                        set_error
+                    />
+                }.into_any(),
                 None => view! {
                     <p class="muted">
                         {error.get().unwrap_or_else(|| "Loading personality revision history…".to_owned())}
@@ -105,12 +111,16 @@ fn personality_inspector(
     .into_any()
 }
 
-fn personality_inspector_content(
+#[component]
+fn PersonalityInspectorContent(
     inspector: AutomationPersonalityInspectorView,
     project: String,
     refresh: RwSignal<u64>,
     set_error: WriteSignal<Option<String>>,
-) -> AnyView {
+) -> impl IntoView {
+    let service = automation_service();
+    let detach_service = service.clone();
+    let restore_service = service;
     let personality = inspector.personality;
     let personality_id = personality.id;
     let current_revision_id = personality.current_revision_id;
@@ -120,10 +130,12 @@ fn personality_inspector_content(
     });
     let detach = managed.then(|| {
         let project = project.clone();
+        let service = detach_service.clone();
         move |_| {
             let project = project.clone();
+            let service = service.clone();
             leptos::task::spawn_local(async move {
-                match detach_automation_personality(project, personality_id).await {
+                match service.detach_personality(project, personality_id).await {
                     Ok(_) => refresh.update(|value| *value += 1),
                     Err(error) => set_error.set(Some(format!("Detach failed: {error}"))),
                 }
@@ -137,15 +149,14 @@ fn personality_inspector_content(
             let revision_id = revision.id;
             let current = current_revision_id == Some(revision_id);
             let project = project.clone();
+            let service = restore_service.clone();
             let restore = move |_| {
                 let project = project.clone();
+                let service = service.clone();
                 leptos::task::spawn_local(async move {
-                    match restore_automation_personality_revision(
-                        project,
-                        personality_id,
-                        revision_id,
-                    )
-                    .await
+                    match service
+                        .restore_personality_revision(project, personality_id, revision_id)
+                        .await
                     {
                         Ok(_) => refresh.update(|value| *value += 1),
                         Err(error) => set_error.set(Some(format!("Restore failed: {error}"))),
@@ -187,7 +198,7 @@ fn personality_inspector_content(
 fn personalities_crudkit_config(api_base_url: String, project_id: i64) -> CrudInstanceConfig {
     CrudInstanceConfig {
         api_base_url,
-        view: SerializableCrudView::List,
+        initial_view: CrudView::table(),
         list_columns: vec![
             Header::showing(
                 ReadPersonalityField::Name,
@@ -276,7 +287,8 @@ fn personalities_crudkit_config(api_base_url: String, project_id: i64) -> CrudIn
         model_handler: personality_model_handler(project_id),
         actions: vec![],
         entity_actions: vec![],
-        navigation: CrudNavigationConfig::default(),
+        builtin_view_controls: CrudBuiltinViewControls::default(),
+        view_registry: CrudViewRegistry::default(),
         read_field_renderer: FieldRendererRegistry::builder().build(),
         create_field_renderer: FieldRendererRegistry::builder()
             .register(

@@ -64,6 +64,7 @@ fn request_origin() -> String {
 
 #[cfg(all(test, feature = "ssr"))]
 mod tests {
+    use assertr::prelude::*;
     use axum::http::{HeaderMap, HeaderValue, header};
 
     use super::request_origin_from_headers;
@@ -77,10 +78,8 @@ mod tests {
             HeaderValue::from_static("dispatch.example:8443, proxy.internal"),
         );
 
-        assert_eq!(
-            request_origin_from_headers(&headers),
-            "https://dispatch.example:8443"
-        );
+        assert_that!(&(request_origin_from_headers(&headers)))
+            .is_equal_to("https://dispatch.example:8443");
     }
 
     #[test]
@@ -93,9 +92,6 @@ mod tests {
         );
         headers.insert(header::HOST, HeaderValue::from_static("localhost:4000"));
 
-        assert_eq!(
-            request_origin_from_headers(&headers),
-            "http://localhost:4000"
-        );
+        assert_that!(&(request_origin_from_headers(&headers))).is_equal_to("http://localhost:4000");
     }
 }

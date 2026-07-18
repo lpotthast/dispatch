@@ -64,6 +64,10 @@ Do not edit generated `style/crudkit` or `style/leptonic` content unless regener
 
 Place focused unit tests near the code they exercise. Browser coverage lives in `dispatch-server/tests/browser_test.rs` and is ignored by default because it starts Dispatch and Chrome.
 
+Use `assertr` for every test assertion instead of the standard `assert!`, `assert_eq!`, and `assert_ne!` macros. Decide whether to use `assertr` in production code case by case.
+
+In browser tests, use the Thirtyfour API to query and interact with the current page. Do not use `WebDriver::execute` or `execute_async` with JavaScript strings when the same operation can be expressed through element queries, properties, CSS values, actions, waits, CDP, Rust HTTP requests, or server/database fixtures.
+
 When changing workflow paths, cover project scoping, claim ownership, progress, release, finish, stale-claim recovery, and version-safety behavior. When changing CLI/API behavior, cover context resolution and server-backed endpoint behavior.
 
 ## Git And PRs
@@ -71,3 +75,7 @@ When changing workflow paths, cover project scoping, claim ownership, progress, 
 Do not infer a project-specific commit format from history. Use short imperative subjects, for example `Add API relay CLI`.
 
 PRs should include a concise behavior summary, verification commands run, linked work item or issue when available, and screenshots or notes for UI changes. Call out schema, CLI, API, automation prompt, or agent-instruction changes explicitly.
+
+## General
+
+Make sure to always use consistent wording when speaking about one concept. In code. In comments. In reasoning. Everything else is confusing.

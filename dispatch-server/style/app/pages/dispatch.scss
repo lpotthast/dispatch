@@ -1,43 +1,38 @@
-$ink: #20242a;
-$ink-soft: #3c4652;
-$muted: #687482;
-$subtle: #eef2f6;
-$surface: #ffffff;
-$surface-raised: #fbfcfe;
-$border: #d8dee7;
-$border-strong: #c4ccd8;
-$accent: #1d5fa8;
-$accent-strong: #154d88;
-$accent-soft: #e5f0fb;
-$green: #1f7a5c;
-$green-soft: #e6f4ee;
-$amber: #a66a12;
-$amber-soft: #fff2d9;
-$danger: #a72735;
-$danger-soft: #fde8eb;
-$shadow-sm: 0 1px 2px rgba(16, 24, 32, 0.06);
-$shadow-md: 0 14px 36px rgba(16, 24, 32, 0.10);
+@use "../tokens" as *;
 
 @mixin surface {
   background: $surface;
-  border: 1px solid $border;
-  border-radius: 8px;
+  border: $line solid $border;
+  border-radius: $radius;
   box-shadow: $shadow-sm;
 }
 
 @mixin control-focus {
-  outline: 3px solid rgba($accent, 0.16);
-  outline-offset: 1px;
+  outline: $focus-ring solid rgba($accent, 0.16);
+  outline-offset: $line;
   border-color: $accent;
 }
 
+html {
+  scroll-padding-bottom: $dock-offset;
+}
+
 body {
+  padding-bottom: $dock-offset;
   background:
-    linear-gradient(180deg, #edf3f8 0, #f6f7f9 320px),
-    #f6f7f9;
+    linear-gradient(180deg, $canvas-tint 0, $canvas 22.8571em),
+    $canvas;
   color: $ink;
-  font-size: 14px;
+  font-size: $font-scale;
   line-height: 1.45;
+}
+
+body:has(.board-page) {
+  padding-bottom: 0;
+}
+
+:where(a, button, input, select, textarea, [tabindex]) {
+  scroll-margin-bottom: $dock-offset;
 }
 
 leptonic-modal-host:not(:has(leptonic-modal)) {
@@ -54,21 +49,21 @@ p {
 
 h1 {
   margin: 0;
-  font-size: 28px;
+  font-size: $text-page-title;
   line-height: 1.15;
   font-weight: 780;
 }
 
 h2 {
-  margin: 0 0 12px;
-  font-size: 17px;
+  margin: 0 0 $space-md;
+  font-size: $text-2xl;
   line-height: 1.2;
   font-weight: 720;
 }
 
 h3 {
-  margin: 0 0 8px;
-  font-size: 15px;
+  margin: 0 0 $space;
+  font-size: $text-lg;
   line-height: 1.25;
   font-weight: 700;
 }
@@ -103,30 +98,30 @@ a {
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: auto minmax(220px, 1fr) auto minmax(195px, 240px);
-  gap: 18px;
+  grid-template-columns: auto minmax(15.7143em, 1fr) auto minmax(13.9286em, 17.1429em);
+  gap: $space-lg;
   align-items: center;
-  padding: 8px 18px;
-  background: rgba(255, 255, 255, 0.94);
-  border-bottom: 1px solid $border;
-  box-shadow: 0 1px 10px rgba(16, 24, 32, 0.04);
-  backdrop-filter: blur(12px);
+  padding: $space $space-lg;
+  background: $topbar-surface;
+  border-bottom: $line solid $border;
+  box-shadow: $shadow-topbar;
+  backdrop-filter: blur($text-sm);
 }
 
 .brand {
   display: inline-flex;
-  gap: 9px;
+  gap: $space;
   align-items: center;
-  min-height: 38px;
+  min-height: $input-height;
   color: $ink;
-  font-size: 16px;
+  font-size: $text-xl;
   font-weight: 800;
 
   .brand-icon {
-    width: 32px;
-    height: 32px;
-    flex: 0 0 auto;
-    border-radius: 4px;
+    width: 2.2857em;
+    height: 2.2857em;
+    flex: none;
+    border-radius: $space-xs;
   }
 
   &:hover {
@@ -139,26 +134,26 @@ a {
   display: inline-flex;
   width: max-content;
   max-width: 100%;
-  gap: 3px;
+  gap: $space-xs;
   align-items: center;
-  padding: 3px;
+  padding: $space-xs;
   background: $subtle;
-  border: 1px solid $border;
-  border-radius: 8px;
+  border: $line solid $border;
+  border-radius: $radius;
 
   a {
     display: inline-flex;
+    min-width: 5.5714em;
+    min-height: 2.2857em;
     align-items: center;
     justify-content: center;
-    min-width: 78px;
-    min-height: 32px;
-    padding: 6px 10px;
-    border-radius: 6px;
+    padding: $space-sm $space;
+    border-radius: $radius-sm;
     color: $ink-soft;
     font-weight: 650;
 
     &:hover {
-      background: rgba(255, 255, 255, 0.72);
+      background: $surface-hover;
       color: $ink;
       text-decoration: none;
     }
@@ -173,7 +168,7 @@ a {
 
 .project-switcher {
   display: grid;
-  gap: 4px;
+  gap: $space-xs;
   justify-self: end;
   width: 100%;
   min-width: 0;
@@ -184,7 +179,7 @@ a {
 
   .leptonic-select {
     width: 100%;
-    --select-min-height: 38px;
+    --select-min-height: #{$input-height};
     --select-padding: 0;
   }
 
@@ -195,39 +190,39 @@ a {
 
 .project-switcher-label {
   color: $muted;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 700;
 }
 
 .project-empty {
   display: inline-flex;
-  min-height: 38px;
+  min-height: $input-height;
   align-items: center;
-  padding: 8px 10px;
-  border: 1px solid $border-strong;
-  border-radius: 6px;
+  padding: $space $space;
+  border: $line solid $border-strong;
+  border-radius: $radius-sm;
   background: $surface;
   color: $muted;
 }
 
 .project-option {
   display: grid;
-  grid-template-columns: 9px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 0.6429em minmax(0, 1fr);
+  gap: $space;
   align-items: center;
   width: 100%;
   min-width: 0;
 }
 
 .project-option-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
+  width: 0.6429em;
+  height: 0.6429em;
+  border-radius: $pill;
   background: $border-strong;
 
   &.active {
     background: $green;
-    box-shadow: 0 0 0 3px $green-soft;
+    box-shadow: 0 0 0 0.2143em $green-soft;
   }
 }
 
@@ -242,7 +237,7 @@ a {
 
 .topbar-actions {
   display: flex;
-  gap: 8px;
+  gap: $space;
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
@@ -252,12 +247,12 @@ a {
 
 .topbar-codex {
   display: inline-flex;
-  min-height: 38px;
+  min-height: $input-height;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px solid $border;
-  border-radius: 8px;
+  gap: $space;
+  padding: $space-sm $space;
+  border: $line solid $border;
+  border-radius: $radius;
   background: $surface;
   color: $ink;
   font-weight: 700;
@@ -300,11 +295,11 @@ a {
 }
 
 .topbar-codex-dot {
-  width: 9px;
-  height: 9px;
+  width: 0.6429em;
+  height: 0.6429em;
   flex: none;
-  border: 1px solid $border;
-  border-radius: 999px;
+  border: $line solid $border;
+  border-radius: $pill;
 }
 
 .topbar-codex-name {
@@ -313,18 +308,18 @@ a {
 
 .topbar-codex-state {
   display: inline-flex;
-  min-height: 22px;
+  min-height: 1.5714em;
   align-items: center;
-  padding: 2px 7px;
-  border: 1px solid $border;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: $space-2xs $space;
+  border: $line solid $border;
+  border-radius: $pill;
+  font-size: $text-sm;
   font-weight: 800;
 }
 
 .topbar-automation {
   display: flex;
-  gap: 8px;
+  gap: $space;
   align-items: center;
   justify-content: flex-end;
   margin: 0;
@@ -333,26 +328,22 @@ a {
 
 .topbar-automation-group {
   display: inline-flex;
-  gap: 8px;
+  gap: $space;
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
   min-width: 0;
 }
 
-.topbar-auto-commit-form {
-  margin: 0;
-}
-
 .topbar-auto-commit {
-  display: inline-grid;
-  grid-template-columns: auto 34px 24px;
-  gap: 8px;
+  display: inline-flex;
+  grid-template-columns: auto $control-height 1.7143em;
+  gap: $space;
   align-items: center;
-  min-height: 38px;
-  padding: 5px 9px;
-  border: 1px solid $border;
-  border-radius: 8px;
+  min-height: $input-height;
+  padding: $space-sm $space;
+  border: $line solid $border;
+  border-radius: $radius;
   background: $surface;
   color: $ink-soft;
   font-weight: 760;
@@ -364,28 +355,15 @@ a {
     box-shadow: $shadow-sm;
   }
 
-  &:disabled {
-    cursor: wait;
-    opacity: 0.78;
-  }
-
   &.enabled {
     border-color: rgba($green, 0.28);
     background: linear-gradient(180deg, $surface 0%, $green-soft 100%);
     color: $green;
-
-    .auto-commit-track {
-      background: $green;
-    }
-
-    .auto-commit-thumb {
-      transform: translateX(14px);
-    }
   }
 
   &.pending {
     border-color: rgba($accent, 0.32);
-    box-shadow: 0 0 0 2px rgba($accent, 0.08);
+    box-shadow: 0 0 0 0.1429em rgba($accent, 0.08);
   }
 
   &.failed {
@@ -394,9 +372,9 @@ a {
   }
 
   strong {
-    width: 24px;
+    width: 1.7143em;
     text-align: left;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 850;
   }
 }
@@ -405,35 +383,14 @@ a {
   color: $ink;
 }
 
-.auto-commit-track {
-  position: relative;
-  width: 34px;
-  height: 20px;
-  border-radius: 999px;
-  background: $border-strong;
-  transition: background 0.16s ease;
-}
-
-.auto-commit-thumb {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: $surface;
-  box-shadow: 0 1px 2px rgba(16, 24, 32, 0.22);
-  transition: transform 0.16s ease;
-}
-
 .automation-status {
   display: inline-flex;
-  min-height: 28px;
+  min-height: $control-height-sm;
   align-items: center;
-  padding: 4px 9px;
-  border: 1px solid $border;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: $space-xs $space;
+  border: $line solid $border;
+  border-radius: $pill;
+  font-size: $text-sm;
   font-weight: 700;
 
   &.running {
@@ -450,12 +407,12 @@ a {
 
 .path-status {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 1.7143em;
   align-items: center;
-  padding: 3px 8px;
-  border: 1px solid $border;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: $space-xs $space;
+  border: $line solid $border;
+  border-radius: $pill;
+  font-size: $text-sm;
   font-weight: 700;
 
   &.path-status-ok {
@@ -476,9 +433,9 @@ a {
   width: max-content;
   max-width: 100%;
   align-items: center;
-  padding: 3px 8px;
-  border: 1px solid $border;
-  border-radius: 999px;
+  padding: $space-xs $space;
+  border: $line solid $border;
+  border-radius: $pill;
   background: $surface-raised;
   color: $ink;
   font-weight: 700;
@@ -495,39 +452,32 @@ a {
 }
 
 .agent-model-warning {
-  margin: 6px 0 0;
+  margin: $space-xs 0 0;
   color: $danger;
-  font-size: 0.86rem;
+  font-size: $text-sm;
   font-weight: 700;
 }
 
 .page-shell {
   width: 100%;
-  padding: 24px;
+  padding: $page-padding;
 }
 
-.empty-state,
-.error {
-  width: min(100%, 1320px);
-  margin: 0 auto;
-  padding: 24px;
-}
-
-.system-alert {
+.system-sections {
   display: grid;
-  gap: 4px;
-  margin-bottom: 18px;
-  padding: 12px 14px;
-  border: 1px solid rgba($danger, 0.32);
-  border-radius: 8px;
-  background: $danger-soft;
-  color: $ink;
+  gap: $space-2xl;
 
-  strong {
-    color: $danger;
+  > .codex-status-panel,
+  > .app-tools {
+    margin: 0;
   }
+}
 
-  p {
+.automation-sections {
+  display: grid;
+  gap: $space-2xl;
+
+  > section {
     margin: 0;
   }
 }
@@ -535,10 +485,10 @@ a {
 .codex-status-panel {
   @include surface;
   display: grid;
-  gap: 14px;
-  margin-bottom: 18px;
-  padding: 16px;
-  border-top: 4px solid $border-strong;
+  gap: $space;
+  margin-bottom: $space-lg;
+  padding: $panel-padding;
+  border-top: $accent-line solid $border-strong;
 
   h2,
   h3,
@@ -550,12 +500,12 @@ a {
   code {
     min-width: 0;
     overflow: hidden;
-    padding: 3px 7px;
-    border: 1px solid $border;
-    border-radius: 6px;
+    padding: $space-xs $space;
+    border: $line solid $border;
+    border-radius: $radius-sm;
     background: $surface-raised;
     color: $ink-soft;
-    font-size: 12px;
+    font-size: $text-sm;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -593,14 +543,14 @@ a {
 
 .codex-status-header {
   display: flex;
-  gap: 16px;
+  gap: $space;
   align-items: start;
   justify-content: space-between;
 
   > div:first-child {
     display: grid;
     min-width: 0;
-    gap: 5px;
+    gap: $space-sm;
   }
 
   p {
@@ -615,16 +565,16 @@ a {
 .codex-status-actions {
   display: flex;
   flex: none;
-  gap: 8px;
+  gap: $space;
   align-items: center;
 }
 
 .codex-auth-guide {
   display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba($amber, 0.28);
-  border-radius: 8px;
+  gap: $space;
+  padding: $space-md;
+  border: $line solid rgba($amber, 0.28);
+  border-radius: $radius;
   background: $amber-soft;
 
   .codex-login-command {
@@ -641,7 +591,7 @@ a {
 .codex-auth-actions,
 .codex-auth-notes {
   display: flex;
-  gap: 10px;
+  gap: $space;
 }
 
 .codex-auth-guide-main {
@@ -650,7 +600,7 @@ a {
 
   > div:first-child {
     display: grid;
-    gap: 4px;
+    gap: $space-xs;
   }
 }
 
@@ -668,13 +618,13 @@ a {
 .codex-status-badge,
 .check-state {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 1.7143em;
   align-items: center;
   justify-content: center;
-  padding: 3px 8px;
-  border: 1px solid $border;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: $space-xs $space;
+  border: $line solid $border;
+  border-radius: $pill;
+  font-size: $text-sm;
   font-weight: 800;
   white-space: nowrap;
 }
@@ -695,22 +645,22 @@ a {
 
 .codex-status-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(12.8571em, 1fr));
+  gap: $space;
 
   > div {
     display: grid;
     min-width: 0;
-    gap: 3px;
-    padding: 10px;
-    border: 1px solid $border;
-    border-radius: 8px;
+    gap: $space-xs;
+    padding: $space;
+    border: $line solid $border;
+    border-radius: $radius;
     background: $surface-raised;
   }
 
   span {
     color: $muted;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 700;
   }
 
@@ -722,14 +672,14 @@ a {
 
 .codex-status-columns {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(15.7143em, 1fr));
+  gap: $space;
 
   > div {
     display: grid;
     align-content: start;
     min-width: 0;
-    gap: 8px;
+    gap: $space;
   }
 }
 
@@ -737,7 +687,7 @@ a {
 .codex-status-warnings,
 .codex-rate-limit ul {
   display: grid;
-  gap: 7px;
+  gap: $space;
   padding: 0;
   list-style: none;
 }
@@ -745,13 +695,13 @@ a {
 .codex-preconditions li {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
+  gap: $space;
   align-items: start;
 
   > span:last-child {
     display: grid;
     min-width: 0;
-    gap: 2px;
+    gap: $space-xs;
   }
 
   span span {
@@ -761,20 +711,20 @@ a {
 
 .codex-rate-limits {
   display: grid;
-  gap: 10px;
+  gap: $space;
 }
 
 .codex-rate-limit {
   display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid $border;
-  border-radius: 8px;
+  gap: $space;
+  padding: $space;
+  border: $line solid $border;
+  border-radius: $radius;
   background: $surface-raised;
 
   > div {
     display: flex;
-    gap: 8px;
+    gap: $space;
     align-items: baseline;
     justify-content: space-between;
     flex-wrap: wrap;
@@ -787,29 +737,29 @@ a {
 
 .codex-usage-summary {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(11.4286em, 1fr));
+  gap: $space;
 
   > div {
     display: grid;
-    gap: 2px;
-    padding: 9px;
-    border: 1px solid $border;
-    border-radius: 8px;
+    gap: $space-xs;
+    padding: $space;
+    border: $line solid $border;
+    border-radius: $radius;
     background: $surface-raised;
   }
 
   span {
     color: $muted;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 700;
   }
 }
 
 .codex-status-warnings {
-  padding: 10px;
-  border: 1px solid rgba($amber, 0.28);
-  border-radius: 8px;
+  padding: $space;
+  border: $line solid rgba($amber, 0.28);
+  border-radius: $radius;
   background: $amber-soft;
   color: $ink-soft;
 }
@@ -817,9 +767,9 @@ a {
 .empty-state,
 .error {
   @include surface;
-  width: min(calc(100% - 32px), 760px);
-  margin-top: 44px;
-  padding: 28px;
+  width: min(calc(100% - 2.2857em), $narrow-content-width);
+  margin: $space-page auto 0;
+  padding: $space-2xl;
 
   p {
     color: $muted;
@@ -828,63 +778,65 @@ a {
 
 .page-heading,
 .item-header {
-  margin-bottom: 18px;
-}
+  margin-bottom: $space-lg;
 
-.page-heading,
-.item-header {
   p {
-    max-width: 820px;
+    max-width: 58.5714em;
     color: $muted;
   }
 }
 
-.workspace-actions {
-  display: grid;
-  min-width: 0;
-  gap: 8px;
-}
+.workspace-dock {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 19;
+  overflow-x: auto;
+  border-top: $line solid $border-strong;
+  background: $dock-surface;
+  box-shadow: $shadow-dock;
+  backdrop-filter: blur(0.8571em);
 
-.workspace-bar {
-  display: flex;
-  min-width: 0;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 12px;
-  padding: 8px 10px;
-  border: 1px solid $border;
-  border-radius: 8px;
-  background: rgba($surface, 0.82);
-  box-shadow: $shadow-sm;
-
-  > .workspace-actions {
+  .workspace-bar {
     display: flex;
-    min-width: 0;
-    flex: 1 1 auto;
-    gap: 8px;
+    width: max-content;
+    min-width: 100%;
+    min-height: $dock-height;
+    gap: $space;
     align-items: center;
-    flex-wrap: wrap;
-  }
-
-  .workspace-path {
-    min-width: 240px;
-    flex: 1 1 320px;
+    padding: 0 $space-sm;
     flex-wrap: nowrap;
-  }
 
-  .workspace-git-status {
-    flex: 0 1 auto;
-  }
+    > .workspace-actions {
+      display: flex;
+      min-width: 0;
+      flex: 1;
+      gap: $space;
+      align-items: center;
+      flex-wrap: nowrap;
+    }
 
-  .workspace-buttons {
-    margin-left: auto;
+    .workspace-path {
+      min-width: $workspace-path-min-width;
+      flex: 1 1 22.8571em;
+      flex-wrap: nowrap;
+    }
+
+    .workspace-git-status {
+      flex: 0 1 auto;
+      flex-wrap: nowrap;
+    }
+
+    .workspace-buttons {
+      margin-left: auto;
+      flex-wrap: nowrap;
+    }
   }
 }
 
 .workspace-bar-title {
-  flex: 0 0 auto;
+  flex: none;
   color: $muted;
-  font-size: 11px;
+  font-size: $text-xs;
   font-weight: 780;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -893,39 +845,32 @@ a {
 .workspace-path {
   display: flex;
   max-width: 100%;
-  gap: 8px;
+  gap: $space;
   align-items: center;
   flex-wrap: wrap;
 
   code {
     min-width: 0;
-    max-width: min(760px, 100%);
+    max-width: min($narrow-content-width, 100%);
     overflow: hidden;
-    padding: 3px 7px;
-    border: 1px solid $border;
-    border-radius: 6px;
+    padding: $space-xs $space;
+    border: $line solid $border;
+    border-radius: $radius-sm;
     background: $surface-raised;
     color: $ink-soft;
-    font-size: 12px;
+    font-size: $text-sm;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 }
 
-.workspace-label {
-  color: $muted;
-  font-size: 12px;
-  font-weight: 760;
-  text-transform: uppercase;
-}
-
 .workspace-status {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 1.7143em;
   align-items: center;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: $space-2xs $space;
+  border-radius: $pill;
+  font-size: $text-sm;
   font-weight: 740;
 
   &.workspace-status-ok {
@@ -939,7 +884,7 @@ a {
   }
 
   &.workspace-status-neutral {
-    border: 1px solid $border;
+    border: $line solid $border;
     background: $surface-raised;
     color: $muted;
   }
@@ -947,7 +892,7 @@ a {
 
 .workspace-git-status {
   display: flex;
-  gap: 7px;
+  gap: $space;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -955,13 +900,13 @@ a {
 .workspace-git-branch,
 .workspace-git-diff {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 1.7143em;
   align-items: center;
-  padding: 2px 7px;
-  border: 1px solid $border;
-  border-radius: 999px;
+  padding: $space-2xs $space;
+  border: $line solid $border;
+  border-radius: $pill;
   background: $surface-raised;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 720;
 }
 
@@ -970,7 +915,7 @@ a {
 }
 
 .workspace-git-diff {
-  gap: 6px;
+  gap: $space-sm;
 }
 
 .workspace-git-added {
@@ -983,45 +928,42 @@ a {
 
 .workspace-buttons {
   display: flex;
-  gap: 7px;
+  gap: $space;
   align-items: center;
   flex-wrap: wrap;
 
-  form {
-    display: contents;
-  }
 }
 
 .workspace-button {
   display: inline-flex;
-  min-height: 31px;
+  min-height: 2.2143em;
   align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  font-size: 12px;
+  gap: $space-sm;
+  padding: $space-sm $space;
+  font-size: $text-sm;
 }
 
 .workspace-button-icon {
   display: block;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: $icon-size;
+  height: $icon-size;
+  flex: 0 0 $icon-size;
   object-fit: contain;
 }
 
 .workspace-copy-status {
   color: $muted;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 650;
 }
 
 .item-header {
   @include surface;
-  padding: 18px;
+  padding: $panel-padding;
 
   a {
     display: inline-flex;
-    margin-bottom: 10px;
+    margin-bottom: $space;
     font-weight: 650;
   }
 
@@ -1032,9 +974,9 @@ a {
 
 .run-log-actions {
   display: flex;
-  gap: 8px;
+  gap: $space;
   flex-wrap: wrap;
-  margin-top: 12px;
+  margin-top: $space;
 }
 
 input,
@@ -1044,17 +986,17 @@ button,
 .button-link {
   min-width: 0;
   font: inherit;
-  border-radius: 6px;
+  border-radius: $radius-sm;
 }
 
 input,
 textarea,
 select {
   width: 100%;
-  border: 1px solid $border-strong;
+  border: $line solid $border-strong;
   background: $surface;
   color: $ink;
-  padding: 8px 10px;
+  padding: $space $space;
 
   &:focus {
     @include control-focus;
@@ -1062,16 +1004,16 @@ select {
 }
 
 textarea {
-  min-height: 88px;
+  min-height: 6.2857em;
   resize: vertical;
 }
 
 .crud-field leptonic-input input {
   width: 100%;
-  min-height: 38px;
-  padding: 8px 10px;
-  border: 1px solid $border-strong;
-  border-radius: 6px;
+  min-height: $input-height;
+  padding: $space $space;
+  border: $line solid $border-strong;
+  border-radius: $radius-sm;
   background: $surface;
   color: $ink;
 
@@ -1101,22 +1043,22 @@ textarea {
   leptonic-tiptap-menu {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    padding: 8px;
-    border: 1px solid $border-strong;
+    gap: $space-xs;
+    padding: $space;
+    border: $line solid $border-strong;
     border-bottom: 0;
-    border-radius: 6px 6px 0 0;
+    border-radius: $radius-sm $radius-sm 0 0;
     background: $subtle;
   }
 
   .leptonic-btn[variant="filled"].leptonic-tiptap-btn {
-    min-height: 30px;
-    padding: 4px 7px;
+    min-height: 2.1429em;
+    padding: $space-xs $space;
     border-color: $border-strong;
-    border-radius: 5px;
+    border-radius: $radius-sm;
     background: $surface;
     color: $ink;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 680;
 
     &.active,
@@ -1129,10 +1071,10 @@ textarea {
 
   leptos-tiptap-instance {
     display: block;
-    min-height: 150px;
-    padding: 8px 10px;
-    border: 1px solid $border-strong;
-    border-radius: 0 0 6px 6px;
+    min-height: 10.7143em;
+    padding: $space $space;
+    border: $line solid $border-strong;
+    border-radius: 0 0 $radius-sm $radius-sm;
     background: $surface;
     color: $ink;
     overflow: auto;
@@ -1145,7 +1087,7 @@ textarea {
   }
 
   .ProseMirror {
-    min-height: 132px;
+    min-height: 9.4286em;
     line-height: 1.45;
 
     &:focus {
@@ -1153,21 +1095,13 @@ textarea {
     }
 
     p {
-      margin: 0 0 8px;
+      margin: 0 0 $space-sm;
     }
   }
 }
 
 .crud-rich-text-field leptos-tiptap-instance {
-  min-height: 140px;
-}
-
-.item-description-rich-text leptos-tiptap-instance {
-  min-height: 180px;
-}
-
-.new-item-description-rich-text leptos-tiptap-instance {
-  min-height: 150px;
+  min-height: 10em;
 }
 
 button,
@@ -1175,11 +1109,11 @@ button,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 38px;
-  padding: 8px 12px;
-  border: 1px solid $accent;
+  min-height: $input-height;
+  padding: $space $space-md;
+  border: $line solid $accent;
   background: $accent;
-  color: #ffffff;
+  color: $on-accent;
   cursor: pointer;
   font-weight: 680;
   text-align: center;
@@ -1187,7 +1121,7 @@ button,
   &:hover {
     background: $accent-strong;
     border-color: $accent-strong;
-    color: #ffffff;
+    color: $on-accent;
     text-decoration: none;
   }
 
@@ -1219,23 +1153,8 @@ button.danger {
   border-color: $danger;
 
   &:hover {
-    background: #8f1f2c;
-    border-color: #8f1f2c;
-  }
-}
-
-button.link-danger {
-  min-height: auto;
-  padding: 0;
-  background: none;
-  color: $danger;
-  border: 0;
-  font-weight: 650;
-
-  &:hover {
-    background: none;
-    color: #8f1f2c;
-    text-decoration: underline;
+    background: $danger-strong;
+    border-color: $danger-strong;
   }
 }
 
@@ -1247,29 +1166,98 @@ button.link-danger {
   color: $muted;
 }
 
+.board-page {
+  --workspace-dock-height: calc(#{$dock-height} + #{$line});
+
+  display: flex;
+  height: calc(100dvh - var(--workspace-dock-height));
+  min-height: 0;
+  flex-direction: column;
+
+  > .page-shell {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+  }
+}
+
 .board-stack {
   display: grid;
-  gap: 18px;
-  margin-bottom: 22px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.board-inspector-layout {
+  --board-inspector-width: 46%;
+
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 0;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  align-items: start;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  container-type: inline-size;
+  transition:
+    grid-template-columns $transition-slow,
+    gap $transition-slow;
+
+  &:has(leptonic-drawer[data-board-inspector].shown),
+  &:has(leptonic-drawer[data-board-inspector].showing),
+  &:has(leptonic-drawer[data-board-inspector].hiding) {
+    grid-template-columns: minmax(0, 1fr) var(--board-inspector-width);
+    gap: $space;
+  }
+
+  &.resizing {
+    cursor: col-resize;
+    transition: none;
+    user-select: none;
+  }
+}
+
+.board-inspector-board,
+.board-inspector-slot {
+  height: 100%;
+  min-width: 0;
+}
+
+.board-inspector-board {
+  display: flex;
+  min-height: 0;
+}
+
+.board-inspector-slot {
+  pointer-events: none;
 }
 
 .board {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 18px;
+  grid-auto-columns: max($lane-min-width, var(--board-lane-width, $lane-width));
+  grid-auto-flow: column;
+  gap: $space;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
 }
 
 .lane {
   display: flex;
+  height: 100%;
   flex-direction: column;
-  min-height: 340px;
-  max-height: 80vh;
+  min-height: 0;
   overflow: hidden;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.58);
-  border: 1px solid $border;
-  border-top: 4px solid $accent;
-  border-radius: 8px;
+  padding: $space-md;
+  background: $lane-surface;
+  border: $line solid $border;
+  border-top: $accent-line solid $accent;
+  border-radius: $radius;
   box-shadow: $shadow-sm;
   border-top-color: $muted;
 
@@ -1290,8 +1278,8 @@ button.link-danger {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: $space;
+  margin-bottom: $space;
 
   h2 {
     margin: 0;
@@ -1303,7 +1291,7 @@ button.link-danger {
 .lane-actions {
   display: flex;
   min-width: 0;
-  gap: 8px;
+  gap: $space;
   align-items: center;
 }
 
@@ -1317,15 +1305,15 @@ button.link-danger {
 
 .lane-edit {
   display: inline-flex;
-  width: 28px;
-  height: 28px;
+  width: $control-height-sm;
+  height: $control-height-sm;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
   color: $ink-soft;
   text-decoration: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: $line solid transparent;
+  border-radius: $radius-sm;
 
   &:hover,
   &:focus-visible {
@@ -1337,14 +1325,14 @@ button.link-danger {
 
 .lane-count {
   display: inline-flex;
-  min-width: 28px;
-  height: 24px;
+  min-width: $control-height-sm;
+  height: 1.7143em;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: $pill;
   background: $subtle;
   color: $ink-soft;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 760;
 }
 
@@ -1352,39 +1340,39 @@ button.link-danger {
   display: grid;
   flex: 1;
   min-height: 0;
-  gap: 10px;
+  gap: $space;
   align-content: start;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: $space-xs;
   scrollbar-gutter: stable;
 }
 
 .work-item-card-group {
   display: grid;
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid rgba($accent, 0.28);
-  border-radius: 10px;
+  gap: $space;
+  padding: $space;
+  border: $line solid rgba($accent, 0.28);
+  border-radius: $radius-lg;
   background: rgba($accent, 0.045);
 
   > header {
     display: flex;
-    gap: 8px;
+    gap: $space;
     align-items: start;
     justify-content: space-between;
-    padding: 1px 2px;
+    padding: $line $space-2xs;
     color: $ink-soft;
-    font-size: 12px;
+    font-size: $text-sm;
 
     > div {
       display: grid;
       min-width: 0;
-      gap: 2px;
+      gap: $space-xs;
     }
 
     strong {
       color: $ink;
-      font-size: 13px;
+      font-size: $text-relative-up;
     }
 
     code {
@@ -1398,23 +1386,23 @@ button.link-danger {
 
 .work-item-card-group-items {
   display: grid;
-  gap: 8px;
+  gap: $space;
 }
 
 .lane-add {
-  min-height: 28px;
-  padding: 4px 8px;
-  font-size: 12px;
+  min-height: $control-height-sm;
+  padding: $space-xs $space;
+  font-size: $text-sm;
   transition:
-    opacity 140ms ease,
-    transform 140ms ease;
+    opacity $transition,
+    transform $transition;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .lane-add {
     opacity: 0;
     pointer-events: none;
-    transform: translateY(2px);
+    transform: translateY(0.1429em);
   }
 
   .lane:hover .lane-add,
@@ -1429,13 +1417,13 @@ button.link-danger {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 12px 14px;
-  color: #6c4105;
+  gap: $space;
+  padding: $space-md $space-lg;
+  color: $amber-ink;
   background: $amber-soft;
-  border: 1px solid rgba($amber, 0.38);
-  border-left: 4px solid $amber;
-  border-radius: 8px;
+  border: $line solid rgba($amber, 0.38);
+  border-left: $accent-line solid $amber;
+  border-radius: $radius;
   box-shadow: $shadow-sm;
 
   strong {
@@ -1451,24 +1439,24 @@ button.link-danger {
 .card,
 .comments article {
   @include surface;
-  padding: 13px;
+  padding: $space-md;
 }
 
 .card {
   transition:
-    border-color 140ms ease,
-    box-shadow 140ms ease,
-    transform 140ms ease;
+    border-color $transition,
+    box-shadow $transition,
+    transform $transition;
 
   &.claimed {
     border-color: rgba($amber, 0.42);
-    box-shadow: 0 1px 2px rgba(166, 106, 18, 0.10);
+    box-shadow: $shadow-claimed;
   }
 
   &:hover {
     border-color: $border-strong;
     box-shadow: $shadow-md;
-    transform: translateY(-1px);
+    transform: translateY(-0.0625em);
   }
 
   a {
@@ -1479,40 +1467,302 @@ button.link-danger {
     }
   }
 
+  .card-main-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+
+    &:focus-visible {
+      outline: 0.1429em solid $accent;
+      outline-offset: 0.2857em;
+      border-radius: 0.25em;
+    }
+  }
+
   p {
-    margin: 0 0 12px;
+    margin: 0 0 $space;
     color: $ink-soft;
   }
 
   .card-labels {
     display: flex;
-    min-height: 24px;
-    gap: 6px;
+    min-height: 1.7143em;
+    gap: $space-sm;
     align-items: center;
     flex-wrap: wrap;
-    margin-bottom: 12px;
+    margin-bottom: $space;
   }
 
   footer {
     display: flex;
-    gap: 8px 12px;
+    gap: $space $space;
     flex-wrap: wrap;
     color: $muted;
-    font-size: 12px;
+    font-size: $text-sm;
   }
+}
+
+.card-runs {
+  display: grid;
+  gap: $space;
+  margin: $space-sm $space-sm $space-md;
+  padding: $space;
+  border: $line solid rgba($accent, 0.24);
+  border-radius: $radius;
+  background: rgba($accent, 0.045);
+}
+
+.card-run-count {
+  color: $ink;
+  font-size: $text-sm;
+  font-weight: 800;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.card-run-previews {
+  display: grid;
+  gap: $space-sm;
+}
+
+.card-run-preview {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: $space;
+  align-items: baseline;
+  min-height: 2.0714em;
+  padding: $space-sm $space;
+  border: $line solid $border;
+  border-left-width: $accent-line;
+  border-radius: $radius-sm;
+  background: $surface;
+  color: $ink-soft;
+  font-size: $text-xs;
+  text-decoration: none;
+
+  .card-run-summary {
+    overflow: hidden;
+    color: $muted;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &.status-running {
+    border-left-color: $accent;
+    background: $accent-soft;
+  }
+
+  &.status-completed {
+    border-left-color: $green;
+    background: $green-soft;
+  }
+
+  &.status-failed {
+    border-left-color: $danger;
+    background: $danger-soft;
+  }
+
+  &.status-cancelled {
+    border-left-color: $amber;
+    background: $amber-soft;
+  }
+}
+
+.card-run-context {
+  display: flex;
+  min-width: 0;
+  grid-column: 1 / -1;
+  gap: $space;
+  align-items: baseline;
+  color: $muted;
+}
+
+.card-run-source {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-run-context .claim-elapsed {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: inherit;
+}
+
+.board-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  padding: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  transition: opacity 160ms ease;
+}
+
+leptonic-drawer[data-board-inspector] {
+  position: relative;
+  inset: auto;
+  z-index: 2;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  margin: 0;
+  background: $surface;
+  border: $line solid $border-strong;
+  border-radius: $radius-lg;
+  box-shadow: $shadow-drawer;
+  pointer-events: auto;
+
+  &:not(.shown):not(.showing) {
+    pointer-events: none;
+  }
+}
+
+.board-drawer-resize-handle {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 3;
+  width: 1em;
+  min-height: 0;
+  padding: 0;
+  touch-action: none;
+  background: transparent;
+  border: 0;
+  border-radius: $radius-lg 0 0 $radius-lg;
+  cursor: col-resize;
+
+  &::before {
+    position: absolute;
+    inset: 0.7143em auto 0.7143em 0;
+    width: 0.2143em;
+    content: "";
+    background: $accent;
+    border-radius: 0 $pill $pill 0;
+    opacity: 0;
+    transform: scaleY(0.72);
+    transition:
+      opacity $transition-fast,
+      transform $transition-fast;
+  }
+
+  &:hover,
+  &:focus-visible,
+  &.dragging {
+    background: transparent;
+
+    &::before {
+      opacity: 1;
+      transform: scaleY(1);
+    }
+  }
+
+  &:focus-visible {
+    outline: 0.1429em solid rgba($accent, 0.5);
+    outline-offset: -0.2857em;
+  }
+}
+
+.board-drawer-focus {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  outline: none;
+}
+
+.board-drawer-header {
+  display: flex;
+  min-height: 4.8571em;
+  gap: $space;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: $space-md $space-lg;
+  background: $surface;
+  border-bottom: $line solid $border;
+
+  h1 {
+    margin: 0;
+    font-size: $text-title;
+    line-height: 1.25;
+  }
+
+  > div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: $space-xs;
+  }
+}
+
+.board-drawer-title {
+  min-width: 0;
+  color: $ink;
+  text-decoration: none;
+
+  &:hover {
+    color: $accent-strong;
+    text-decoration: underline;
+  }
+}
+
+.board-drawer-header-actions {
+  display: flex;
+  gap: $space;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.board-drawer-close {
+  width: 2.5714em;
+  height: 2.5714em;
+  flex: 0 0 auto;
+}
+
+.board-drawer-back {
+  width: fit-content;
+  padding: 0;
+  font-size: $text-sm;
+}
+
+.board-drawer-body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: $panel-padding;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+
+  > :first-child {
+    margin-top: 0;
+  }
+}
+
+.board-drawer-loading,
+.board-drawer-error {
+  margin: $space-2xl;
 }
 
 .label-chip {
   display: inline-flex;
   max-width: 100%;
-  min-height: 22px;
+  min-height: 1.5714em;
   align-items: center;
-  padding: 2px 7px;
-  border: 1px solid $border;
-  border-radius: 999px;
+  padding: $space-2xs $space;
+  border: $line solid $border;
+  border-radius: $pill;
   background: $subtle;
   color: $ink-soft;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 720;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1533,29 +1783,29 @@ button.link-danger {
 
 .dispatch-labels {
   .panel-heading {
-    margin-bottom: 10px;
+    margin-bottom: $space;
   }
 }
 
 .system-label-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: $space;
 
   article {
     display: grid;
-    gap: 4px;
+    gap: $space-xs;
     min-width: 0;
-    padding: 10px;
-    border: 1px solid $border;
-    border-radius: 8px;
+    padding: $space;
+    border: $line solid $border;
+    border-radius: $radius;
     background: $surface-raised;
   }
 
   code {
     overflow: hidden;
     color: $ink;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1563,74 +1813,112 @@ button.link-danger {
 
   span {
     color: $muted;
-    font-size: 12px;
+    font-size: $text-sm;
   }
 }
 
 .item-labels {
   display: grid;
-  gap: 12px;
+  gap: $space;
 }
 
 .label-list {
   display: grid;
-  gap: 8px;
+  gap: $space;
 }
 
-.label-row,
-.label-add-form {
+.label-add-controls {
   display: grid;
-  grid-template-columns: minmax(130px, 0.7fr) minmax(260px, 1fr) auto;
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: $space;
+  align-items: end;
 }
 
 .label-row {
-  padding: 8px;
-  border: 1px solid $border;
-  border-radius: 8px;
+  min-width: 0;
+  padding: $space;
+  border: $line solid $border;
+  border-radius: $radius;
   background: $surface-raised;
 
-  form {
-    display: grid;
-    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
-    gap: 8px;
-    align-items: center;
+  &.blocked {
+    border-color: rgba($danger, 0.3);
+    background: $danger-soft;
   }
 
-  .state-label-form {
-    grid-template-columns: minmax(120px, 1fr) auto;
+  &.feedback {
+    border-color: rgba($amber, 0.35);
+    background: $amber-soft;
   }
+}
+
+.label-update-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) auto;
+  gap: $space;
+  align-items: end;
+}
+
+.label-field,
+.label-fixed-key {
+  display: grid;
+  min-width: 0;
+  gap: $space-sm;
+
+  > span {
+    color: $muted;
+    font-size: $text-xs;
+    font-weight: 740;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
+
+.label-fixed-key strong {
+  display: flex;
+  min-height: $input-height;
+  align-items: center;
+  padding: $space $space;
+  border: $line solid $border;
+  border-radius: 0.25em;
+  background: $subtle;
+  color: $ink-soft;
+}
+
+.label-row-actions {
+  display: flex;
+  gap: $space;
+  align-items: center;
 }
 
 .item-relationships {
   display: grid;
-  gap: 12px;
+  gap: $space;
 }
 
 .relationship-list {
   display: grid;
-  gap: 8px;
+  gap: $space;
 }
 
 .relationship-row,
-.relationship-add-form {
+.relationship-add-controls {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(220px, 0.8fr) auto;
-  gap: 8px;
+  grid-template-columns: minmax(15.7143em, 1fr) minmax(15.7143em, 0.8fr) auto;
+  gap: $space;
   align-items: center;
 }
 
 .relationship-row {
-  padding: 10px;
-  border: 1px solid $border;
-  border-radius: 8px;
+  padding: $space;
+  border: $line solid $border;
+  border-radius: $radius;
   background: $surface-raised;
 
   p {
-    margin: 4px 0;
+    margin: $space-xs 0;
     color: $ink-soft;
-    font-size: 13px;
+    font-size: $text-md;
   }
 }
 
@@ -1640,15 +1928,15 @@ button.link-danger {
 
 .relationship-direction {
   display: inline-flex;
-  min-height: 22px;
+  min-height: 1.5714em;
   align-items: center;
-  margin-right: 7px;
-  padding: 2px 7px;
-  border: 1px solid rgba($accent, 0.28);
-  border-radius: 999px;
+  margin-right: $space;
+  padding: $space-2xs $space;
+  border: $line solid rgba($accent, 0.28);
+  border-radius: $pill;
   background: $accent-soft;
   color: $accent-strong;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 740;
 }
 
@@ -1661,16 +1949,16 @@ button.link-danger {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  font-size: 13px;
+  font-size: $text-md;
   font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.relationship-kind-form {
+.relationship-kind-controls {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto;
-  gap: 8px;
+  grid-template-columns: minmax(8.5714em, 1fr) auto;
+  gap: $space;
   align-items: center;
 }
 
@@ -1678,12 +1966,12 @@ button.link-danger {
   display: inline-flex;
   max-width: 100%;
   align-items: center;
-  gap: 6px;
-  padding: 2px 7px;
-  border: 1px solid rgba($amber, 0.34);
-  border-radius: 999px;
+  gap: $space-sm;
+  padding: $space-2xs $space;
+  border: $line solid rgba($amber, 0.34);
+  border-radius: $pill;
   background: $amber-soft;
-  color: #6f4309;
+  color: $amber-ink;
   font-weight: 720;
   text-decoration: none;
 }
@@ -1692,8 +1980,8 @@ a.claim-badge {
   &:hover,
   &:focus-visible {
     border-color: rgba($amber, 0.62);
-    background: #ffe8bd;
-    color: #6f4309;
+    background: $amber-hover;
+    color: $amber-ink;
     text-decoration: none;
   }
 
@@ -1703,12 +1991,12 @@ a.claim-badge {
 }
 
 .claim-dot {
-  width: 7px;
-  height: 7px;
+  width: 0.5em;
+  height: 0.5em;
   flex: 0 0 auto;
-  border-radius: 999px;
+  border-radius: $pill;
   background: $green;
-  box-shadow: 0 0 0 3px rgba($green, 0.14);
+  box-shadow: 0 0 0 0.2143em rgba($green, 0.14);
 }
 
 .claim-agent {
@@ -1724,7 +2012,7 @@ a.claim-badge {
   min-width: 0;
   max-width: 22ch;
   overflow: hidden;
-  color: #6f4309;
+  color: $amber-ink;
   font-weight: 760;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1732,7 +2020,7 @@ a.claim-badge {
 
 .claim-elapsed {
   min-width: 4ch;
-  color: #6f4309;
+  color: $amber-ink;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1743,80 +2031,73 @@ a.claim-badge {
 .project-settings {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 18px;
+  gap: $space;
+  margin-top: $space-lg;
 
   > div {
     @include surface;
-    padding: 15px;
+    padding: $panel-padding;
   }
 
   h2 {
-    padding-bottom: 10px;
-    border-bottom: 1px solid $border;
+    padding-bottom: $space;
+    border-bottom: $line solid $border;
   }
-}
 
-.project-settings {
   > div:first-child {
-    border-top: 4px solid $accent;
+    border-top: $accent-line solid $accent;
   }
 
   > div:nth-child(2) {
-    border-top: 4px solid $green;
+    border-top: $accent-line solid $green;
   }
 
   > div:nth-child(3) {
-    border-top: 4px solid $amber;
+    border-top: $accent-line solid $amber;
   }
+}
+
+.automation-policy-settings,
+.automation-policy-shell {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .automation {
   @include surface;
   display: grid;
-  gap: 14px;
-  margin-top: 18px;
-  padding: 15px;
-  border-top: 4px solid $green;
+  gap: $space;
+  margin-top: $space-lg;
+  padding: $panel-padding;
+  border-top: $accent-line solid $green;
 }
 
 .maintenance {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
-  border-top: 4px solid $danger;
+  gap: $space;
+  margin-top: $space-lg;
+  border-top: $accent-line solid $danger;
 
   h2 {
     margin-bottom: 0;
   }
 
-  form {
-    display: flex;
-    gap: 9px;
-    flex-wrap: wrap;
-  }
 }
 
-.project-settings form,
-.comments form,
-.item-settings form {
+.project-text-editor,
+.commit-policy-controls,
+.comment-add-controls {
   display: flex;
-  gap: 9px;
-}
-
-.project-settings form,
-.comments form,
-.item-settings form {
+  gap: $space;
   flex-direction: column;
 }
 
 .project-text-history {
   display: grid;
-  gap: 6px;
+  gap: $space-sm;
 
   label {
     color: $ink-soft;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 720;
     text-transform: uppercase;
   }
@@ -1825,7 +2106,7 @@ a.claim-badge {
 .project-system-prompt-text.dirty,
 .project-memory-text.dirty {
   border-color: rgba($amber, 0.85);
-  box-shadow: 0 0 0 3px rgba($amber, 0.22);
+  box-shadow: 0 0 0 0.2143em rgba($amber, 0.22);
 }
 
 .commit-policy {
@@ -1833,7 +2114,7 @@ a.claim-badge {
     display: flex;
     width: fit-content;
     align-items: center;
-    gap: 8px;
+    gap: $space;
     color: $ink;
     font-weight: 720;
 
@@ -1843,40 +2124,51 @@ a.claim-badge {
   }
 
   textarea {
-    min-height: 112px;
+    min-height: 8em;
   }
 
   .git-command-policy {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px 12px;
+    gap: $space $space;
   }
 }
 
 .item-meta {
   display: flex;
-  gap: 8px;
+  gap: $space;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: $space-lg;
   color: $ink-soft;
 
   > span {
     display: inline-flex;
-    min-height: 28px;
+    min-height: $control-height-sm;
     align-items: center;
-    padding: 4px 9px;
-    border: 1px solid $border;
-    border-radius: 999px;
+    padding: $space-xs $space;
+    border: $line solid $border;
+    border-radius: $pill;
     background: $surface;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 650;
+  }
+}
+
+.item-detail-content {
+  display: grid;
+  gap: $space-2xl;
+  min-width: 0;
+
+  > * {
+    min-width: 0;
+    margin-block: 0;
   }
 }
 
 .item-settings {
   display: grid;
-  gap: 12px;
-  margin-bottom: 18px;
+  gap: $space;
+  margin-bottom: $space-lg;
 
   h2 {
     margin-bottom: 0;
@@ -1884,45 +2176,64 @@ a.claim-badge {
 
   label {
     display: grid;
-    gap: 5px;
+    gap: $space-sm;
     color: $ink-soft;
-    font-size: 12px;
+    font-size: $text-sm;
     font-weight: 720;
   }
 
   label:has(input[type="checkbox"]) {
     display: flex;
     align-items: center;
-    font-size: 14px;
+    font-size: $text-base;
     font-weight: 650;
   }
 
-  .item-description-text {
-    min-height: 180px;
-    line-height: 1.45;
+}
+
+.board-drawer-body {
+  .label-update-controls,
+  .label-add-controls,
+  .relationship-add-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .label-row-actions,
+  .label-add-controls > button,
+  .relationship-add-controls > button {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+
+  .relationship-row {
+    grid-template-columns: 1fr;
+  }
+
+  .relationship-delete-controls {
+    justify-self: end;
   }
 }
 
 .comments {
   @include surface;
-  margin-top: 16px;
-  padding: 15px;
+  margin-top: $space-lg;
+  padding: $panel-padding;
 
   article {
-    margin-bottom: 10px;
+    margin-bottom: $space;
     background: $surface-raised;
 
     .comment-author-link {
       color: inherit;
       text-decoration-color: rgba($accent, 0.42);
-      text-underline-offset: 2px;
+      text-underline-offset: 0.1429em;
     }
 
     span {
       display: block;
-      margin-top: 3px;
+      margin-top: $space-2xs;
       color: $muted;
-      font-size: 12px;
+      font-size: $text-sm;
     }
 
     p {
@@ -1933,33 +2244,29 @@ a.claim-badge {
 
 .compact-list {
   margin: 0;
-  padding-left: 18px;
+  padding-left: $space-lg;
   color: $ink-soft;
 
   li {
-    margin: 6px 0;
+    margin: $space-xs 0;
   }
 
-  form {
-    display: inline;
-  }
 }
 
 .project-management {
   display: grid;
-  gap: 14px;
+  gap: $space;
   align-items: start;
 }
 
 .app-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
+  gap: $space;
   align-items: start;
-  margin-top: 18px;
+  margin-top: $space-lg;
 
   h2 {
-    margin-bottom: 6px;
+    margin-bottom: $space-xs;
   }
 
   p {
@@ -1978,29 +2285,29 @@ a.claim-badge {
 
 .panel-heading {
   display: grid;
-  gap: 4px;
+  gap: $space-xs;
 }
 
 .automation-bundles {
   display: grid;
-  gap: 14px;
+  gap: $space;
 
   label {
     display: grid;
-    gap: 6px;
+    gap: $space-sm;
   }
 }
 
 .automation-bundle-yaml,
 .automation-bundle-result {
   width: 100%;
-  min-height: 120px;
+  min-height: 8.5714em;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .automation-installed-bundles {
   display: grid;
-  gap: 8px;
+  gap: $space;
 
   h3,
   p {
@@ -2009,7 +2316,7 @@ a.claim-badge {
 
   ul {
     display: grid;
-    gap: 8px;
+    gap: $space;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -2018,18 +2325,18 @@ a.claim-badge {
 
 .automation-installed-bundle {
   display: flex;
-  gap: 12px;
+  gap: $space;
   align-items: center;
   justify-content: space-between;
-  padding: 10px;
-  border: 1px solid $border;
-  border-radius: 8px;
+  padding: $space;
+  border: $line solid $border;
+  border-radius: $radius;
   background: $surface-raised;
 
   > div:first-child {
     display: grid;
     min-width: 0;
-    gap: 3px;
+    gap: $space-xs;
   }
 
   code {
@@ -2040,89 +2347,89 @@ a.claim-badge {
 .automation-installed-bundle-actions,
 .automation-bundle-file-picker {
   display: flex;
-  gap: 8px;
+  gap: $space;
   align-items: center;
   flex-wrap: wrap;
 }
 
 .automation-bundle-file-picker {
   color: $muted;
-  font-size: 12px;
+  font-size: $text-sm;
 }
 
 .automation-managed-badge {
-    display: inline-flex;
-    margin-inline: 0.5rem;
-    padding: 0.15rem 0.45rem;
-    border-radius: 999px;
-    background: var(--color-primary-container, #e6eefc);
-    font-size: 0.8rem;
+  display: inline-flex;
+  margin-inline: $space;
+  padding: $space-2xs $space;
+  border-radius: $pill;
+  background: var(--color-primary-container, #{$accent-soft});
+  font-size: $text-xs;
 }
 
 .automation-inspector-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-    gap: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20em, 1fr));
+  gap: $space;
 }
 
 .automation-analytics {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.25rem 0.75rem;
-}
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: $space-xs $space;
 
-.automation-analytics dd {
+  dd {
     margin: 0;
+  }
 }
 
 .automation-revision-list,
 .automation-evaluation-list {
-    display: grid;
-    gap: 0.65rem;
-    padding: 0;
-    list-style: none;
+  display: grid;
+  gap: $space;
+  padding: 0;
+  list-style: none;
 }
 
 .automation-revision-heading,
 .automation-evaluation-list li {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $space;
 }
 
 .automation-personality-inspector {
   display: grid;
-  gap: 0.75rem;
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid $border;
+  gap: $space;
+  margin-top: $space-lg;
+  padding-top: $space-lg;
+  border-top: $line solid $border;
 }
 
 .automation-personality-heading {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: $space;
 }
 
 .automation-revision-heading code {
-    max-width: 12rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .automation-route-explain pre,
 .automation-revision-list pre {
-    max-height: 24rem;
-    overflow: auto;
+  max-height: $code-panel-height;
+  overflow: auto;
 }
 
 .automation-bundle-actions,
 .automation-bundle-export {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: $space;
   align-items: center;
 }
 
@@ -2139,48 +2446,48 @@ a.claim-badge {
 .postcondition-events,
 .postcondition-created-items {
   display: grid;
-  gap: 0.75rem;
+  gap: $space;
 }
 
 .automation-config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(14em, 1fr));
+  gap: $space;
 }
 
 .automation-config-grid > label,
 .postcondition-created-selector {
   display: grid;
-  gap: 0.35rem;
+  gap: $space-sm;
 }
 
 .automation-config-row {
   display: grid;
-  grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) auto;
-  gap: 0.5rem;
+  grid-template-columns: minmax(10em, 1fr) minmax(10em, 1fr) auto;
+  gap: $space;
   align-items: center;
 }
 
 .postcondition-labels .automation-config-row {
-  grid-template-columns: minmax(11rem, 0.8fr) minmax(10rem, 1fr) minmax(10rem, 1fr) auto;
+  grid-template-columns: minmax(11em, 0.8fr) minmax(10em, 1fr) minmax(10em, 1fr) auto;
 }
 
 .automation-config-checkboxes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-  gap: 0.35rem 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(12em, 1fr));
+  gap: $space-sm $space;
 }
 
 .automation-config-checkbox {
   display: flex;
-  gap: 0.4rem;
+  gap: $space-sm;
   align-items: center;
 }
 
 .automation-config-footer {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: $space;
   align-items: center;
 }
 
@@ -2196,22 +2503,22 @@ a.claim-badge {
 
 .automation-config-raw-panel {
   display: grid;
-  gap: 0.5rem;
+  gap: $space;
 }
 
 .automation-config-raw {
-  min-height: 10rem;
+  min-height: 10em;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .nested-condition-editor .lane-filter-group {
-  margin-top: 0.35rem;
+  margin-top: $space-sm;
 }
 
 .panel,
 .run-log > section:not(.item-header) {
   @include surface;
-  padding: 16px;
+  padding: $panel-padding;
 }
 
 .crudkit-projects,
@@ -2221,11 +2528,11 @@ a.claim-badge {
 .crudkit-work-item-states,
 .crudkit-swim-lanes {
   overflow: auto;
-  padding-top: 14px;
-  border-top: 1px solid $border;
+  padding-top: $space-lg;
+  border-top: $line solid $border;
 
   .crud-instance {
-    min-width: 620px;
+    min-width: $table-min-width;
   }
 }
 
@@ -2236,19 +2543,19 @@ a.claim-badge {
   }
 
   .crud-nav {
-    margin-bottom: 12px;
+    margin-bottom: $space;
   }
 }
 
 .project-path-field {
   display: grid;
-  gap: 8px;
+  gap: $space;
 }
 
 .project-path-input-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
-  gap: 8px;
+  grid-template-columns: minmax(15.7143em, 1fr) auto;
+  gap: $space;
   align-items: center;
 }
 
@@ -2258,12 +2565,12 @@ a.claim-badge {
 
 .project-path-picker {
   display: inline-flex;
-  min-height: 34px;
+  min-height: $control-height;
   align-items: center;
   justify-content: center;
-  padding: 7px 11px;
-  border: 1px solid $border-strong;
-  border-radius: 7px;
+  padding: $space $space;
+  border: $line solid $border-strong;
+  border-radius: $radius;
   background: $surface-raised;
   color: $ink-soft;
   font-weight: 700;
@@ -2282,13 +2589,13 @@ a.claim-badge {
 }
 
 .session {
-  padding: 11px 0;
-  border-top: 1px solid $border;
+  padding: $space 0;
+  border-top: $line solid $border;
 }
 
 .session-head {
   display: flex;
-  gap: 9px;
+  gap: $space;
   align-items: center;
   flex-wrap: wrap;
   color: $ink-soft;
@@ -2296,29 +2603,29 @@ a.claim-badge {
 
 .run-session-shell {
   display: grid;
-  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
-  gap: 14px;
-  min-height: 460px;
+  grid-template-columns: minmax(18.5714em, 25.7143em) minmax(0, 1fr);
+  gap: $space;
+  min-height: 32.8571em;
 }
 
 .run-session-list {
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: $space;
 }
 
 .run-session {
   position: relative;
   display: grid;
-  gap: 6px;
+  gap: $space-sm;
   width: 100%;
   justify-content: stretch;
-  padding: 10px;
-  border: 1px solid $border;
+  padding: $space;
+  border: $line solid $border;
   background: $surface-raised;
   color: $ink;
   text-align: left;
-  border-left-width: 4px;
+  border-left-width: $accent-line;
 
   &:hover,
   &.selected {
@@ -2330,7 +2637,7 @@ a.claim-badge {
   p {
     margin: 0;
     color: $muted;
-    font-size: 12px;
+    font-size: $text-sm;
   }
 
   &.status-running {
@@ -2371,9 +2678,9 @@ a.claim-badge {
   }
 
   &.selected {
-    outline: 2px solid rgba($accent, 0.62);
-    outline-offset: 1px;
-    box-shadow: 0 0 0 4px rgba($accent, 0.12);
+    outline: 0.1429em solid rgba($accent, 0.62);
+    outline-offset: $line;
+    box-shadow: 0 0 0 0.2857em rgba($accent, 0.12);
 
     .session-head strong {
       color: $accent-strong;
@@ -2383,34 +2690,34 @@ a.claim-badge {
 
 .live-badge {
   display: inline-flex;
-  min-height: 22px;
+  min-height: 1.5714em;
   align-items: center;
-  padding: 2px 7px;
-  border: 1px solid rgba($green, 0.28);
-  border-radius: 999px;
+  padding: $space-2xs $space;
+  border: $line solid rgba($green, 0.28);
+  border-radius: $pill;
   background: $green-soft;
   color: $green;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 740;
 }
 
 .run-session-detail {
   min-width: 0;
-  padding: 14px;
-  border: 1px solid $border;
-  border-radius: 8px;
+  padding: $panel-padding;
+  border: $line solid $border;
+  border-radius: $radius;
   background: $surface-raised;
 }
 
 .run-detail-header {
   display: flex;
-  gap: 12px;
+  gap: $space;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: $space;
 
   h3 {
-    margin-bottom: 4px;
+    margin-bottom: $space-xs;
   }
 
   p {
@@ -2420,7 +2727,7 @@ a.claim-badge {
 }
 
 .secondary-link {
-  min-height: 32px;
+  min-height: 2.2857em;
   border-color: $border-strong;
   background: $surface;
   color: $ink;
@@ -2433,29 +2740,29 @@ a.claim-badge {
 }
 
 .run-detail-meta {
-  margin-bottom: 14px;
+  margin-bottom: $space-lg;
 }
 
 .run-detail-section {
   display: grid;
-  gap: 8px;
-  margin-top: 14px;
+  gap: $space;
+  margin-top: $space-lg;
 
   h4 {
     margin: 0;
-    font-size: 13px;
+    font-size: $text-md;
     font-weight: 760;
   }
 }
 
 .run-result {
   display: grid;
-  gap: 6px;
-  margin: 14px 0 2px;
-  padding: 10px 12px;
-  border: 1px solid $border;
-  border-left-width: 4px;
-  border-radius: 7px;
+  gap: $space-sm;
+  margin: $space-lg 0 $space-2xs;
+  padding: $space $space-md;
+  border: $line solid $border;
+  border-left-width: $accent-line;
+  border-radius: $radius;
   background: $surface;
 
   h4,
@@ -2464,7 +2771,7 @@ a.claim-badge {
   }
 
   h4 {
-    font-size: 13px;
+    font-size: $text-md;
     font-weight: 760;
   }
 
@@ -2494,8 +2801,8 @@ a.claim-badge {
 }
 
 .run-result-inline {
-  padding: 3px 7px;
-  border-radius: 6px;
+  padding: $space-xs $space;
+  border-radius: $radius-sm;
 
   &.status-running {
     background: $accent-soft;
@@ -2515,77 +2822,37 @@ a.claim-badge {
 }
 
 pre {
-  max-height: 420px;
+  max-height: 30em;
   margin: 0;
   overflow: auto;
-  padding: 12px;
-  border-radius: 7px;
-  background: #111820;
-  color: #edf4ff;
-  font-size: 12px;
+  padding: $space-md;
+  border-radius: $radius;
+  background: $code-surface;
+  color: $code-ink;
+  font-size: $text-sm;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .run-output-controls {
   display: flex;
-  min-height: 18px;
+  min-height: 1.2857em;
   justify-content: flex-end;
-  margin: -4px 0 2px;
+  margin: -0.2857em 0 $space-2xs;
 }
 
 .thinking-history-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: $space-sm;
   color: $muted;
-  font-size: 11px;
+  font-size: $text-xs;
   cursor: pointer;
-
-  input {
-    position: relative;
-    width: 24px;
-    min-width: 24px;
-    height: 14px;
-    margin: 0;
-    padding: 0;
-    appearance: none;
-    border: 1px solid $border-strong;
-    border-radius: 999px;
-    background: $subtle;
-    cursor: pointer;
-
-    &::after {
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: $muted;
-      content: "";
-      transition: transform 120ms ease;
-    }
-
-    &:checked {
-      border-color: rgba($accent, 0.55);
-      background: $accent-soft;
-
-      &::after {
-        background: $accent;
-        transform: translateX(10px);
-      }
-    }
-
-    &:focus-visible {
-      @include control-focus;
-    }
-  }
 }
 
 .run-output {
   display: grid;
-  gap: 2px;
+  gap: $space-xs;
 }
 
 .run-output-empty {
@@ -2595,17 +2862,17 @@ pre {
 .output-piece {
   position: relative;
   display: grid;
-  gap: 3px;
+  gap: $space-xs;
   min-width: 0;
-  padding: 2px 0 2px 12px;
+  padding: $space-2xs 0 $space-2xs $space-md;
 
   &::before {
     position: absolute;
-    top: 10px;
-    left: 1px;
-    width: 4px;
-    height: 4px;
-    border-radius: 999px;
+    top: 0.7143em;
+    left: $line;
+    width: 0.2857em;
+    height: 0.2857em;
+    border-radius: $pill;
     background: $muted;
     content: "";
   }
@@ -2614,15 +2881,15 @@ pre {
 .output-piece-header {
   display: flex;
   min-width: 0;
-  gap: 6px;
+  gap: $space-sm;
   align-items: center;
   flex-wrap: wrap;
   color: $muted;
-  font-size: 11px;
+  font-size: $text-xs;
 
   strong {
     color: $ink-soft;
-    font-size: 12px;
+    font-size: $text-relative-up;
   }
 }
 
@@ -2634,14 +2901,14 @@ pre {
 
 .output-piece-badge {
   display: inline-flex;
-  min-height: 17px;
+  min-height: 1.2143em;
   align-items: center;
-  padding: 0 5px;
-  border: 1px solid $border-strong;
-  border-radius: 999px;
+  padding: 0 $space-sm;
+  border: $line solid $border-strong;
+  border-radius: $pill;
   background: $subtle;
   color: $ink-soft;
-  font-size: 10px;
+  font-size: $text-relative-sm;
   font-weight: 720;
 }
 
@@ -2658,8 +2925,8 @@ pre {
 }
 
 .output-model-message {
-  padding-top: 5px;
-  padding-bottom: 6px;
+  padding-top: $space-sm;
+  padding-bottom: $space-sm;
 
   &::before {
     background: $accent;
@@ -2668,7 +2935,7 @@ pre {
 
 .model-output {
   color: $ink;
-  font-size: 13.5px;
+  font-size: $text-output;
   line-height: 1.5;
 }
 
@@ -2689,9 +2956,9 @@ pre {
 }
 
 .thinking-live-indicator {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
+  width: 0.3571em;
+  height: 0.3571em;
+  border-radius: $pill;
   background: $amber;
   animation: thinking-pulse 1.25s ease-in-out infinite;
 }
@@ -2709,7 +2976,7 @@ pre {
 }
 
 .reasoning-output {
-  font-size: 12px;
+  font-size: $text-sm;
   font-style: italic;
   line-height: 1.4;
   white-space: pre-wrap;
@@ -2718,14 +2985,14 @@ pre {
 .output-tool-call,
 .output-file-change {
   &::before {
-    background: #7f8b99;
+    background: $tool-marker;
   }
 }
 
 .tool-call-body {
   color: $muted;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
+  font-size: $text-sm;
 }
 
 .command-output-header {
@@ -2738,7 +3005,7 @@ pre {
   overflow: hidden;
   color: $muted;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
+  font-size: $text-sm;
   font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2779,14 +3046,14 @@ pre {
 }
 
 .tool-output-block {
-  padding-left: 8px;
-  border-left: 1px solid $border;
+  padding-left: $space;
+  border-left: $line solid $border;
 }
 
 .compact-output-details {
   summary {
     display: grid;
-    gap: 2px;
+    gap: $space-xs;
     cursor: pointer;
   }
 }
@@ -2819,7 +3086,7 @@ pre {
 .tool-metadata-block summary {
   width: fit-content;
   color: $muted;
-  font-size: 11px;
+  font-size: $text-xs;
   font-weight: 650;
 }
 
@@ -2829,12 +3096,12 @@ pre {
   max-height: none;
   margin: 0;
   overflow: visible;
-  padding: 2px 0;
+  padding: $space-2xs 0;
   border-radius: 0;
   background: transparent;
   color: $muted;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
+  font-size: $text-xs;
   line-height: 1.35;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2842,7 +3109,7 @@ pre {
 
 .tool-output-preview,
 .reasoning-output-preview {
-  padding-right: 58px;
+  padding-right: $output-hint-offset;
 }
 
 .tool-output-full,
@@ -2852,13 +3119,13 @@ pre {
 
 .output-expand-hint {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  padding: 0 3px;
-  border-radius: 3px;
+  top: 0.1429em;
+  right: 0.1429em;
+  padding: 0 $space-xs;
+  border-radius: 0.25em;
   background: rgba($surface, 0.92);
   color: $muted;
-  font-size: 10px;
+  font-size: $text-2xs;
   font-weight: 650;
 }
 
@@ -2866,50 +3133,50 @@ pre {
   width: fit-content;
 
   pre {
-    width: min(100%, 900px);
-    max-height: 360px;
-    margin-top: 3px;
+    width: min(100%, 64.2857em);
+    max-height: 25.7143em;
+    margin-top: $space-2xs;
     overflow: auto;
-    padding: 6px 8px;
-    border: 1px solid $border;
-    border-radius: 5px;
+    padding: $space-sm $space;
+    border: $line solid $border;
+    border-radius: $radius-sm;
     background: $surface-raised;
   }
 }
 
 .diff-output {
   padding: 0;
-  border: 1px solid #d7dde4;
-  border-radius: 6px;
-  background: #f8fafc;
+  border: $line solid $diff-border;
+  border-radius: $radius-sm;
+  background: $diff-surface;
 }
 
 .diff-line {
   display: block;
-  min-height: 18px;
-  padding: 1px 8px;
+  min-height: 1.2857em;
+  padding: $line $space;
 }
 
 .diff-added {
-  background: #dff5e6;
-  color: #14552b;
+  background: $diff-added;
+  color: $diff-added-ink;
 }
 
 .diff-removed {
-  background: #ffe1e4;
-  color: #7a1721;
+  background: $diff-removed;
+  color: $diff-removed-ink;
 }
 
 .diff-hunk {
-  background: #e7eef7;
-  color: #31577e;
+  background: $diff-hunk;
+  color: $diff-hunk-ink;
   font-weight: 760;
 }
 
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 8px 14px;
+  gap: $space $space;
   margin: 0;
 }
 
@@ -2924,47 +3191,47 @@ dd {
 }
 
 .api-docs {
-  max-width: 960px;
+  max-width: 68.5714em;
 }
 
 .new-item-modal {
-  width: min(640px, calc(100vw - 32px));
+  width: min(45.7143em, calc(100vw - 2.2857em));
   padding: 0;
-  border: 1px solid $border;
-  border-radius: 8px;
-  box-shadow: 0 24px 70px rgba(16, 24, 32, 0.24);
+  border: $line solid $border;
+  border-radius: $radius;
+  box-shadow: $shadow-modal;
 
-  .new-item-form {
+  .new-item-controls {
     display: grid;
   }
 
   .modal-close-button {
-    width: 32px;
-    min-height: 32px;
+    width: 2.2857em;
+    min-height: 2.2857em;
     padding: 0;
 
     svg {
-      width: 18px;
-      height: 18px;
+      width: $icon-size-lg;
+      height: $icon-size-lg;
     }
   }
 
   leptonic-modal-header,
   leptonic-modal-footer {
     display: flex;
-    gap: 10px;
+    gap: $space;
     align-items: center;
     justify-content: space-between;
-    padding: 15px 16px;
+    padding: $panel-padding;
   }
 
   leptonic-modal-header {
     flex-direction: row;
-    border-bottom: 1px solid $border;
+    border-bottom: $line solid $border;
 
     leptonic-modal-title {
       color: $ink;
-      font-size: 17px;
+      font-size: $text-2xl;
       font-weight: 720;
     }
   }
@@ -2972,22 +3239,22 @@ dd {
   leptonic-modal-body {
     display: grid;
     align-items: stretch;
-    gap: 5px;
-    padding: 16px;
+    gap: $space-sm;
+    padding: $panel-padding;
 
     label {
       display: grid;
-      gap: 5px;
+      gap: $space-sm;
       width: 100%;
       color: $ink-soft;
-      font-size: 12px;
+      font-size: $text-sm;
       font-weight: 720;
     }
   }
 
   leptonic-modal-footer {
     justify-content: flex-end;
-    border-top: 1px solid $border;
+    border-top: $line solid $border;
 
     .leptonic-btn-wrapper {
       display: inline-flex;
@@ -2997,62 +3264,62 @@ dd {
 
 .initial-labels-field {
   display: grid;
-  gap: 8px;
+  gap: $space;
 }
 
 .initial-label-rows {
   display: grid;
-  gap: 8px;
+  gap: $space;
 }
 
 .initial-label-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1fr) 34px;
-  gap: 8px;
+  grid-template-columns: minmax(8.5714em, 0.8fr) minmax(10.7143em, 1fr) $control-height;
+  gap: $space;
   align-items: center;
 }
 
 .initial-label-add {
   display: inline-flex;
-  min-height: 34px;
+  min-height: $control-height;
   align-items: center;
   justify-self: start;
 
   svg {
-    width: 16px;
-    height: 16px;
+    width: $icon-size;
+    height: $icon-size;
   }
 }
 
 .initial-label-remove {
-  width: 34px;
-  min-height: 34px;
+  width: $control-height;
+  min-height: $control-height;
   padding: 0;
 
   svg {
-    width: 15px;
-    height: 15px;
+    width: $icon-size-sm;
+    height: $icon-size-sm;
   }
 }
 
 .swim-lane-filter-editor {
   display: grid;
-  gap: 10px;
+  gap: $space;
 }
 
 .lane-filter-structured,
 .lane-filter-raw-panel {
   display: grid;
-  gap: 10px;
+  gap: $space;
 }
 
 .lane-filter-group {
   display: grid;
-  gap: 10px;
-  padding: 10px;
+  gap: $space;
+  padding: $space;
   background: $surface-raised;
-  border: 1px solid $border;
-  border-radius: 8px;
+  border: $line solid $border;
+  border-radius: $radius;
 }
 
 .lane-filter-group .lane-filter-group {
@@ -3061,19 +3328,19 @@ dd {
 
 .lane-filter-group-header {
   display: flex;
-  gap: 10px;
+  gap: $space;
   align-items: center;
   justify-content: space-between;
 }
 
 .lane-filter-group-kind {
   display: inline-flex;
-  gap: 8px;
+  gap: $space;
   align-items: center;
   font-weight: 650;
 
   select {
-    min-width: 88px;
+    min-width: 6.2857em;
   }
 }
 
@@ -3081,31 +3348,31 @@ dd {
 .lane-filter-footer {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: $space;
   align-items: center;
 }
 
 .lane-filter-add-clause,
 .lane-filter-add-group {
   display: inline-flex;
-  min-height: 34px;
+  min-height: $control-height;
   align-items: center;
 
   svg {
-    width: 15px;
-    height: 15px;
+    width: $icon-size-sm;
+    height: $icon-size-sm;
   }
 }
 
 .lane-filter-elements {
   display: grid;
-  gap: 8px;
+  gap: $space;
 }
 
 .lane-filter-clause {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(170px, 0.8fr) minmax(150px, 1fr) 34px;
-  gap: 8px;
+  grid-template-columns: minmax(8.5714em, 0.8fr) minmax(12.1429em, 0.8fr) minmax(10.7143em, 1fr) $control-height;
+  gap: $space;
   align-items: center;
 }
 
@@ -3120,31 +3387,65 @@ dd {
 
 .lane-filter-error {
   margin: 0;
-  padding: 8px 10px;
+  padding: $space $space;
   color: $danger;
   background: $danger-soft;
-  border: 1px solid rgba($danger, 0.2);
-  border-radius: 8px;
+  border: $line solid rgba($danger, 0.2);
+  border-radius: $radius;
 }
 
 .lane-filter-raw {
-  min-height: 130px;
+  min-height: 9.2857em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 .lane-filter-remove-group,
 .lane-filter-remove-clause {
-  width: 34px;
-  min-height: 34px;
+  width: $control-height;
+  min-height: $control-height;
   padding: 0;
 
   svg {
-    width: 15px;
-    height: 15px;
+    width: $icon-size-sm;
+    height: $icon-size-sm;
   }
 }
 
-@media (max-width: 980px) {
+@media (max-width: $breakpoint-drawer) {
+  .board-inspector-layout,
+  .board-inspector-layout:has(leptonic-drawer[data-board-inspector].shown),
+  .board-inspector-layout:has(leptonic-drawer[data-board-inspector].showing),
+  .board-inspector-layout:has(leptonic-drawer[data-board-inspector].hiding) {
+    display: block;
+  }
+
+  .board-inspector-slot {
+    position: absolute;
+    inset: 0 (-$page-padding);
+    z-index: 18;
+  }
+
+  .board-drawer-backdrop.shown {
+    pointer-events: auto;
+    opacity: 1;
+    background: $drawer-overlay;
+  }
+
+  leptonic-drawer[data-board-inspector] {
+    width: 100vw;
+    max-width: 100vw;
+    margin: 0;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0 0 $radius-lg $radius-lg;
+  }
+
+  .board-drawer-resize-handle {
+    display: none;
+  }
+}
+
+@media (max-width: $breakpoint-stack) {
   .app-topbar {
     grid-template-columns: 1fr;
   }
@@ -3175,7 +3476,6 @@ dd {
     justify-content: flex-start;
   }
 
-  .board,
   .project-settings,
   .run-session-shell,
   .project-management,
@@ -3186,19 +3486,19 @@ dd {
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: $breakpoint-mobile) {
   .app-topbar,
   .page-shell,
   .empty-state,
   .error {
-    padding: 16px;
+    padding: $page-padding;
   }
 
   .project-switcher,
   .topbar-actions,
   .app-tools,
   .label-row,
-  .label-add-form,
+  .label-add-controls,
   .codex-status-header,
   .codex-auth-guide-main,
   .codex-status-actions {
@@ -3207,15 +3507,22 @@ dd {
   }
 
   .label-row,
-  .label-add-form,
+  .label-add-controls,
   .relationship-row,
-  .relationship-add-form,
-  .relationship-kind-form,
-  .label-row form,
+  .relationship-add-controls,
+  .relationship-kind-controls,
+  .label-update-controls,
   .initial-label-row,
   .automation-config-row,
   .postcondition-labels .automation-config-row {
     grid-template-columns: 1fr;
+  }
+
+  .label-row-actions,
+  .label-add-controls > button,
+  .relationship-add-controls > button {
+    grid-column: auto;
+    width: 100%;
   }
 
   .codex-usage-summary {
@@ -3232,7 +3539,24 @@ dd {
   }
 
   .board {
-    gap: 14px;
+    gap: $space;
+  }
+
+  .board-inspector-slot {
+    inset-inline: -$page-padding;
+  }
+
+  .board-drawer-header {
+    align-items: flex-start;
+  }
+
+  .run-drawer-header {
+    flex-direction: column;
+  }
+
+  .board-drawer-header-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .workspace-bar {
@@ -3251,10 +3575,6 @@ dd {
     .workspace-buttons {
       margin-left: 0;
     }
-  }
-
-  .lane {
-    min-height: 240px;
   }
 
   .lane-add {

@@ -6,11 +6,17 @@ use std::{
 };
 
 use leptos::prelude::*;
-use leptos_router::hooks::use_query_map;
+use leptos_router::hooks::{use_params_map, use_query_map};
 
 pub(crate) fn selected_project_signal() -> Memo<Option<String>> {
     let query = use_query_map();
-    Memo::new(move |_| query.read().get("project"))
+    let params = use_params_map();
+    Memo::new(move |_| {
+        query
+            .read()
+            .get("project")
+            .or_else(|| params.read().get("project"))
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -141,10 +147,11 @@ impl RefreshCoalescer {
 #[cfg(test)]
 mod tests {
     use super::RefreshCoalescer;
+    use assertr::prelude::*;
 
     #[test]
     fn refresh_runs_immediately_while_idle() {
-        assert!(RefreshCoalescer::default().request_refresh());
+        assert_that!(&(RefreshCoalescer::default().request_refresh())).is_true();
     }
 
     #[test]
@@ -152,10 +159,10 @@ mod tests {
         let coalescer = RefreshCoalescer::default();
         coalescer.start_request();
 
-        assert!(!coalescer.request_refresh());
-        assert!(!coalescer.request_refresh());
-        assert!(coalescer.finish_request());
-        assert!(!coalescer.finish_request());
+        assert_that!(&(!coalescer.request_refresh())).is_true();
+        assert_that!(&(!coalescer.request_refresh())).is_true();
+        assert_that!(&(coalescer.finish_request())).is_true();
+        assert_that!(&(!coalescer.finish_request())).is_true();
     }
 
     #[test]
@@ -163,9 +170,9 @@ mod tests {
         let coalescer = RefreshCoalescer::default();
         coalescer.start_request();
         coalescer.start_request();
-        assert!(!coalescer.request_refresh());
+        assert_that!(&(!coalescer.request_refresh())).is_true();
 
-        assert!(!coalescer.finish_request());
-        assert!(coalescer.finish_request());
+        assert_that!(&(!coalescer.finish_request())).is_true();
+        assert_that!(&(coalescer.finish_request())).is_true();
     }
 }

@@ -551,6 +551,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -626,34 +627,28 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(created.direction, WorkItemRelationshipDirection::Outgoing);
-        assert_eq!(created.relationship.kind, "is follow-up of");
-        assert_eq!(created.relationship.source.id, source_id);
-        assert_eq!(created.relationship.source.state.as_deref(), Some("open"));
-        assert_eq!(created.relationship.target.id, target_id);
-        assert_eq!(created.relationship.target.state.as_deref(), Some("review"));
+        assert_that!(&(created.direction)).is_equal_to(WorkItemRelationshipDirection::Outgoing);
+        assert_that!(&(created.relationship.kind)).is_equal_to("is follow-up of");
+        assert_that!(&(created.relationship.source.id)).is_equal_to(source_id);
+        assert_that!(&(created.relationship.source.state.as_deref())).is_equal_to(Some("open"));
+        assert_that!(&(created.relationship.target.id)).is_equal_to(target_id);
+        assert_that!(&(created.relationship.target.state.as_deref())).is_equal_to(Some("review"));
 
         let source_relationships = list_item_relationships(&store, "demo", source_id)
             .await
             .unwrap();
-        assert_eq!(source_relationships.len(), 1);
-        assert_eq!(
-            source_relationships[0].direction,
-            WorkItemRelationshipDirection::Outgoing
-        );
-        assert_eq!(
-            source_relationships[0].relationship.target.state.as_deref(),
-            Some("review")
-        );
+        assert_that!(&(source_relationships.len())).is_equal_to(1);
+        assert_that!(&(source_relationships[0].direction))
+            .is_equal_to(WorkItemRelationshipDirection::Outgoing);
+        assert_that!(&(source_relationships[0].relationship.target.state.as_deref()))
+            .is_equal_to(Some("review"));
 
         let target_relationships = list_item_relationships(&store, "demo", target_id)
             .await
             .unwrap();
-        assert_eq!(target_relationships.len(), 1);
-        assert_eq!(
-            target_relationships[0].direction,
-            WorkItemRelationshipDirection::Incoming
-        );
+        assert_that!(&(target_relationships.len())).is_equal_to(1);
+        assert_that!(&(target_relationships[0].direction))
+            .is_equal_to(WorkItemRelationshipDirection::Incoming);
     }
 
     #[tokio::test]
@@ -669,12 +664,12 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(self_link.to_string().contains("must differ"));
+        assert_that!(&(self_link.to_string().contains("must differ"))).is_true();
 
         let empty_kind = create_relationship(&store, "demo", source_id, target_id, " ".to_owned())
             .await
             .unwrap_err();
-        assert!(empty_kind.to_string().contains("kind cannot be empty"));
+        assert_that!(&(empty_kind.to_string().contains("kind cannot be empty"))).is_true();
 
         create_relationship(&store, "demo", source_id, target_id, "relates".to_owned())
             .await
@@ -683,7 +678,7 @@ mod tests {
             create_relationship(&store, "demo", source_id, target_id, "relates".to_owned())
                 .await
                 .unwrap_err();
-        assert!(duplicate.to_string().contains("duplicate relationship"));
+        assert_that!(&(duplicate.to_string().contains("duplicate relationship"))).is_true();
 
         create_project(
             &store,
@@ -722,11 +717,12 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            cross_project
+        assert_that!(
+            &(cross_project
                 .to_string()
-                .contains("does not exist in this project")
-        );
+                .contains("does not exist in this project"))
+        )
+        .is_true();
     }
 
     #[tokio::test]
@@ -743,29 +739,31 @@ mod tests {
         let updated = update_relationship(&store, "demo", relationship_id, "unblocks".to_owned())
             .await
             .unwrap();
-        assert_eq!(updated.kind, "unblocks");
+        assert_that!(&(updated.kind)).is_equal_to("unblocks");
 
         let after_update_source = get_item(&store, "demo", source_id).await.unwrap();
         let after_update_target = get_item(&store, "demo", target_id).await.unwrap();
-        assert_eq!(after_update_source.version, before_source.version + 2);
-        assert_eq!(after_update_target.version, before_target.version + 2);
+        assert_that!(&(after_update_source.version)).is_equal_to(before_source.version + 2);
+        assert_that!(&(after_update_target.version)).is_equal_to(before_target.version + 2);
 
         let deleted = delete_relationship(&store, "demo", relationship_id)
             .await
             .unwrap();
-        assert!(deleted.deleted);
-        assert!(
-            list_item_relationships(&store, "demo", source_id)
+        assert_that!(&(deleted.deleted)).is_true();
+        assert_that!(
+            &(list_item_relationships(&store, "demo", source_id)
                 .await
                 .unwrap()
-                .is_empty()
-        );
-        assert!(
-            list_item_relationships(&store, "demo", target_id)
+                .is_empty())
+        )
+        .is_true();
+        assert_that!(
+            &(list_item_relationships(&store, "demo", target_id)
                 .await
                 .unwrap()
-                .is_empty()
-        );
+                .is_empty())
+        )
+        .is_true();
 
         let source_events = list_events(&store, "demo", Some(source_id), None)
             .await
@@ -778,18 +776,20 @@ mod tests {
             WorkItemEventType::RelationshipUpdated,
             WorkItemEventType::RelationshipDeleted,
         ] {
-            assert!(
-                source_events
+            assert_that!(
+                &(source_events
                     .iter()
-                    .any(|event| event.event_type == event_type),
-                "missing source event {event_type}"
-            );
-            assert!(
-                target_events
+                    .any(|event| event.event_type == event_type))
+            )
+            .with_detail_message(format!("missing source event {event_type}"))
+            .is_true();
+            assert_that!(
+                &(target_events
                     .iter()
-                    .any(|event| event.event_type == event_type),
-                "missing target event {event_type}"
-            );
+                    .any(|event| event.event_type == event_type))
+            )
+            .with_detail_message(format!("missing target event {event_type}"))
+            .is_true();
         }
     }
 
@@ -808,7 +808,7 @@ mod tests {
                 .await
                 .unwrap_err();
 
-        assert!(duplicate.to_string().contains("duplicate relationship"));
+        assert_that!(&(duplicate.to_string().contains("duplicate relationship"))).is_true();
     }
 
     #[tokio::test]
@@ -842,19 +842,19 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(update.to_string().contains("does not touch item"));
+        assert_that!(&(update.to_string().contains("does not touch item"))).is_true();
 
         let delete =
             delete_relationship_for_item(&store, "demo", unrelated.id, created.relationship.id)
                 .await
                 .unwrap_err();
-        assert!(delete.to_string().contains("does not touch item"));
+        assert_that!(&(delete.to_string().contains("does not touch item"))).is_true();
 
         let relationships = list_item_relationships(&store, "demo", source_id)
             .await
             .unwrap();
-        assert_eq!(relationships.len(), 1);
-        assert_eq!(relationships[0].relationship.kind, "blocks");
+        assert_that!(&(relationships.len())).is_equal_to(1);
+        assert_that!(&(relationships[0].relationship.kind)).is_equal_to("blocks");
     }
 
     #[tokio::test]
@@ -869,6 +869,6 @@ mod tests {
         let target_relationships = list_item_relationships(&store, "demo", target_id)
             .await
             .unwrap();
-        assert!(target_relationships.is_empty());
+        assert_that!(&(target_relationships.is_empty())).is_true();
     }
 }

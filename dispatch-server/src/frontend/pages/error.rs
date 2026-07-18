@@ -8,11 +8,12 @@ pub fn PageError() -> impl IntoView {
 
     view! {
         <Title text="Error"/>
-        {error_content(message.unwrap_or_else(|| "An error occurred.".to_owned()))}
+        <ErrorContent message=message.unwrap_or_else(|| "An error occurred.".to_owned())/>
     }
 }
 
-pub(crate) fn error_content(message: String) -> AnyView {
+#[component]
+pub(crate) fn ErrorContent(message: String) -> impl IntoView {
     view! {
         <main class="error">
             <h1>"Error"</h1>
@@ -20,5 +21,4 @@ pub(crate) fn error_content(message: String) -> AnyView {
             <a href="/">"Back"</a>
         </main>
     }
-    .into_any()
 }

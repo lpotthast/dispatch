@@ -159,6 +159,7 @@ fn model_to_view(model: SwimLaneModel) -> Result<SwimLaneView> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -192,15 +193,12 @@ mod tests {
             .map(|lane| (lane.identifier, lane.can_create_items))
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            flags,
-            vec![
-                ("idea".to_owned(), true),
-                ("open".to_owned(), true),
-                ("in_progress".to_owned(), false),
-                ("done".to_owned(), false),
-            ]
-        );
+        assert_that!(&(flags)).is_equal_to(vec![
+            ("idea".to_owned(), true),
+            ("open".to_owned(), true),
+            ("in_progress".to_owned(), false),
+            ("done".to_owned(), false),
+        ]);
     }
 
     #[tokio::test]
@@ -231,30 +229,27 @@ mod tests {
             .map(|lane| (lane.identifier, lane.filter, lane.item_order))
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            lanes,
-            vec![
-                (
-                    "idea".to_owned(),
-                    state_filter("idea"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER
-                ),
-                (
-                    "open".to_owned(),
-                    state_filter("open"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER
-                ),
-                (
-                    "in_progress".to_owned(),
-                    state_filter("in_progress"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER
-                ),
-                (
-                    "done".to_owned(),
-                    state_filter("done"),
-                    DEFAULT_SWIM_LANE_ITEM_ORDER
-                ),
-            ]
-        );
+        assert_that!(&(lanes)).is_equal_to(vec![
+            (
+                "idea".to_owned(),
+                state_filter("idea"),
+                DEFAULT_SWIM_LANE_ITEM_ORDER,
+            ),
+            (
+                "open".to_owned(),
+                state_filter("open"),
+                DEFAULT_SWIM_LANE_ITEM_ORDER,
+            ),
+            (
+                "in_progress".to_owned(),
+                state_filter("in_progress"),
+                DEFAULT_SWIM_LANE_ITEM_ORDER,
+            ),
+            (
+                "done".to_owned(),
+                state_filter("done"),
+                DEFAULT_SWIM_LANE_ITEM_ORDER,
+            ),
+        ]);
     }
 }

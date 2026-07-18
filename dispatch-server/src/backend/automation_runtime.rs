@@ -240,6 +240,7 @@ fn agent_sandbox_policy(
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use tempfile::TempDir;
 
     use super::*;
@@ -293,54 +294,37 @@ mod tests {
             Some("http://127.0.0.1:4000"),
         );
 
-        assert_eq!(
-            env.get("DISPATCH_PROJECT").map(String::as_str),
-            Some("demo")
-        );
-        assert_eq!(
-            env.get("DISPATCH_AGENT_ID").map(String::as_str),
-            Some("dispatch-run-1")
-        );
-        assert_eq!(
-            env.get("DISPATCH_CLAIMED_ITEM_ID").map(String::as_str),
-            Some("42")
-        );
-        assert_eq!(
-            env.get("DISPATCH_API_URL").map(String::as_str),
-            Some("http://127.0.0.1:4000")
-        );
-        assert_eq!(
-            env.get("DISPATCH_GIT_POLICY_PATH").map(String::as_str),
-            Some("/tmp/dispatch-git-policy.json")
-        );
-        assert_eq!(
-            env.get("DISPATCH_REAL_GIT").map(String::as_str),
-            Some("/usr/bin/git")
-        );
-        assert!(
-            env.get("PATH")
-                .is_some_and(|path| path.starts_with("/tmp/dispatch-run-bin:"))
-        );
-        assert!(!env.contains_key("DISPATCH_DATABASE"));
-        assert!(!env.contains_key("DISPATCH_URL"));
+        assert_that!(&(env.get("DISPATCH_PROJECT").map(String::as_str))).is_equal_to(Some("demo"));
+        assert_that!(&(env.get("DISPATCH_AGENT_ID").map(String::as_str)))
+            .is_equal_to(Some("dispatch-run-1"));
+        assert_that!(&(env.get("DISPATCH_CLAIMED_ITEM_ID").map(String::as_str)))
+            .is_equal_to(Some("42"));
+        assert_that!(&(env.get("DISPATCH_API_URL").map(String::as_str)))
+            .is_equal_to(Some("http://127.0.0.1:4000"));
+        assert_that!(&(env.get("DISPATCH_GIT_POLICY_PATH").map(String::as_str)))
+            .is_equal_to(Some("/tmp/dispatch-git-policy.json"));
+        assert_that!(&(env.get("DISPATCH_REAL_GIT").map(String::as_str)))
+            .is_equal_to(Some("/usr/bin/git"));
+        assert_that!(
+            &(env
+                .get("PATH")
+                .is_some_and(|path| path.starts_with("/tmp/dispatch-run-bin:")))
+        )
+        .is_true();
+        assert_that!(&(!env.contains_key("DISPATCH_DATABASE"))).is_true();
+        assert_that!(&(!env.contains_key("DISPATCH_URL"))).is_true();
     }
 
     #[test]
     fn codex_thread_config_disables_internal_memory() {
         let config = codex_memory_config_overrides();
 
-        assert_eq!(
-            config.get("features.memories"),
-            Some(&serde_json::Value::Bool(false))
-        );
-        assert_eq!(
-            config.get("memories.use_memories"),
-            Some(&serde_json::Value::Bool(false))
-        );
-        assert_eq!(
-            config.get("memories.generate_memories"),
-            Some(&serde_json::Value::Bool(false))
-        );
+        assert_that!(&(config.get("features.memories")))
+            .is_equal_to(Some(&serde_json::Value::Bool(false)));
+        assert_that!(&(config.get("memories.use_memories")))
+            .is_equal_to(Some(&serde_json::Value::Bool(false)));
+        assert_that!(&(config.get("memories.generate_memories")))
+            .is_equal_to(Some(&serde_json::Value::Bool(false)));
     }
 
     #[test]
@@ -351,54 +335,47 @@ mod tests {
         ];
         let policy = agent_sandbox_policy(AgentSandboxMode::WorkspaceWrite, &roots);
 
-        assert_eq!(
-            policy,
-            serde_json::json!({
-                "type": "workspaceWrite",
-                "networkAccess": true,
-                "writableRoots": roots,
-            })
-        );
+        assert_that!(&(policy)).is_equal_to(serde_json::json!({
+            "type": "workspaceWrite",
+            "networkAccess": true,
+            "writableRoots": roots,
+        }));
     }
 
     #[test]
     fn codex_thread_sandbox_can_disable_sandbox_for_project() {
         let roots = vec!["/tmp/ignored-when-full-access".to_owned()];
 
-        assert_eq!(
-            agent_sandbox_mode(AgentSandboxMode::DangerFullAccess),
-            SandboxMode::DangerFullAccess
-        );
-        assert_eq!(
-            agent_sandbox_policy(AgentSandboxMode::DangerFullAccess, &roots),
-            serde_json::json!({
+        assert_that!(&(agent_sandbox_mode(AgentSandboxMode::DangerFullAccess)))
+            .is_equal_to(SandboxMode::DangerFullAccess);
+        assert_that!(&(agent_sandbox_policy(AgentSandboxMode::DangerFullAccess, &roots)))
+            .is_equal_to(serde_json::json!({
                 "type": "dangerFullAccess",
-            })
-        );
+            }));
     }
 
     #[test]
     fn read_only_codex_thread_sandbox_ignores_project_writable_roots() {
         let roots = vec!["/tmp/ignored-for-read-only".to_owned()];
 
-        assert_eq!(
-            agent_sandbox_mode_for_run(
+        assert_that!(
+            &(agent_sandbox_mode_for_run(
                 AutomationRunMutability::ReadOnly,
                 AgentSandboxMode::DangerFullAccess
-            ),
-            SandboxMode::ReadOnly
-        );
-        assert_eq!(
-            agent_sandbox_policy_for_run(
+            ))
+        )
+        .is_equal_to(SandboxMode::ReadOnly);
+        assert_that!(
+            &(agent_sandbox_policy_for_run(
                 AutomationRunMutability::ReadOnly,
                 AgentSandboxMode::WorkspaceWrite,
                 &roots
-            ),
-            serde_json::json!({
-                "type": "readOnly",
-                "networkAccess": true,
-            })
-        );
+            ))
+        )
+        .is_equal_to(serde_json::json!({
+            "type": "readOnly",
+            "networkAccess": true,
+        }));
     }
 
     #[test]
@@ -407,12 +384,12 @@ mod tests {
 
         let policy = git_runtime_policy_for_run(&settings, AutomationRunMutability::ReadOnly);
 
-        assert_eq!(policy.workspace_mode, WorkspaceMode::CurrentBranch);
-        assert!(!policy.policy.add);
-        assert!(!policy.policy.commit);
-        assert!(!policy.policy.push);
-        assert!(!policy.policy.reset);
-        assert_eq!(policy.policy.hard_reset, AgentGitHardResetPolicy::Never);
+        assert_that!(&(policy.workspace_mode)).is_equal_to(WorkspaceMode::CurrentBranch);
+        assert_that!(&(!policy.policy.add)).is_true();
+        assert_that!(&(!policy.policy.commit)).is_true();
+        assert_that!(&(!policy.policy.push)).is_true();
+        assert_that!(&(!policy.policy.reset)).is_true();
+        assert_that!(&(policy.policy.hard_reset)).is_equal_to(AgentGitHardResetPolicy::Never);
     }
 
     #[test]
@@ -421,8 +398,8 @@ mod tests {
 
         let policy = git_runtime_policy_for_run(&settings, AutomationRunMutability::Mutating);
 
-        assert_eq!(policy.workspace_mode, WorkspaceMode::GitWorktree);
-        assert_eq!(policy.policy, settings.agent_git_command_policy);
+        assert_that!(&(policy.workspace_mode)).is_equal_to(WorkspaceMode::GitWorktree);
+        assert_that!(&(policy.policy)).is_equal_to(settings.agent_git_command_policy);
     }
 
     #[test]
@@ -441,9 +418,9 @@ mod tests {
         .unwrap();
 
         let policy = fs::read_to_string(&runtime.policy_path).unwrap();
-        assert!(policy.contains("\"add\": false"));
+        assert_that!(&(policy.contains("\"add\": false"))).is_true();
         let shim = fs::read_to_string(runtime.shim_dir.join("git")).unwrap();
-        assert!(shim.contains("exec '"));
-        assert!(shim.contains("bin with spaces/dispatch' git"));
+        assert_that!(&(shim.contains("exec '"))).is_true();
+        assert_that!(&(shim.contains("bin with spaces/dispatch' git"))).is_true();
     }
 }

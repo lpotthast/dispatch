@@ -157,6 +157,7 @@ fn header_value(headers: &HeaderMap, name: &str) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use axum::http::HeaderValue;
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
     use tempfile::TempDir;
@@ -236,13 +237,13 @@ mod tests {
         let operator = RequestAttribution::from_headers(&store, "demo", &HeaderMap::new())
             .await
             .unwrap();
-        assert!(operator.agent_id.is_none());
+        assert_that!(&(operator.agent_id.is_none())).is_true();
 
         let missing_agent =
             RequestAttribution::from_headers(&store, "demo", &headers(None, Some(run_id)))
                 .await
                 .unwrap_err();
-        assert!(missing_agent.to_string().contains("requires"));
+        assert_that!(&(missing_agent.to_string().contains("requires"))).is_true();
 
         let wrong_agent = RequestAttribution::from_headers(
             &store,
@@ -251,7 +252,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(wrong_agent.to_string().contains("does not match"));
+        assert_that!(&(wrong_agent.to_string().contains("does not match"))).is_true();
 
         let cross_project = RequestAttribution::from_headers(
             &store,
@@ -260,11 +261,12 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            cross_project
+        assert_that!(
+            &(cross_project
                 .to_string()
-                .contains("does not exist in this project")
-        );
+                .contains("does not exist in this project"))
+        )
+        .is_true();
 
         let attribution = RequestAttribution::from_headers(
             &store,
@@ -273,13 +275,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(attribution.agent_id.as_deref(), Some(agent_id.as_str()));
-        assert_eq!(attribution.agent_run_id, Some(run_id));
-        assert_eq!(attribution.item_origin().kind, WorkItemOriginKind::AgentRun);
-        assert_eq!(attribution.item_origin().agent_run_id, Some(run_id));
+        assert_that!(&(attribution.agent_id.as_deref())).is_equal_to(Some(agent_id.as_str()));
+        assert_that!(&(attribution.agent_run_id)).is_equal_to(Some(run_id));
+        assert_that!(&(attribution.item_origin().kind)).is_equal_to(WorkItemOriginKind::AgentRun);
+        assert_that!(&(attribution.item_origin().agent_run_id)).is_equal_to(Some(run_id));
         attribution.cross_check_agent_id(&agent_id).unwrap();
         attribution.cross_check_agent_run_id(Some(run_id)).unwrap();
-        assert!(attribution.cross_check_agent_id("agent-other").is_err());
-        assert!(attribution.cross_check_agent_run_id(None).is_err());
+        assert_that!(&(attribution.cross_check_agent_id("agent-other").is_err())).is_true();
+        assert_that!(&(attribution.cross_check_agent_run_id(None).is_err())).is_true();
     }
 }

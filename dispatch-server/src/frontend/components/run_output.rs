@@ -1,12 +1,14 @@
 use std::{collections::HashMap, path::Path};
 
 use crate::shared::view_models::{AgentRunOutputKind, AgentRunOutputPiece};
+use leptonic::components::prelude::{Toggle, ToggleSize};
 use leptos::prelude::*;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 const TOOL_OUTPUT_PREVIEW_LINES: usize = 2;
 
-pub(crate) fn run_output_view(
+#[component]
+pub(crate) fn RunOutput(
     output: Vec<AgentRunOutputPiece>,
     active: bool,
     show_thinking_history: bool,
@@ -41,12 +43,11 @@ pub(crate) fn run_output_view(
         };
         view! {
             <label class="thinking-history-toggle" title=action>
-                <input
-                    type="checkbox"
-                    role="switch"
-                    checked=show_thinking_history
-                    aria-label=action
-                    on:change=move |_| toggle_thinking_history.run(())
+                <Toggle
+                    state=Signal::derive(move || show_thinking_history)
+                    set_state=Callback::new(move |_: bool| toggle_thinking_history.run(()))
+                    size=ToggleSize::Small
+                    attr:aria-label=action
                 />
                 <span>{format!("Thinking ({historical_reasoning_count})")}</span>
             </label>

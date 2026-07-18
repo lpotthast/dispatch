@@ -203,6 +203,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use std::fs;
 
     #[cfg(unix)]
@@ -214,12 +215,12 @@ mod tests {
 
     #[test]
     fn development_mode_requires_an_explicit_boolean_value() {
-        assert!(!parse_development_mode(None).unwrap());
-        assert!(!parse_development_mode(Some(OsStr::new("0"))).unwrap());
-        assert!(!parse_development_mode(Some(OsStr::new("false"))).unwrap());
-        assert!(parse_development_mode(Some(OsStr::new("1"))).unwrap());
-        assert!(parse_development_mode(Some(OsStr::new("TRUE"))).unwrap());
-        assert!(parse_development_mode(Some(OsStr::new("yes"))).is_err());
+        assert_that!(&(!parse_development_mode(None).unwrap())).is_true();
+        assert_that!(&(!parse_development_mode(Some(OsStr::new("0"))).unwrap())).is_true();
+        assert_that!(&(!parse_development_mode(Some(OsStr::new("false"))).unwrap())).is_true();
+        assert_that!(&(parse_development_mode(Some(OsStr::new("1"))).unwrap())).is_true();
+        assert_that!(&(parse_development_mode(Some(OsStr::new("TRUE"))).unwrap())).is_true();
+        assert_that!(&(parse_development_mode(Some(OsStr::new("yes"))).is_err())).is_true();
     }
 
     #[cfg(unix)]
@@ -240,10 +241,8 @@ mod tests {
         let path = env::join_paths([&first_bin, &second_bin]).unwrap();
         let expected = second_cli.canonicalize().unwrap();
 
-        assert_eq!(
-            find_dispatch_cli_in_path(&path).as_deref(),
-            Some(expected.as_path())
-        );
+        assert_that!(&(find_dispatch_cli_in_path(&path).as_deref()))
+            .is_equal_to(Some(expected.as_path()));
     }
 
     #[cfg(unix)]
@@ -258,10 +257,12 @@ mod tests {
 
         let err = verify_published_dispatch_cli(&cli).await.unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("is not the Dispatch agent-facing CLI")
-        );
+        assert_that!(
+            &(err
+                .to_string()
+                .contains("is not the Dispatch agent-facing CLI"))
+        )
+        .is_true();
     }
 
     #[cfg(unix)]
@@ -319,12 +320,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(binary, target_dir.join("debug/dispatch"));
-        assert!(binary.is_file());
+        assert_that!(&(binary)).is_equal_to(target_dir.join("debug/dispatch"));
+        assert_that!(&(binary.is_file())).is_true();
         let args = fs::read_to_string(target_dir.join("args")).unwrap();
-        assert_eq!(
-            args.lines().collect::<Vec<_>>(),
-            ["build", "-q", "--manifest-path", manifest.to_str().unwrap()]
-        );
+        assert_that!(&(args.lines().collect::<Vec<_>>())).is_equal_to([
+            "build",
+            "-q",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ]);
     }
 }

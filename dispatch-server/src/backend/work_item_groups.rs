@@ -247,6 +247,7 @@ fn group_view(group: work_item_group::Model, item_count: u64) -> WorkItemGroupVi
 
 #[cfg(test)]
 mod tests {
+    use assertr::prelude::*;
     use dispatch_types::WorkItemView;
     use tempfile::TempDir;
 
@@ -323,7 +324,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(created.id, repeated.id);
+        assert_that!(&(created.id)).is_equal_to(repeated.id);
 
         let first = create_test_item(&store, "demo", "First").await;
         let second = create_test_item(&store, "demo", "Second").await;
@@ -336,13 +337,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(assigned.item_count, 2);
+        assert_that!(&(assigned.item_count)).is_equal_to(2);
         let first = crate::backend::items::get_item(&store, "demo", first.id)
             .await
             .unwrap();
-        assert_eq!(first.work_group.unwrap().key, "review-42");
-        assert_eq!(first.version, 2);
-        assert_eq!(list_groups(&store, "demo").await.unwrap()[0].item_count, 2);
+        assert_that!(&(first.work_group.unwrap().key)).is_equal_to("review-42");
+        assert_that!(&(first.version)).is_equal_to(2);
+        assert_that!(&(list_groups(&store, "demo").await.unwrap()[0].item_count)).is_equal_to(2);
     }
 
     #[tokio::test]
@@ -377,17 +378,17 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("already belongs"));
+        assert_that!(&(error.to_string().contains("already belongs"))).is_true();
         let available = crate::backend::items::get_item(&store, "demo", available.id)
             .await
             .unwrap();
-        assert!(available.work_group.is_none());
-        assert_eq!(available.version, 1);
+        assert_that!(&(available.work_group.is_none())).is_true();
+        assert_that!(&(available.version)).is_equal_to(1);
 
         let other = create_test_item(&store, "other", "Other").await;
         let error = assign_items(&store, "demo", "first", vec![other.id], &attribution)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("does not exist in this project"));
+        assert_that!(&(error.to_string().contains("does not exist in this project"))).is_true();
     }
 }
