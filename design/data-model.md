@@ -119,6 +119,8 @@ Run cleanup status is a closed lifecycle: `not_applicable` when no isolated work
 
 Run logs are read through server endpoints. The log file path is an implementation detail and should not be handed to agents as the primary interface.
 
+Board run summaries read total counts grouped by requested work item and project only the newest three runs per item, ordered by creation time and then run id descending. The `agent_runs` storage index follows project, work item, and that ordering so recurring Board refreshes do not load or sort full historical run models in application code.
+
 Claimed work item views may include the active Dispatch run that owns the claim and the run's automation trigger origin when the claimant is a structurally linked `dispatch-run-*`. Readers must not infer a claim source from an agent id alone when the run is not linked to the same project item.
 
 ## Automation

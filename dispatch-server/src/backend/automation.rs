@@ -17,8 +17,8 @@ use codex_app_server_sdk::{
 use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, Statement,
 };
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -70,6 +70,7 @@ use crate::{
 const AGENT_PROCESS_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
 const CODEX_STREAM_RECOVERY_MAX_ATTEMPTS: usize = 12;
 const CODEX_STDERR_TAIL_MAX_CHARS: usize = 12_000;
+const ITEM_RUN_PREVIEW_LIMIT: i64 = 3;
 static SERVER_API_URL: OnceLock<String> = OnceLock::new();
 const CODEX_STREAM_RECOVERY_PROMPT: &str = "\
 Dispatch recovered from a transient Codex app-server reconnect or transport interruption during \
@@ -1468,30 +1469,88 @@ pub(crate) async fn list_item_run_previews(
     }
 
     let project_id = projects::project_id(store, project_name).await?;
-    let runs = AgentRun::find()
-        .filter(agent_run::Column::ProjectId.eq(project_id))
-        .filter(agent_run::Column::WorkItemId.is_in(item_ids.iter().copied()))
-        .order_by_desc(agent_run::Column::CreatedAt)
-        .order_by_desc(agent_run::Column::Id)
-        .all(store.db().as_ref())
+    let item_placeholders = (0..item_ids.len())
+        .map(|index| format!("?{}", index + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let preview_limit_parameter = item_ids.len() + 2;
+    let mut values = Vec::<sea_orm::Value>::with_capacity(item_ids.len() + 2);
+    values.push(project_id.into());
+    values.extend(item_ids.iter().copied().map(Into::into));
+    values.push(ITEM_RUN_PREVIEW_LIMIT.into());
+    let rows = store
+        .db()
+        .query_all(Statement::from_sql_and_values(
+            sea_orm::DbBackend::Sqlite,
+            format!(
+                r#"
+                WITH run_counts AS (
+                    SELECT work_item_id, COUNT(*) AS total
+                    FROM agent_runs
+                    WHERE project_id = ?1
+                      AND work_item_id IN ({item_placeholders})
+                    GROUP BY work_item_id
+                ),
+                ranked_runs AS (
+                    SELECT
+                        work_item_id,
+                        id,
+                        status,
+                        result_summary,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY work_item_id
+                            ORDER BY created_at DESC, id DESC
+                        ) AS preview_rank
+                    FROM agent_runs
+                    WHERE project_id = ?1
+                      AND work_item_id IN ({item_placeholders})
+                )
+                SELECT
+                    ranked_runs.work_item_id,
+                    ranked_runs.id,
+                    ranked_runs.status,
+                    ranked_runs.result_summary,
+                    ranked_runs.created_at,
+                    run_counts.total
+                FROM ranked_runs
+                INNER JOIN run_counts
+                    ON run_counts.work_item_id = ranked_runs.work_item_id
+                WHERE ranked_runs.preview_rank <= ?{preview_limit_parameter}
+                ORDER BY ranked_runs.work_item_id, ranked_runs.preview_rank
+                "#
+            ),
+            values,
+        ))
         .await
         .context("failed to list Board item agent runs")?;
 
     let mut previews = HashMap::<i64, ItemRunPreviews>::new();
-    for run in runs {
-        let Some(item_id) = run.work_item_id else {
-            continue;
-        };
+    for row in rows {
+        let item_id = row
+            .try_get::<i64>("", "work_item_id")
+            .context("failed to read Board run preview work item id")?;
+        let total = row
+            .try_get::<i64>("", "total")
+            .context("failed to read Board item run count")?;
+        let total = usize::try_from(total).context("invalid Board item run count")?;
         let item = previews.entry(item_id).or_default();
-        item.total += 1;
-        if item.latest.len() < 3 {
-            item.latest.push(ItemRunPreview {
-                id: run.id,
-                status: AgentRunStatus::from_str(&run.status)?,
-                result_summary: run.result_summary,
-                created_at: run.created_at,
-            });
-        }
+        item.total = total;
+        item.latest.push(ItemRunPreview {
+            id: row
+                .try_get::<i64>("", "id")
+                .context("failed to read Board run preview id")?,
+            status: AgentRunStatus::from_str(
+                &row.try_get::<String>("", "status")
+                    .context("failed to read Board run preview status")?,
+            )?,
+            result_summary: row
+                .try_get::<String>("", "result_summary")
+                .context("failed to read Board run preview summary")?,
+            created_at: row
+                .try_get::<String>("", "created_at")
+                .context("failed to read Board run preview creation time")?,
+        });
     }
     Ok(previews)
 }
@@ -2991,6 +3050,7 @@ mod tests {
             ("2026-07-14T10:00:02Z", AgentRunStatus::Failed),
             ("2026-07-14T10:00:03Z", AgentRunStatus::Cancelled),
             ("2026-07-14T10:00:04Z", AgentRunStatus::Running),
+            ("2026-07-14T10:00:04Z", AgentRunStatus::Failed),
         ] {
             target_runs.push(
                 create_preview_test_run(&store, demo.id, target.id, created_at, status).await,
@@ -3018,7 +3078,7 @@ mod tests {
             .unwrap();
         let target_preview = previews.get(&target.id).unwrap();
 
-        assert_that!(&(target_preview.total)).is_equal_to(4);
+        assert_that!(&(target_preview.total)).is_equal_to(5);
         assert_that!(
             &(target_preview
                 .latest
@@ -3026,16 +3086,21 @@ mod tests {
                 .map(|run| run.id)
                 .collect::<Vec<_>>())
         )
-        .is_equal_to(
-            target_runs[1..]
-                .iter()
-                .rev()
-                .map(|run| run.id)
-                .collect::<Vec<_>>(),
-        );
-        assert_that!(&(target_preview.latest[0].status)).is_equal_to(AgentRunStatus::Running);
+        .is_equal_to(vec![
+            target_runs[4].id,
+            target_runs[3].id,
+            target_runs[2].id,
+        ]);
+        assert_that!(&(target_preview.latest[0].status)).is_equal_to(AgentRunStatus::Failed);
+        assert_that!(&(target_preview.latest[0].result_summary))
+            .is_equal_to("summary 2026-07-14T10:00:04Z".to_owned());
+        assert_that!(&(target_preview.latest[0].created_at))
+            .is_equal_to("2026-07-14T10:00:04Z".to_owned());
         assert_that!(&(!previews.contains_key(&unrelated.id))).is_true();
         assert_that!(&(!previews.contains_key(&other_item.id))).is_true();
+
+        let empty = list_item_run_previews(&store, "demo", &[]).await.unwrap();
+        assert_that!(&(empty.is_empty())).is_true();
     }
 
     #[test]

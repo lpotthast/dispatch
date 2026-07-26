@@ -104,7 +104,9 @@ mod tests {
     use sea_orm::{ConnectionTrait, Statement};
     use tempfile::TempDir;
 
-    use crate::backend::migrations::REMOVED_REFINEMENT_CONCURRENCY_COLUMN;
+    use crate::backend::migrations::{
+        AGENT_RUN_BOARD_PREVIEW_INDEX, REMOVED_REFINEMENT_CONCURRENCY_COLUMN,
+    };
 
     use super::*;
 
@@ -255,9 +257,9 @@ mod tests {
             .unwrap();
         }
 
-        // Step through the workflow-support and work-group migrations before rolling back the
-        // role-separated prompt migration itself.
-        Migrator::down(&db, Some(3)).await.unwrap();
+        // Step through the Board-preview index, work-group, and workflow-support migrations
+        // before rolling back the role-separated prompt migration itself.
+        Migrator::down(&db, Some(4)).await.unwrap();
 
         let rows = db
             .query_all(Statement::from_string(
@@ -508,6 +510,81 @@ mod tests {
             .is_equal_to("Default");
     }
 
+    #[tokio::test]
+    async fn agent_run_board_preview_index_matches_scope_and_order() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("dispatch.sqlite3");
+        let store = Store::open(path).await.unwrap();
+        let db = store.db();
+
+        let rows = db
+            .query_all(Statement::from_string(
+                DbBackend::Sqlite,
+                format!(
+                    r#"
+                    SELECT "name", "desc"
+                    FROM pragma_index_xinfo('{AGENT_RUN_BOARD_PREVIEW_INDEX}')
+                    WHERE "key" = 1
+                    ORDER BY "seqno";
+                    "#
+                ),
+            ))
+            .await
+            .unwrap();
+        let columns = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.try_get::<String>("", "name").unwrap(),
+                    row.try_get::<i64>("", "desc").unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_that!(&columns).is_equal_to(vec![
+            ("project_id".to_owned(), 0),
+            ("work_item_id".to_owned(), 0),
+            ("created_at".to_owned(), 1),
+            ("id".to_owned(), 1),
+        ]);
+
+        Migrator::down(db.as_ref(), Some(1)).await.unwrap();
+        let removed = db
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                format!(
+                    r#"
+                    SELECT COUNT(*) AS "count"
+                    FROM sqlite_master
+                    WHERE "type" = 'index'
+                      AND "name" = '{AGENT_RUN_BOARD_PREVIEW_INDEX}';
+                    "#
+                ),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_that!(&(removed.try_get::<i64>("", "count").unwrap())).is_equal_to(0);
+
+        Migrator::up(db.as_ref(), None).await.unwrap();
+        let restored = db
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                format!(
+                    r#"
+                    SELECT COUNT(*) AS "count"
+                    FROM sqlite_master
+                    WHERE "type" = 'index'
+                      AND "name" = '{AGENT_RUN_BOARD_PREVIEW_INDEX}';
+                    "#
+                ),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_that!(&(restored.try_get::<i64>("", "count").unwrap())).is_equal_to(1);
+    }
+
     #[test]
     fn migration_history_names_all_current_migrations() {
         let migrations = Migrator::migrations();
@@ -556,6 +633,7 @@ mod tests {
             "m20260710_000037_separate_automation_run_inputs",
             "m20260713_000038_add_automation_workflow_support",
             "m20260714_000039_add_work_item_groups",
+            "m20260716_000040_add_agent_run_board_preview_index",
         ];
 
         assert_that!(&(names.as_slice())).is_equal_to(expected.as_slice());

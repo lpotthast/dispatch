@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const REMOVED_REFINEMENT_CONCURRENCY_COLUMN: &str =
     "allow_refinement_agents_during_editing";
+pub(crate) const AGENT_RUN_BOARD_PREVIEW_INDEX: &str = "idx_agent_runs_project_item_created_id";
 
 #[derive(Iden)]
 enum CrudkitValidation {
@@ -362,6 +363,7 @@ impl MigratorTrait for Migrator {
             Box::new(SeparateAutomationRunInputs),
             Box::new(AddAutomationWorkflowSupport),
             Box::new(AddWorkItemGroups),
+            Box::new(AddAgentRunBoardPreviewIndex),
         ]
     }
 }
@@ -2859,6 +2861,49 @@ impl MigrationTrait for AddWorkItemGroups {
             )
             .await?;
         create_work_items_read_view(manager).await
+    }
+}
+
+struct AddAgentRunBoardPreviewIndex;
+
+impl MigrationName for AddAgentRunBoardPreviewIndex {
+    fn name(&self) -> &str {
+        "m20260716_000040_add_agent_run_board_preview_index"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddAgentRunBoardPreviewIndex {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                format!(
+                    r#"
+                    CREATE INDEX IF NOT EXISTS "{AGENT_RUN_BOARD_PREVIEW_INDEX}"
+                    ON "agent_runs" (
+                        "project_id",
+                        "work_item_id",
+                        "created_at" DESC,
+                        "id" DESC
+                    );
+                    "#
+                ),
+            ))
+            .await
+            .map(|_| ())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                format!(r#"DROP INDEX IF EXISTS "{AGENT_RUN_BOARD_PREVIEW_INDEX}";"#),
+            ))
+            .await
+            .map(|_| ())
     }
 }
 
