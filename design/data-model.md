@@ -51,6 +51,15 @@ Core fields include:
 
 Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`, `severity=high`, or `state=open`. Non-state labels can be edited by human operators and agents. The `state` label is Dispatch's built-in workflow hook for claim, finish, release, and default automation transitions; it is managed through item create, item state update, and workflow transitions rather than generic label add, update, or delete operations.
 
+Dispatch keeps a project-scoped catalog of known label keys. A key is discovered when it is used by
+a work item and is forgotten when its final usage disappears, unless the key is persistent or
+built in. Operators may create an unused key, which makes it persistent, and may mark a discovered
+key persistent so its configuration survives zero usage. The built-in keys `state`,
+`dispatch:claimed-from-state`, `dispatch:automation-blocked`, and
+`dispatch:feedback-requested` always exist and must remain persistent. A known key may define an
+optional accent color as canonical lowercase `#rrggbb`; this is presentation metadata and does not
+change label or workflow semantics.
+
 Project default agent model and reasoning effort selections are validated as a compatible pair. Work item model and reasoning overrides are validated against the effective inherited project defaults so a saved item cannot produce a model/effort combination that the selected Codex model does not support.
 
 Dispatch also uses hardcoded workflow labels. `dispatch:claimed-from-state=<state-label>` is transient claim bookkeeping so release and feedback requests can restore the state an item came from. `dispatch:automation-blocked` marks released, non-operable work that automation should skip until the label is removed. `dispatch:feedback-requested` marks work where an agent is waiting for a user answer; automation treats it as a blocking label until a user or agent removes it after the feedback has been handled.

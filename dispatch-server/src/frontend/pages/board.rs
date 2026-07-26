@@ -49,7 +49,7 @@ use leptos_router::{
 };
 use leptos_use::{use_interval_fn, use_media_query};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(feature = "ssr"))]
 use time::OffsetDateTime;
 #[cfg(not(feature = "ssr"))]
@@ -298,6 +298,7 @@ pub struct BoardPage {
     pub swim_lanes: Vec<SwimLaneView>,
     pub work_item_states: Vec<WorkItemStateView>,
     pub label_suggestions: Vec<ProjectLabelView>,
+    pub label_accent_colors: BTreeMap<String, String>,
     pub misconfigured_item_count: i64,
     pub api_base_url: String,
     pub codex_status: CodexAppServerStatusView,
@@ -308,6 +309,7 @@ pub struct BoardItemsSection {
     pub items: Vec<BoardItemView>,
     pub swim_lanes: Vec<SwimLaneView>,
     pub work_item_states: Vec<WorkItemStateView>,
+    pub label_accent_colors: BTreeMap<String, String>,
     pub misconfigured_item_count: i64,
 }
 
@@ -472,6 +474,7 @@ fn BoardContent(page: BoardPage) -> impl IntoView {
         swim_lanes,
         work_item_states,
         label_suggestions,
+        label_accent_colors,
         misconfigured_item_count,
         api_base_url,
         codex_status: _,
@@ -503,6 +506,7 @@ fn BoardContent(page: BoardPage) -> impl IntoView {
                 project=project.clone()
                 initial_items=items
                 initial_swim_lanes=swim_lanes
+                initial_label_accent_colors=label_accent_colors
                 initial_misconfigured_item_count=misconfigured_item_count
                 open_create_item=open_create_item
             />
@@ -544,12 +548,14 @@ fn LiveBoardItems(
     project: String,
     initial_items: Vec<BoardItemView>,
     initial_swim_lanes: Vec<SwimLaneView>,
+    initial_label_accent_colors: BTreeMap<String, String>,
     initial_misconfigured_item_count: i64,
     open_create_item: Callback<CreateItemOpenRequest>,
 ) -> impl IntoView + 'static {
     let service = board_service();
     let (items, set_items) = signal(initial_items);
     let (swim_lanes, set_swim_lanes) = signal(initial_swim_lanes);
+    let (label_accent_colors, set_label_accent_colors) = signal(initial_label_accent_colors);
     let work_item_states_context = use_context::<WorkItemStatesContext>()
         .expect("work item states context should be provided before rendering board items");
     let work_item_states = work_item_states_context.states;
@@ -582,6 +588,7 @@ fn LiveBoardItems(
             set_items.set(section.items);
             let updated_swim_lanes = section.swim_lanes;
             let updated_work_item_states = section.work_item_states;
+            set_label_accent_colors.set(section.label_accent_colors);
             set_swim_lanes.set(updated_swim_lanes);
             set_work_item_states.set(updated_work_item_states);
             set_misconfigured_item_count.set(section.misconfigured_item_count);
@@ -775,6 +782,7 @@ fn LiveBoardItems(
                             items=items.get()
                             swim_lanes=swim_lanes.get()
                             work_item_states=work_item_states.get()
+                            label_accent_colors=label_accent_colors.get()
                             misconfigured_item_count=misconfigured_item_count.get()
                             open_create_item
                             open_drawer
@@ -1276,6 +1284,7 @@ fn BoardView(
     items: Vec<BoardItemView>,
     swim_lanes: Vec<SwimLaneView>,
     work_item_states: Vec<WorkItemStateView>,
+    label_accent_colors: BTreeMap<String, String>,
     misconfigured_item_count: i64,
     open_create_item: Callback<CreateItemOpenRequest>,
     open_drawer: Callback<BoardDrawerSelection>,
@@ -1298,7 +1307,12 @@ fn BoardView(
                 .collect::<Vec<_>>();
             sort_lane_items(&mut lane_items, lane.item_order);
             let count = lane_items.len();
-            let cards = lane_cards(project.clone(), lane_items, open_drawer);
+            let cards = lane_cards(
+                project.clone(),
+                lane_items,
+                label_accent_colors.clone(),
+                open_drawer,
+            );
             let create_state = state_identifier_from_lane_filter(&lane.filter);
             let add_button = if lane.can_create_items {
                 create_state
@@ -1382,6 +1396,7 @@ fn BoardView(
 fn lane_cards(
     project: String,
     items: Vec<BoardItemView>,
+    label_accent_colors: BTreeMap<String, String>,
     open_drawer: Callback<BoardDrawerSelection>,
 ) -> Vec<AnyView> {
     let mut rendered_groups = BTreeSet::new();
@@ -1393,6 +1408,7 @@ fn lane_cards(
                     <ItemCard
                         project=project.clone()
                         board_item=item.clone()
+                        label_accent_colors=label_accent_colors.clone()
                         open_drawer
                     />
                 }
@@ -1418,6 +1434,7 @@ fn lane_cards(
                     <ItemCard
                         project=project.clone()
                         board_item=item
+                        label_accent_colors=label_accent_colors.clone()
                         open_drawer
                     />
                 }
@@ -1553,6 +1570,7 @@ fn sort_lane_items(items: &mut [BoardItemView], item_order: SwimLaneItemOrder) {
 fn ItemCard(
     project: String,
     board_item: BoardItemView,
+    label_accent_colors: BTreeMap<String, String>,
     open_drawer: Callback<BoardDrawerSelection>,
 ) -> impl IntoView + 'static {
     let BoardItemView {
@@ -1575,14 +1593,22 @@ fn ItemCard(
         .labels
         .iter()
         .map(|label| {
+            let label_key = label.key.clone();
             let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
             let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;
+            let accent_color = label_accent_colors.get(&label.key).cloned();
+            let accented = accent_color.is_some();
+            let accent_style =
+                accent_color.map(|accent_color| format!("--label-accent: {accent_color};"));
             let label = format_label(&label.key, label.value.as_deref());
             view! {
                 <span
                     class="label-chip"
                     class:blocked=blocked
                     class:feedback=feedback_requested
+                    class:accented=accented
+                    data-label-key=label_key
+                    style=accent_style
                 >
                     {label}
                 </span>

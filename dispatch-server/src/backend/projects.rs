@@ -17,7 +17,7 @@ use crate::{
     backend::{
         automation_triggers,
         entities::project::{self, Project, ProjectActiveModel, ProjectModel},
-        events, personalities,
+        events, label_keys, personalities,
         storage::{Store, utc_now},
         swim_lanes, work_item_states,
     },
@@ -381,6 +381,7 @@ pub async fn create_project(store: &Store, create: CreateProject) -> Result<Proj
         .insert(&txn)
         .await
         .context("failed to create project")?;
+    label_keys::ensure_built_in_label_keys_in_conn(&txn, project.id).await?;
     personalities::ensure_default_personality_in_conn(&txn, project.id).await?;
     work_item_states::ensure_default_work_item_states_in_conn(&txn, project.id).await?;
     swim_lanes::ensure_default_swim_lanes_in_conn(&txn, project.id).await?;

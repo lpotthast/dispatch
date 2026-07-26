@@ -38,7 +38,13 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
             By::Css("[data-crudkit-leptos='work-items'] .crud-nav"),
         )
         .await?;
+        find(
+            driver,
+            By::Css("[data-crudkit-leptos='label-keys'] .crud-nav"),
+        )
+        .await?;
         assert_source_contains(driver, "data-crudkit-leptos=\"work-items\"").await?;
+        assert_label_key_configuration_and_board_accent(driver, app).await?;
         assert_crudkit_create_form_survives_live_event(driver).await?;
         assert_admin_dirty_primary_navigation(driver).await?;
         assert_dirty_project_switch(driver).await?;
@@ -94,6 +100,182 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
 
         Ok(())
     }
+}
+
+async fn assert_label_key_configuration_and_board_accent(
+    driver: &WebDriver,
+    app: &DispatchTestApp,
+) -> Result<(), Report> {
+    for built_in in [
+        "state",
+        "dispatch:claimed-from-state",
+        "dispatch:automation-blocked",
+        "dispatch:feedback-requested",
+    ] {
+        assert_source_contains(driver, built_in).await?;
+    }
+    assert_that!(
+        driver
+            .find_all(By::Css(
+                "[data-crudkit-leptos='label-keys'] input[type='checkbox']"
+            ))
+            .await
+            .context("failed to inspect label-key table selection controls")?
+            .len()
+    )
+    .is_equal_to(0);
+
+    let project_id = test_project_id(driver).await?;
+    let response = browser_request(
+        driver,
+        reqwest::Method::POST,
+        "/api/label_keys/crud/create-one",
+    )
+    .await?
+    .json(&serde_json::json!({
+        "entity": {
+            "project_id": project_id,
+            "key": "board-accent",
+            "accent_color": "#FF6600",
+            "persistent": true
+        }
+    }))
+    .send()
+    .await
+    .context("failed to create persistent label-key configuration")?;
+    let status = response.status();
+    let saved: serde_json::Value = response
+        .json()
+        .await
+        .context("failed to read label-key create response")?;
+    if !status.is_success() {
+        bail!("failed to create label-key configuration through CrudKit: {status}: {saved}");
+    }
+    let label_key_id = saved["entity"]["id"]
+        .as_i64()
+        .context_with(|| format!("created label-key response did not contain an id: {saved}"))?;
+
+    wait_until("persistent label key in the project table", || async {
+        let source = driver
+            .source()
+            .await
+            .context("failed to inspect label-key table source")?;
+        Ok((source.contains("board-accent") && source.contains("#ff6600")).then_some(()))
+    })
+    .await?;
+
+    let suggestions = browser_request(driver, reqwest::Method::GET, "/api/projects/demo/labels")
+        .await?
+        .send()
+        .await
+        .context("failed to read known-label suggestions")?;
+    let status = suggestions.status();
+    let suggestions: serde_json::Value = suggestions
+        .json()
+        .await
+        .context("failed to decode known-label suggestions")?;
+    if !status.is_success() {
+        bail!("known-label suggestions failed with {status}: {suggestions}");
+    }
+    let persistent_suggestion = suggestions
+        .as_array()
+        .context("known-label suggestions response was not an array")?
+        .iter()
+        .find(|suggestion| suggestion["key"] == "board-accent")
+        .context("persistent zero-use label key was absent from suggestions")?;
+    assert_that!(persistent_suggestion["usage_count"].as_i64()).is_equal_to(Some(0));
+    assert_that!(persistent_suggestion["last_used_at"].is_null()).is_true();
+
+    let response = browser_request(driver, reqwest::Method::POST, "/api/projects/demo/items")
+        .await?
+        .json(&serde_json::json!({
+            "title": "Accented label item",
+            "description": "Exercises project label-key board rendering",
+            "state": "open",
+            "agent_model_override": null,
+            "agent_reasoning_effort_override": null,
+            "initial_labels": [
+                { "key": "board-accent", "value": "browser" }
+            ]
+        }))
+        .send()
+        .await
+        .context("failed to create accented-label browser-test item")?;
+    let status = response.status();
+    let created_item: serde_json::Value = response
+        .json()
+        .await
+        .context("failed to decode accented-label item response")?;
+    if !status.is_success() {
+        bail!("accented-label item creation failed with {status}: {created_item}");
+    }
+    let item_id = created_item["id"]
+        .as_i64()
+        .context_with(|| format!("accented-label item response had no id: {created_item}"))?;
+
+    driver
+        .goto(app.url("/?project=demo"))
+        .await
+        .context("failed to open board for label accent assertion")?;
+    let chip_selector =
+        format!("a[data-board-item-id='{item_id}'] .label-chip[data-label-key='board-accent']");
+    let chip = find(driver, By::Css(chip_selector.clone())).await?;
+    assert_that!(
+        chip.class_name()
+            .await
+            .context("failed to inspect accented label chip classes")?
+            .unwrap_or_default()
+    )
+    .contains("accented");
+    assert_that!(
+        chip.attr("style")
+            .await
+            .context("failed to inspect accented label chip style")?
+            .unwrap_or_default()
+    )
+    .contains("#ff6600");
+
+    let response = browser_request(
+        driver,
+        reqwest::Method::POST,
+        "/api/label_keys/crud/update-one",
+    )
+    .await?
+    .json(&serde_json::json!({
+        "condition": {
+            "All": [{
+                "column_name": "id",
+                "operator": "=",
+                "value": { "I64": label_key_id }
+            }]
+        },
+        "entity": {
+            "accent_color": "#0066CC",
+            "persistent": true
+        }
+    }))
+    .send()
+    .await
+    .context("failed to update label accent through CrudKit")?;
+    response_text(response, "label accent update").await?;
+
+    wait_until("live board label accent update", || async {
+        let chip = find(driver, By::Css(chip_selector.clone())).await?;
+        let style = chip
+            .attr("style")
+            .await
+            .context("failed to inspect live-updated label chip style")?
+            .unwrap_or_default();
+        Ok(style.contains("#0066cc").then_some(()))
+    })
+    .await?;
+
+    driver
+        .goto(app.url("/project?project=demo"))
+        .await
+        .context("failed to return to project administration after label accent assertion")?;
+    find(driver, By::Css("section.project-settings")).await?;
+    Ok(())
 }
 
 async fn assert_swim_lane_create_form_exposes_structured_filter(

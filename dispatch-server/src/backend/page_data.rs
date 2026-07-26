@@ -1,12 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rootcause::Result;
 
 use crate::{
     backend::{
         automation, automation_controller::AutomationController, comments, item_label_service,
-        items, personalities, process_sessions::ProcessSessionRegistry, projects, relationships,
-        storage::Store, swim_lanes, work_item_states, workspace,
+        items, label_keys, personalities, process_sessions::ProcessSessionRegistry, projects,
+        relationships, storage::Store, swim_lanes, work_item_states, workspace,
     },
     frontend::{
         ApiDocsPage, BoardItemView, BoardItemsSection, BoardPage, BoardRunPreview,
@@ -40,6 +40,7 @@ pub(crate) async fn board_page_data(
     let mut project_swim_lanes = Vec::new();
     let mut project_work_item_states = Vec::new();
     let mut label_suggestions = Vec::new();
+    let mut label_accent_colors = BTreeMap::new();
     let mut misconfigured_item_count = 0;
     if let Some(project) = selected_project_view.as_ref() {
         let status = automation::automation_status(store, &project.name).await?;
@@ -50,6 +51,8 @@ pub(crate) async fn board_page_data(
         project_work_item_states =
             work_item_states::list_work_item_states(store, &project.name).await?;
         label_suggestions = item_label_service::list_project_labels(store, &project.name).await?;
+        label_accent_colors =
+            label_keys::accent_colors_for_project(store.db().as_ref(), project.id).await?;
         misconfigured_item_count =
             items::count_items_outside_work_item_states(store, &project.name).await?;
     }
@@ -65,6 +68,7 @@ pub(crate) async fn board_page_data(
         swim_lanes: project_swim_lanes,
         work_item_states: project_work_item_states,
         label_suggestions,
+        label_accent_colors,
         misconfigured_item_count,
         api_base_url,
         codex_status,
@@ -72,10 +76,13 @@ pub(crate) async fn board_page_data(
 }
 
 pub(crate) async fn board_items_section(store: &Store, project: &str) -> Result<BoardItemsSection> {
+    let project_id = projects::project_id(store, project).await?;
     Ok(BoardItemsSection {
         items: board_items(store, project).await?,
         swim_lanes: swim_lanes::list_swim_lanes(store, project).await?,
         work_item_states: work_item_states::list_work_item_states(store, project).await?,
+        label_accent_colors: label_keys::accent_colors_for_project(store.db().as_ref(), project_id)
+            .await?,
         misconfigured_item_count: items::count_items_outside_work_item_states(store, project)
             .await?,
     })

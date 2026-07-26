@@ -18,6 +18,10 @@ use crate::{
                 CreateAutomationTriggerField, CrudAutomationTriggerResource, ReadAutomationTrigger,
                 ReadAutomationTriggerField,
             },
+            label_key::{
+                CreateLabelKey, CreateLabelKeyField, CrudLabelKeyResource, LabelKey, LabelKeyField,
+                ReadLabelKey, ReadLabelKeyField,
+            },
             personality::{
                 CreatePersonality, CreatePersonalityField, CrudPersonalityResource, Personality,
                 PersonalityField, ReadPersonality, ReadPersonalityField,
@@ -75,6 +79,7 @@ use serde::Deserialize;
 mod agent_tools;
 mod automation_configuration;
 mod automation_triggers;
+mod label_keys;
 mod personalities;
 mod projects;
 mod swim_lane_filter;
@@ -84,6 +89,7 @@ mod work_items;
 
 pub(crate) use agent_tools::AgentToolsPanel;
 pub(crate) use automation_triggers::{AutomationTableKind, AutomationTriggersCrudkitInstance};
+pub(crate) use label_keys::LabelKeysPanel;
 pub(crate) use personalities::PersonalitiesPanel;
 pub(crate) use projects::ProjectsPanel;
 pub(crate) use swim_lanes::SwimLanesPanel;

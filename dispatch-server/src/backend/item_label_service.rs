@@ -198,7 +198,13 @@ pub(crate) async fn delete_label_with_attribution(
     let deletion = item_label_mutations::DeleteLabelMutation::new(&label)?;
     let event = deletion.deleted_event();
 
-    work_item_labels::delete_by_id_in_tx(&context.txn, deletion.label_id()).await?;
+    work_item_labels::delete_by_id_in_tx(
+        &context.txn,
+        context.project_id,
+        &label.key,
+        deletion.label_id(),
+    )
+    .await?;
     let work_item = context
         .finish(store, project_name, event, "label delete", attribution)
         .await?;

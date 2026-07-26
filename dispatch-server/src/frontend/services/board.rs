@@ -122,6 +122,7 @@ fn board_items_section_from_page(page: &BoardPage) -> Option<(String, BoardItems
             items: page.items.clone(),
             swim_lanes: page.swim_lanes.clone(),
             work_item_states: page.work_item_states.clone(),
+            label_accent_colors: page.label_accent_colors.clone(),
             misconfigured_item_count: page.misconfigured_item_count,
         },
     ))

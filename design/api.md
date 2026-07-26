@@ -138,9 +138,21 @@ CrudKit-generated routes are mounted under `/api` for ordinary admin resources:
 - automation rules;
 - personalities;
 - work item states;
+- label keys;
 - swim-lanes.
 
 CrudKit is not used for custom workflow authority. Admin CRUD can inspect and maintain records, but workflow transitions should use the custom endpoints so server services apply Dispatch rules consistently.
+
+Label-key CRUD is project-scoped configuration. Create accepts a key, optional `accent_color`, and
+requires `persistent=true` because a newly configured key may have zero usage. Update can change the
+accent and persistence flag, but built-in keys cannot be made non-persistent. Generic delete is
+rejected: non-built-in keys are forgotten by clearing persistence after their final usage has been
+removed. Accent colors are normalized to lowercase `#rrggbb`.
+
+`GET /api/projects/{project}/labels` returns active key/value summaries and also one zero-use,
+value-less summary for each known persistent or built-in key with no active labels. Zero-use
+summaries have `usage_count=0` and no `last_used_at`, allowing label suggestions to retain configured
+keys without inventing a label value.
 
 Project delete is an exception to ordinary row-level CRUD implementation: CrudKit and the direct
 operator handler both delegate to the authoritative project-deletion lifecycle. A successful

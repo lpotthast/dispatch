@@ -34,6 +34,7 @@ pub(crate) mod item_label_service;
 pub(crate) mod item_labels;
 pub(crate) mod items;
 pub(crate) mod label_conditions;
+pub(crate) mod label_keys;
 pub(crate) mod migrations;
 pub(crate) mod page_data;
 pub(crate) mod personalities;

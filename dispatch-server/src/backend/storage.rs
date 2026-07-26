@@ -257,9 +257,9 @@ mod tests {
             .unwrap();
         }
 
-        // Step through the Board-preview index, work-group, and workflow-support migrations
+        // Step through label keys, the Board-preview index, work groups, and workflow support
         // before rolling back the role-separated prompt migration itself.
-        Migrator::down(&db, Some(4)).await.unwrap();
+        Migrator::down(&db, Some(5)).await.unwrap();
 
         let rows = db
             .query_all(Statement::from_string(
@@ -511,6 +511,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn label_key_migration_backfills_usage_and_seeds_built_ins() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("dispatch.sqlite3");
+        let db = Database::connect(sqlite_url(&path)).await.unwrap();
+        let migration_count_before_label_keys = Migrator::migrations()
+            .iter()
+            .position(|migration| migration.name() == "m20260726_000041_add_label_keys")
+            .unwrap() as u32;
+        Migrator::up(&db, Some(migration_count_before_label_keys))
+            .await
+            .unwrap();
+        for statement in [
+            r#"INSERT INTO "projects" ("id", "name", "display_name") VALUES (1, 'demo', 'Demo');"#,
+            r#"INSERT INTO "work_items" ("id", "project_id", "title", "description") VALUES (1, 1, 'Legacy item', 'Created before known label keys');"#,
+            r#"INSERT INTO "work_item_labels" ("project_id", "work_item_id", "label_key", "label_value") VALUES (1, 1, 'state', 'open');"#,
+            r#"INSERT INTO "work_item_labels" ("project_id", "work_item_id", "label_key", "label_value") VALUES (1, 1, 'area', 'backend');"#,
+        ] {
+            db.execute(Statement::from_string(
+                DbBackend::Sqlite,
+                statement.to_owned(),
+            ))
+            .await
+            .unwrap();
+        }
+
+        Migrator::up(&db, None).await.unwrap();
+        let rows = db
+            .query_all(Statement::from_string(
+                DbBackend::Sqlite,
+                r#"
+                SELECT "label_key", "persistent", "built_in", "usage_count"
+                FROM "label_keys_read_view"
+                WHERE "project_id" = 1
+                ORDER BY "label_key";
+                "#
+                .to_owned(),
+            ))
+            .await
+            .unwrap();
+
+        assert_that!(&(rows.len())).is_equal_to(5);
+        let area = rows
+            .iter()
+            .find(|row| row.try_get::<String>("", "label_key").unwrap() == "area")
+            .unwrap();
+        assert_that!(&(area.try_get::<i64>("", "persistent").unwrap())).is_equal_to(0);
+        assert_that!(&(area.try_get::<i64>("", "built_in").unwrap())).is_equal_to(0);
+        assert_that!(&(area.try_get::<i64>("", "usage_count").unwrap())).is_equal_to(1);
+        for key in [
+            "state",
+            "dispatch:claimed-from-state",
+            "dispatch:automation-blocked",
+            "dispatch:feedback-requested",
+        ] {
+            let built_in = rows
+                .iter()
+                .find(|row| row.try_get::<String>("", "label_key").unwrap() == key)
+                .unwrap();
+            assert_that!(&(built_in.try_get::<i64>("", "persistent").unwrap())).is_equal_to(1);
+            assert_that!(&(built_in.try_get::<i64>("", "built_in").unwrap())).is_equal_to(1);
+        }
+    }
+
+    #[tokio::test]
     async fn agent_run_board_preview_index_matches_scope_and_order() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("dispatch.sqlite3");
@@ -548,7 +612,7 @@ mod tests {
             ("id".to_owned(), 1),
         ]);
 
-        Migrator::down(db.as_ref(), Some(1)).await.unwrap();
+        Migrator::down(db.as_ref(), Some(2)).await.unwrap();
         let removed = db
             .query_one(Statement::from_string(
                 DbBackend::Sqlite,
@@ -634,6 +698,7 @@ mod tests {
             "m20260713_000038_add_automation_workflow_support",
             "m20260714_000039_add_work_item_groups",
             "m20260716_000040_add_agent_run_board_preview_index",
+            "m20260726_000041_add_label_keys",
         ];
 
         assert_that!(&(names.as_slice())).is_equal_to(expected.as_slice());

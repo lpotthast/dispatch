@@ -67,6 +67,10 @@ impl_add_crud_routes!(
     crate::backend::crudkit_resources::CrudWorkItemStateResource,
     work_item_state
 );
+impl_add_crud_routes!(
+    crate::backend::crudkit_resources::CrudLabelKeyResource,
+    label_key
+);
 
 pub(crate) fn router(
     state: AppState,
@@ -85,6 +89,7 @@ pub(crate) fn router(
     crud_router = axum_personality_crud_routes::add_crud_routes("/api", crud_router);
     crud_router = axum_swim_lane_crud_routes::add_crud_routes("/api", crud_router);
     crud_router = axum_work_item_state_crud_routes::add_crud_routes("/api", crud_router);
+    crud_router = axum_label_key_crud_routes::add_crud_routes("/api", crud_router);
 
     let leptos_shell = {
         let leptos_options = leptos_options.clone();
@@ -185,6 +190,7 @@ pub(crate) fn router(
         .layer(Extension(contexts.personality))
         .layer(Extension(contexts.swim_lane))
         .layer(Extension(contexts.work_item_state))
+        .layer(Extension(contexts.label_key))
         .with_state(leptos_options)
 }
 

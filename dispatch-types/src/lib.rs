@@ -90,6 +90,12 @@ pub enum UiEvent {
         timestamp: String,
         project: String,
     },
+    LabelKeyChanged {
+        sequence: u64,
+        timestamp: String,
+        project: String,
+        key: String,
+    },
     AgentToolChanged {
         sequence: u64,
         timestamp: String,
@@ -983,7 +989,7 @@ pub struct ProjectLabelView {
     pub key: String,
     pub value: Option<String>,
     pub usage_count: i64,
-    pub last_used_at: String,
+    pub last_used_at: Option<String>,
 }
 
 /// Supported ordering strategies for work items inside a swim-lane.

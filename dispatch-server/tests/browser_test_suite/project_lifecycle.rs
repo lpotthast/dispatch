@@ -27,6 +27,9 @@ impl BrowserTest<DispatchTestApp> for ProjectLifecycleTest {
             .goto(app.url("/projects?project=demo"))
             .await
             .context("failed to select project before lifecycle check")?;
+        find(driver, By::Css("[data-live-events-state='open']"))
+            .await
+            .context("live event connection did not open before project lifecycle check")?;
         assert_project_delete_recreate_clears_selection_and_data(driver).await
     }
 }

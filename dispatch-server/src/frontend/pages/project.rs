@@ -1,7 +1,7 @@
 use crate::{
     frontend::{
         components::{ActivePage, TopBar, cached_query, selected_project_signal},
-        crudkit::{SwimLanesPanel, WorkItemStatesPanel, WorkItemsPanel},
+        crudkit::{LabelKeysPanel, SwimLanesPanel, WorkItemStatesPanel, WorkItemsPanel},
         services::{project_cache, project_service},
     },
     shared::view_models::{
@@ -134,6 +134,11 @@ fn ProjectContent(
                     refresh
                 />
                 <WorkItemsPanel
+                    api_base_url=api_base_url.clone()
+                    project=project.clone()
+                    project_id=project_id
+                />
+                <LabelKeysPanel
                     api_base_url=api_base_url.clone()
                     project=project.clone()
                     project_id=project_id

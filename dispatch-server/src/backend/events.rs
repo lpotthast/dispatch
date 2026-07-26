@@ -127,6 +127,17 @@ pub(crate) fn publish_work_item_state_changed(project: &str) {
     });
 }
 
+pub(crate) fn publish_label_key_changed(project: &str, key: &str) {
+    let project = project.to_owned();
+    let key = key.to_owned();
+    publish(|sequence, timestamp| UiEvent::LabelKeyChanged {
+        sequence,
+        timestamp,
+        project,
+        key,
+    });
+}
+
 pub(crate) fn publish_agent_tool_changed() {
     publish(|sequence, timestamp| UiEvent::AgentToolChanged {
         sequence,

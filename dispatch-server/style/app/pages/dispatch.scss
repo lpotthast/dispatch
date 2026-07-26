@@ -1779,6 +1779,57 @@ leptonic-drawer[data-board-inspector] {
     background: $amber-soft;
     color: $amber;
   }
+
+  &.accented {
+    border-color: color-mix(in srgb, var(--label-accent) 58%, $border);
+    background: color-mix(in srgb, var(--label-accent) 14%, $surface-raised);
+    color: color-mix(in srgb, var(--label-accent) 56%, $ink);
+  }
+}
+
+.label-keys-admin {
+  .panel-heading p {
+    max-width: 58em;
+    margin: $space-xs 0 0;
+  }
+}
+
+.label-accent-value {
+  display: inline-flex;
+  align-items: center;
+  gap: $space-sm;
+  white-space: nowrap;
+}
+
+.label-accent-swatch {
+  width: 1.15em;
+  height: 1.15em;
+  border: $line solid $border;
+  border-radius: $radius-sm;
+  background: var(--label-accent, transparent);
+}
+
+.label-accent-editor {
+  display: grid;
+  grid-template-columns: auto minmax(8em, 1fr) auto;
+  gap: $space-sm;
+  align-items: center;
+
+  .label-accent-picker {
+    width: 2.75em;
+    height: 2.25em;
+    padding: $space-2xs;
+    border: $line solid $border;
+    border-radius: $radius-sm;
+    background: $surface-raised;
+  }
+}
+
+.label-persistent-toggle {
+  display: flex;
+  gap: $space-sm;
+  align-items: center;
+  color: $ink-soft;
 }
 
 .dispatch-labels {

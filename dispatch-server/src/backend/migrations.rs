@@ -101,6 +101,19 @@ enum WorkItemLabels {
 }
 
 #[derive(DeriveIden)]
+enum LabelKeys {
+    Table,
+    Id,
+    ProjectId,
+    LabelKey,
+    AccentColor,
+    Persistent,
+    BuiltIn,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
 enum WorkItemRelationships {
     Table,
     Id,
@@ -364,6 +377,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddAutomationWorkflowSupport),
             Box::new(AddWorkItemGroups),
             Box::new(AddAgentRunBoardPreviewIndex),
+            Box::new(AddLabelKeys),
         ]
     }
 }
@@ -2907,6 +2921,165 @@ impl MigrationTrait for AddAgentRunBoardPreviewIndex {
     }
 }
 
+struct AddLabelKeys;
+
+impl MigrationName for AddLabelKeys {
+    fn name(&self) -> &str {
+        "m20260726_000041_add_label_keys"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddLabelKeys {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(LabelKeys::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(LabelKeys::Id)
+                            .big_integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(LabelKeys::ProjectId)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(LabelKeys::LabelKey).string().not_null())
+                    .col(ColumnDef::new(LabelKeys::AccentColor).string().null())
+                    .col(
+                        ColumnDef::new(LabelKeys::Persistent)
+                            .boolean()
+                            .not_null()
+                            .default(false),
+                    )
+                    .col(
+                        ColumnDef::new(LabelKeys::BuiltIn)
+                            .boolean()
+                            .not_null()
+                            .default(false),
+                    )
+                    .col(
+                        ColumnDef::new(LabelKeys::CreatedAt)
+                            .string()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .col(
+                        ColumnDef::new(LabelKeys::UpdatedAt)
+                            .string()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_label_keys_project_id")
+                            .from(LabelKeys::Table, LabelKeys::ProjectId)
+                            .to(Projects::Table, Projects::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_label_keys_project_key")
+                    .table(LabelKeys::Table)
+                    .col(LabelKeys::ProjectId)
+                    .col(LabelKeys::LabelKey)
+                    .unique()
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                r#"
+                INSERT OR IGNORE INTO "label_keys"
+                    (
+                        "project_id",
+                        "label_key",
+                        "accent_color",
+                        "persistent",
+                        "built_in",
+                        "created_at",
+                        "updated_at"
+                    )
+                SELECT
+                    "project_id",
+                    "label_key",
+                    NULL,
+                    0,
+                    0,
+                    MIN("created_at"),
+                    MAX("updated_at")
+                FROM "work_item_labels"
+                GROUP BY "project_id", "label_key";
+                "#
+                .to_owned(),
+            ))
+            .await?;
+        for key in [
+            "state",
+            "dispatch:claimed-from-state",
+            "dispatch:automation-blocked",
+            "dispatch:feedback-requested",
+        ] {
+            manager
+                .get_connection()
+                .execute(Statement::from_string(
+                    manager.get_database_backend(),
+                    format!(
+                        r#"
+                        INSERT INTO "label_keys"
+                            (
+                                "project_id",
+                                "label_key",
+                                "accent_color",
+                                "persistent",
+                                "built_in",
+                                "created_at",
+                                "updated_at"
+                            )
+                        SELECT
+                            "id",
+                            '{key}',
+                            NULL,
+                            1,
+                            1,
+                            CURRENT_TIMESTAMP,
+                            CURRENT_TIMESTAMP
+                        FROM "projects"
+                        WHERE TRUE
+                        ON CONFLICT("project_id", "label_key") DO UPDATE SET
+                            "persistent" = 1,
+                            "built_in" = 1,
+                            "updated_at" = CURRENT_TIMESTAMP;
+                        "#
+                    ),
+                ))
+                .await?;
+        }
+
+        create_label_keys_read_view(manager).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "label_keys_read_view").await?;
+        manager
+            .drop_table(Table::drop().table(LabelKeys::Table).if_exists().to_owned())
+            .await
+    }
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for AddAutomationWorkflowSupport {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -4352,6 +4525,30 @@ async fn create_work_items_read_view(manager: &SchemaManager<'_>) -> Result<(), 
                 ) AS "state_label",
                 0 AS "has_validation_errors"
             FROM "work_items";
+            "#,
+        ))
+        .await
+        .map(|_| ())
+}
+
+async fn create_label_keys_read_view(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    drop_read_view(manager, "label_keys_read_view").await?;
+    manager
+        .get_connection()
+        .execute(Statement::from_string(
+            manager.get_database_backend(),
+            r#"
+            CREATE VIEW "label_keys_read_view" AS
+            SELECT
+                "label_keys".*,
+                COUNT("work_item_labels"."id") AS "usage_count",
+                MAX("work_item_labels"."updated_at") AS "last_used_at",
+                0 AS "has_validation_errors"
+            FROM "label_keys"
+            LEFT JOIN "work_item_labels"
+              ON "work_item_labels"."project_id" = "label_keys"."project_id"
+             AND "work_item_labels"."label_key" = "label_keys"."label_key"
+            GROUP BY "label_keys"."id";
             "#,
         ))
         .await

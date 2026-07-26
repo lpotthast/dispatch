@@ -12,7 +12,7 @@ use crate::{
             work_item_origin::{self, WorkItemOrigin},
             work_item_relationship::{self, WorkItemRelationship},
         },
-        events, projects,
+        events, label_keys, projects,
         request_attribution::RequestAttribution,
         storage::{Store, utc_now},
         work_item_creation::{self, CreateWorkItemPlan},
@@ -480,6 +480,7 @@ async fn delete_item_in_project(
     work_items::get(&txn, project_id, item_id).await?;
     let related_item_ids =
         work_item_relationships::related_item_ids_for_item(&txn, project_id, item_id).await?;
+    let label_keys_for_item = work_item_labels::keys_for_item(&txn, project_id, item_id).await?;
 
     work_item_events::record_event_in_tx(
         &txn,
@@ -503,6 +504,9 @@ async fn delete_item_in_project(
         .exec(&txn)
         .await
         .context("failed to delete work item")?;
+    for key in label_keys_for_item {
+        label_keys::forget_if_unused_in_tx(&txn, project_id, &key).await?;
+    }
     txn.commit().await.context("failed to commit item delete")?;
     events::publish_work_item_changed(project_name, item_id);
     for related_item_id in related_item_ids {

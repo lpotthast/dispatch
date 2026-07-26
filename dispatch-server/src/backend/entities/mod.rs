@@ -11,6 +11,7 @@ pub mod automation_evaluation;
 pub mod automation_trigger;
 pub mod automation_trigger_revision;
 pub mod comment;
+pub mod label_key;
 pub mod personality;
 pub mod personality_revision;
 pub mod project;

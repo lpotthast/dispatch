@@ -7,7 +7,10 @@ use crudkit_rs::{
 };
 use crudkit_sea_orm::{CrudColumns, SeaOrmResource, repo::SeaOrmRepo};
 use indexmap::IndexMap;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, DbErr, EntityTrait, TransactionTrait};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DbErr, EntityTrait, QueryFilter,
+    TransactionTrait,
+};
 use utoipa::ToSchema;
 
 use crate::{
@@ -15,10 +18,10 @@ use crate::{
         automation_revisions::{self, RevisionActor},
         automation_triggers,
         entities::{
-            agent_run, agent_tool, automation_trigger, comment, personality, project, swim_lane,
-            work_item, work_item_state,
+            agent_run, agent_tool, automation_trigger, comment, label_key, personality, project,
+            swim_lane, work_item, work_item_state,
         },
-        events, item_labels, items, personalities,
+        events, item_labels, items, label_keys, personalities,
         project_deletion::ProjectDeletionService,
         projects,
         storage::{Store, utc_now},
@@ -45,6 +48,7 @@ pub enum CrudResources {
     Personality,
     SwimLane,
     WorkItemState,
+    LabelKey,
 }
 
 impl ResourceType for CrudResources {
@@ -59,6 +63,7 @@ impl ResourceType for CrudResources {
             Self::Personality => "personalities",
             Self::SwimLane => "swim_lanes",
             Self::WorkItemState => "work_item_states",
+            Self::LabelKey => "label_keys",
         }
     }
 }
@@ -189,6 +194,10 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
             .map_err(|err| ProjectHookError(err.to_string()))
             .map_err(HookError::Internal)?;
         work_item_states::ensure_default_work_item_states_for_project_id(&context.store, model.id)
+            .await
+            .map_err(|err| ProjectHookError(err.to_string()))
+            .map_err(HookError::Internal)?;
+        label_keys::ensure_built_in_label_keys_in_conn(context.store.db().as_ref(), model.id)
             .await
             .map_err(|err| ProjectHookError(err.to_string()))
             .map_err(HookError::Internal)?;
@@ -1708,6 +1717,20 @@ async fn publish_work_item_state_project_event(store: &Store, project_id: i64) {
     }
 }
 
+async fn publish_label_key_project_event(store: &Store, project_id: i64, key: &str) {
+    match projects::project_name_by_id(store, project_id).await {
+        Ok(project_name) => events::publish_label_key_changed(&project_name, key),
+        Err(err) => {
+            tracing::warn!(
+                project_id,
+                key,
+                error = %format_args!("{err:#}"),
+                "failed to resolve project for label key UI event"
+            );
+        }
+    }
+}
+
 fn parse_activation(
     value: &str,
 ) -> Result<AutomationActivation, HookError<AutomationTriggerHookError>> {
@@ -1928,6 +1951,222 @@ impl SeaOrmResource for CrudAutomationTriggerResource {
     fn read_model_field_to_column(field: &Self::ReadModelField) -> Self::ReadViewColumn {
         <automation_trigger::read_view::ModelField as CrudColumns<
             automation_trigger::read_view::Column,
+        >>::to_sea_orm_column(field)
+    }
+}
+
+#[derive(Clone)]
+pub struct LabelKeyResourceContext {
+    store: Store,
+}
+
+impl fmt::Debug for LabelKeyResourceContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LabelKeyResourceContext")
+    }
+}
+
+impl CrudResourceContext for LabelKeyResourceContext {}
+
+#[derive(Debug, Clone)]
+pub struct LabelKeyHookError(String);
+
+impl fmt::Display for LabelKeyHookError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LabelKeyHookError {}
+
+#[derive(Debug)]
+pub struct LabelKeyLifetime;
+
+impl CrudLifetime<CrudLabelKeyResource> for LabelKeyLifetime {
+    type Error = LabelKeyHookError;
+
+    async fn before_read(
+        _read_request: &mut ReadRequest<CrudLabelKeyResource>,
+        _context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn after_read(
+        _read_request: &ReadRequest<CrudLabelKeyResource>,
+        _read_result: &mut ReadResult<CrudLabelKeyResource>,
+        _context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+
+    async fn before_create(
+        create_model: &mut label_key::CreateModel,
+        context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        create_model.key = item_labels::normalize_key(std::mem::take(&mut create_model.key))
+            .map_err(|err| label_key_unprocessable_error(err.to_string()))?;
+        create_model.accent_color =
+            label_keys::normalize_accent_color(create_model.accent_color.take())
+                .map_err(|err| label_key_unprocessable_error(err.to_string()))?;
+        if !create_model.persistent {
+            return Err(label_key_unprocessable_error(
+                "an unused label key must be created as persistent".to_owned(),
+            ));
+        }
+        let already_exists = label_key::Entity::find()
+            .filter(label_key::Column::ProjectId.eq(create_model.project_id))
+            .filter(label_key::Column::Key.eq(&create_model.key))
+            .one(context.store.db().as_ref())
+            .await
+            .map_err(|err| LabelKeyHookError(err.to_string()))
+            .map_err(HookError::Internal)?
+            .is_some();
+        if already_exists {
+            return Err(label_key_unprocessable_error(format!(
+                "label key '{}' already exists",
+                create_model.key
+            )));
+        }
+        Ok(data)
+    }
+
+    async fn after_create(
+        _create_model: &label_key::CreateModel,
+        model: &label_key::Model,
+        context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        publish_label_key_project_event(&context.store, model.project_id, &model.key).await;
+        Ok(data)
+    }
+
+    async fn before_update(
+        existing: &label_key::Model,
+        update_model: &mut label_key::UpdateModel,
+        _update_request: &UpdateRequest,
+        _context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        update_model.accent_color =
+            label_keys::normalize_accent_color(update_model.accent_color.take())
+                .map_err(|err| label_key_unprocessable_error(err.to_string()))?;
+        if existing.built_in && !update_model.persistent {
+            return Err(label_key_unprocessable_error(format!(
+                "built-in label key '{}' must remain persistent",
+                existing.key
+            )));
+        }
+        Ok(data)
+    }
+
+    async fn after_update(
+        _update_model: &label_key::UpdateModel,
+        model: &label_key::Model,
+        _update_request: &UpdateRequest,
+        context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        label_keys::forget_if_unused_in_tx(
+            context.store.db().as_ref(),
+            model.project_id,
+            &model.key,
+        )
+        .await
+        .map_err(|err| LabelKeyHookError(err.to_string()))
+        .map_err(HookError::Internal)?;
+        publish_label_key_project_event(&context.store, model.project_id, &model.key).await;
+        Ok(data)
+    }
+
+    async fn before_delete(
+        _model: &label_key::Model,
+        _delete_request: &DeleteRequest<CrudLabelKeyResource>,
+        _context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        _data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Err(label_key_unprocessable_error(
+            "label keys are forgotten by clearing persistent or removing their final usage"
+                .to_owned(),
+        ))
+    }
+
+    async fn after_delete(
+        _model: &label_key::Model,
+        _delete_request: &DeleteRequest<CrudLabelKeyResource>,
+        _context: &LabelKeyResourceContext,
+        _request: RequestContext<NoAuth>,
+        data: (),
+    ) -> Result<(), HookError<Self::Error>> {
+        Ok(data)
+    }
+}
+
+fn label_key_unprocessable_error(reason: String) -> HookError<LabelKeyHookError> {
+    HookError::UnprocessableEntity { reason }
+}
+
+#[derive(Debug, ToSchema)]
+pub struct CrudLabelKeyResource;
+
+impl CrudResource for CrudLabelKeyResource {
+    type ReadModel = label_key::read_view::Model;
+    type ReadModelId = label_key::read_view::ModelId;
+    type ReadModelField = label_key::read_view::ModelField;
+
+    type CreateModel = label_key::CreateModel;
+    type CreateModelField = label_key::ModelField;
+
+    type UpdateModel = label_key::UpdateModel;
+    type UpdateModelField = label_key::ModelField;
+
+    type Model = label_key::Model;
+    type Id = label_key::LabelKeyId;
+    type ModelField = label_key::ModelField;
+
+    type Repository = SeaOrmRepo;
+    type ValidationResultRepository =
+        crudkit_sea_orm::validation::unified::repository::UnifiedValidationRepository;
+    type CollaborationService = NoopCollaborationService;
+    type Context = LabelKeyResourceContext;
+    type HookData = ();
+    type Lifetime = LabelKeyLifetime;
+    type Auth = NoAuth;
+    type AuthPolicy = OpenAuthPolicy;
+    type ResourceType = CrudResources;
+    const TYPE: CrudResources = CrudResources::LabelKey;
+}
+
+impl SeaOrmResource for CrudLabelKeyResource {
+    type Entity = label_key::Entity;
+    type SeaOrmModel = label_key::Model;
+    type ActiveModel = label_key::ActiveModel;
+    type Column = label_key::Column;
+    type PrimaryKey = <label_key::Entity as EntityTrait>::PrimaryKey;
+
+    type ReadViewEntity = label_key::read_view::Entity;
+    type ReadViewSeaOrmModel = label_key::read_view::Model;
+    type ReadViewActiveModel = label_key::read_view::ActiveModel;
+    type ReadViewColumn = label_key::read_view::Column;
+    type ReadViewPrimaryKey = <label_key::read_view::Entity as EntityTrait>::PrimaryKey;
+
+    fn model_field_to_column(field: &Self::ModelField) -> Self::Column {
+        <label_key::ModelField as CrudColumns<label_key::Column>>::to_sea_orm_column(field)
+    }
+
+    fn read_model_field_to_column(field: &Self::ReadModelField) -> Self::ReadViewColumn {
+        <label_key::read_view::ModelField as CrudColumns<
+            label_key::read_view::Column,
         >>::to_sea_orm_column(field)
     }
 }
@@ -2321,6 +2560,7 @@ pub struct CrudContexts {
     pub personality: Arc<CrudContext<CrudPersonalityResource>>,
     pub swim_lane: Arc<CrudContext<CrudSwimLaneResource>>,
     pub work_item_state: Arc<CrudContext<CrudWorkItemStateResource>>,
+    pub label_key: Arc<CrudContext<CrudLabelKeyResource>>,
 }
 
 pub fn build_contexts(store: Store, project_deletion: ProjectDeletionService) -> CrudContexts {
@@ -2416,7 +2656,18 @@ pub fn build_contexts(store: Store, project_deletion: ProjectDeletionService) ->
             global_validation_state: Arc::new(GlobalValidationState::new()),
         }),
         work_item_state: Arc::new(CrudContext {
-            res_context: Arc::new(WorkItemStateResourceContext { store }),
+            res_context: Arc::new(WorkItemStateResourceContext {
+                store: store.clone(),
+            }),
+            repository: repository.clone(),
+            validators: vec![],
+            resource_validators: vec![],
+            validation_result_repository: validation_result_repository.clone(),
+            collab_service: collab_service.clone(),
+            global_validation_state: Arc::new(GlobalValidationState::new()),
+        }),
+        label_key: Arc::new(CrudContext {
+            res_context: Arc::new(LabelKeyResourceContext { store }),
             repository,
             validators: vec![],
             resource_validators: vec![],
@@ -2493,6 +2744,88 @@ mod tests {
                 assert_that!(&(reason.contains("cannot contain '='"))).is_true();
             }
             other => panic!("expected unprocessable state error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn label_key_create_normalizes_configuration_and_requires_persistence() {
+        let (_temp, store, project_id) = test_store().await;
+        let context = LabelKeyResourceContext { store };
+        let mut create = label_key::CreateModel {
+            project_id,
+            key: " priority ".to_owned(),
+            accent_color: Some(" #AABBCC ".to_owned()),
+            persistent: true,
+        };
+
+        LabelKeyLifetime::before_create(
+            &mut create,
+            &context,
+            RequestContext::unauthenticated(),
+            (),
+        )
+        .await
+        .unwrap();
+
+        assert_that!(&(create.key)).is_equal_to("priority");
+        assert_that!(&(create.accent_color.as_deref())).is_equal_to(Some("#aabbcc"));
+
+        let mut volatile_create = label_key::CreateModel {
+            project_id,
+            key: "volatile".to_owned(),
+            accent_color: None,
+            persistent: false,
+        };
+        let error = LabelKeyLifetime::before_create(
+            &mut volatile_create,
+            &context,
+            RequestContext::unauthenticated(),
+            (),
+        )
+        .await
+        .expect_err("unused label-key creation should require persistence");
+        match error {
+            HookError::UnprocessableEntity { reason } => {
+                assert_that!(&(reason.contains("must be created as persistent"))).is_true();
+            }
+            other => panic!("expected unprocessable label-key create error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn label_key_update_keeps_built_ins_persistent() {
+        let (_temp, store, project_id) = test_store().await;
+        let context = LabelKeyResourceContext {
+            store: store.clone(),
+        };
+        let state = label_key::Entity::find()
+            .filter(label_key::Column::ProjectId.eq(project_id))
+            .filter(label_key::Column::Key.eq(STATE_LABEL_KEY))
+            .one(store.db().as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut update = label_key::UpdateModel {
+            accent_color: None,
+            persistent: false,
+        };
+
+        let error = LabelKeyLifetime::before_update(
+            &state,
+            &mut update,
+            &UpdateRequest { condition: None },
+            &context,
+            RequestContext::unauthenticated(),
+            (),
+        )
+        .await
+        .expect_err("built-in label keys should remain persistent");
+
+        match error {
+            HookError::UnprocessableEntity { reason } => {
+                assert_that!(&(reason.contains("must remain persistent"))).is_true();
+            }
+            other => panic!("expected unprocessable label-key update error, got {other:?}"),
         }
     }
 

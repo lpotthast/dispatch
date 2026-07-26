@@ -986,6 +986,39 @@ async fn assert_desktop_drawer_preserves_board_access(driver: &WebDriver) -> Res
         .scroll_into_view()
         .await
         .context("failed to scroll the last Board lane into view")?;
+    let scroll_result = driver
+        .cdp()
+        .send_raw(
+            "Runtime.evaluate",
+            serde_json::json!({
+                "expression": "(() => { const board = document.querySelector('section.board'); if (!board) return null; board.scrollLeft = board.scrollWidth; const lane = board.lastElementChild; const boardRect = board.getBoundingClientRect(); const laneRect = lane?.getBoundingClientRect(); return { scrollLeft: board.scrollLeft, scrollWidth: board.scrollWidth, clientWidth: board.clientWidth, boardRect: { x: boardRect.x, width: boardRect.width }, laneRect: laneRect && { x: laneRect.x, width: laneRect.width } }; })()",
+                "returnByValue": true
+            }),
+        )
+        .await
+        .context("failed to scroll the Board to its horizontal end")?;
+    let scroll_metrics = &scroll_result["result"]["value"];
+    let scroll_left = scroll_metrics["scrollLeft"]
+        .as_f64()
+        .context("Board scroll metrics did not contain scrollLeft")?;
+    let scroll_width = scroll_metrics["scrollWidth"]
+        .as_f64()
+        .context("Board scroll metrics did not contain scrollWidth")?;
+    let client_width = scroll_metrics["clientWidth"]
+        .as_f64()
+        .context("Board scroll metrics did not contain clientWidth")?;
+    let dom_board_left = scroll_metrics["boardRect"]["x"]
+        .as_f64()
+        .context("Board scroll metrics did not contain the Board x position")?;
+    let dom_board_width = scroll_metrics["boardRect"]["width"]
+        .as_f64()
+        .context("Board scroll metrics did not contain the Board width")?;
+    let dom_last_lane_left = scroll_metrics["laneRect"]["x"]
+        .as_f64()
+        .context("Board scroll metrics did not contain the last lane x position")?;
+    let dom_last_lane_width = scroll_metrics["laneRect"]["width"]
+        .as_f64()
+        .context("Board scroll metrics did not contain the last lane width")?;
     let topbar_rect = topbar
         .rect()
         .await
@@ -998,10 +1031,6 @@ async fn assert_desktop_drawer_preserves_board_access(driver: &WebDriver) -> Res
         .rect()
         .await
         .context("failed to inspect drawer geometry beside Board")?;
-    let last_lane_rect = last_lane
-        .rect()
-        .await
-        .context("failed to inspect last Board lane geometry")?;
     assert_that!(topbar_rect.y >= -1.0 && topbar_rect.y + topbar_rect.height > 0.0).is_true();
     assert_that!(drawer_rect.y >= topbar_rect.y + topbar_rect.height - 1.0).is_true();
     assert_that!(board_rect.x + board_rect.width <= drawer_rect.x + 1.0).is_true();
@@ -1017,9 +1046,12 @@ async fn assert_desktop_drawer_preserves_board_access(driver: &WebDriver) -> Res
             > element_numeric_property(&board, "clientWidth", "Board viewport width").await? + 1.0
     )
     .is_true();
-    assert_that!(last_lane_rect.x >= board_rect.x - 1.0).is_true();
-    assert_that!(last_lane_rect.x + last_lane_rect.width <= board_rect.x + board_rect.width + 1.0)
-        .is_true();
+    assert_that!(scroll_left + client_width >= scroll_width - 1.0).is_true();
+    assert_that!(dom_last_lane_left >= dom_board_left - 1.0).is_true();
+    assert_that!(
+        dom_last_lane_left + dom_last_lane_width <= dom_board_left + dom_board_width + 1.0
+    )
+    .is_true();
     let (_, viewport_height) = layout_viewport_size(driver).await?;
     assert_that!(drawer_rect.height < viewport_height - 1.0).is_true();
     Ok(())

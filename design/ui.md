@@ -75,6 +75,7 @@ CrudKit is appropriate for ordinary resource administration:
 - projects;
 - work items;
 - work item states;
+- label keys;
 - swim-lanes;
 - comments;
 - agent tools;
@@ -84,7 +85,7 @@ CrudKit is appropriate for ordinary resource administration:
 
 Dispatch-specific actions such as claim, release, finish, request feedback, automation launch, stale-claim recovery, and run-log viewing should remain custom UI flows. These actions carry workflow semantics that generic CRUD controls should not duplicate.
 
-The Projects page stands on its own as collection administration for creating, listing, editing, and deleting projects. Selected-project administration lives on the singular Project page. That page owns the selected project's system prompt and memory, full Work items administration, work item states, swim-lanes, and maintenance actions such as worktree cleanup. The Automation page owns project automation policy alongside automation rules and personalities. System-wide Codex readiness and app-server tool configuration live on the System page rather than Projects.
+The Projects page stands on its own as collection administration for creating, listing, editing, and deleting projects. Selected-project administration lives on the singular Project page. That page owns the selected project's system prompt and memory, full Work items administration, known label keys, work item states, swim-lanes, and maintenance actions such as worktree cleanup. The Automation page owns project automation policy alongside automation rules and personalities. System-wide Codex readiness and app-server tool configuration live on the System page rather than Projects.
 
 Project selection is explicit URL-owned state. Pages and the workspace dock do not silently select
 the first project when the URL has no project. When the selected project is deleted, the live
@@ -92,7 +93,7 @@ project-deleted event clears its typed browser caches and navigates to the unsel
 without choosing a replacement. The project switcher shows a choose-project placeholder until the
 operator explicitly selects another project.
 
-Full Work items administration, work item state authoring, and swim-lane authoring live on the selected-project administration surface, not the main board or project collection. The board shows small lane edit controls that navigate to the selected swim-lane editor. New item creation is lane-scoped: eligible state-backed lanes show `+ Add` in the lane header and preselect that lane's state. The add control may appear on lane hover or keyboard focus on precise-pointer devices, but remains visible on narrow, coarse-pointer, and non-hover devices. Swim-lane filter create and edit forms expose structured label-condition controls for nested `All`/`Any` groups, label presence, flag labels, string equality, string inequality, and string-list membership while continuing to store the existing CrudKit `Condition` JSON string; invalid or unsupported existing filters remain editable through a raw JSON escape hatch.
+Full Work items administration, known label-key configuration, work item state authoring, and swim-lane authoring live on the selected-project administration surface, not the main board or project collection. The label-key table shows key, active usage count, accent, persistence, built-in status, and last usage. Operators can create persistent unused keys and edit accent or persistence, while built-in keys cannot be made non-persistent and generic delete controls remain hidden. Label-key and work-item live events refresh this table. Known zero-use keys participate in existing label suggestions and autocomplete. Board label chips with a configured accent use a tinted background, border, and readable foreground derived from that color; label-key changes live-refresh the board without navigation. The board shows small lane edit controls that navigate to the selected swim-lane editor. New item creation is lane-scoped: eligible state-backed lanes show `+ Add` in the lane header and preselect that lane's state. The add control may appear on lane hover or keyboard focus on precise-pointer devices, but remains visible on narrow, coarse-pointer, and non-hover devices. Swim-lane filter create and edit forms expose structured label-condition controls for nested `All`/`Any` groups, label presence, flag labels, string equality, string inequality, and string-list membership while continuing to store the existing CrudKit `Condition` JSON string; invalid or unsupported existing filters remain editable through a raw JSON escape hatch.
 On item detail pages, the `state` label's value editor should render as a state picker backed by the current project's authored work item states instead of a free-text value field. That picker submits through the item move/update workflow path, while ordinary label rows use generic label add/update/delete handlers.
 
 The Codex app-server status panel should guide setup failures directly. When

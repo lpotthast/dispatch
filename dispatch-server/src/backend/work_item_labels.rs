@@ -11,7 +11,7 @@ use crate::{
         entities::work_item_label::{
             self, WorkItemLabel, WorkItemLabelActiveModel, WorkItemLabelModel,
         },
-        item_labels,
+        item_labels, label_keys,
         storage::utc_now,
     },
     shared::view_models::{ProjectLabelView, STATE_LABEL_KEY, WorkItemLabelView},
@@ -55,12 +55,14 @@ where
         updated_at: Set(now),
         ..Default::default()
     };
-    Ok(active.insert(conn).await.context_with(|| {
+    let label = active.insert(conn).await.context_with(|| {
         format!(
             "failed to add label '{}'",
             item_labels::format_label(key, value)
         )
-    })?)
+    })?;
+    label_keys::ensure_used_key_in_tx(conn, project_id, key).await?;
+    Ok(label)
 }
 
 pub(crate) async fn upsert_in_tx<C>(
@@ -109,10 +111,16 @@ where
         .exec(conn)
         .await
         .context_with(|| format!("failed to delete label '{key}'"))?;
+    label_keys::forget_if_unused_in_tx(conn, project_id, key).await?;
     Ok(())
 }
 
-pub(crate) async fn delete_by_id_in_tx<C>(conn: &C, label_id: i64) -> Result<()>
+pub(crate) async fn delete_by_id_in_tx<C>(
+    conn: &C,
+    project_id: i64,
+    key: &str,
+    label_id: i64,
+) -> Result<()>
 where
     C: ConnectionTrait,
 {
@@ -120,6 +128,7 @@ where
         .exec(conn)
         .await
         .context_with(|| format!("failed to delete label {label_id}"))?;
+    label_keys::forget_if_unused_in_tx(conn, project_id, key).await?;
     Ok(())
 }
 
@@ -175,14 +184,34 @@ pub(crate) async fn update_in_tx<C>(
 where
     C: ConnectionTrait,
 {
+    let project_id = label.project_id;
+    let previous_key = label.key.clone();
     let mut active: WorkItemLabelActiveModel = label.into();
     active.key = Set(key.clone());
     active.value = Set(value.clone());
     active.updated_at = Set(utc_now());
-    Ok(active
+    let updated = active
         .update(conn)
         .await
-        .context_with(|| format!("failed to update label '{key}'"))?)
+        .context_with(|| format!("failed to update label '{key}'"))?;
+    label_keys::ensure_used_key_in_tx(conn, project_id, &key).await?;
+    if previous_key != key {
+        label_keys::forget_if_unused_in_tx(conn, project_id, &previous_key).await?;
+    }
+    Ok(updated)
+}
+
+pub(crate) async fn keys_for_item<C>(conn: &C, project_id: i64, item_id: i64) -> Result<Vec<String>>
+where
+    C: ConnectionTrait,
+{
+    let labels = WorkItemLabel::find()
+        .filter(work_item_label::Column::ProjectId.eq(project_id))
+        .filter(work_item_label::Column::WorkItemId.eq(item_id))
+        .all(conn)
+        .await
+        .context_with(|| format!("failed to load label keys for item {item_id}"))?;
+    Ok(labels.into_iter().map(|label| label.key).collect())
 }
 
 pub(crate) async fn project_label_summaries<C>(
@@ -196,13 +225,29 @@ where
         .query_all(Statement::from_sql_and_values(
             sea_orm::DbBackend::Sqlite,
             r#"
-            SELECT label_key,
-                   label_value,
-                   COUNT(*) AS usage_count,
-                   MAX(updated_at) AS last_used_at
-            FROM work_item_labels
-            WHERE project_id = ?1
-            GROUP BY label_key, label_value
+            WITH used_labels AS (
+                SELECT label_key,
+                       label_value,
+                       COUNT(*) AS usage_count,
+                       MAX(updated_at) AS last_used_at
+                FROM work_item_labels
+                WHERE project_id = ?1
+                GROUP BY label_key, label_value
+            )
+            SELECT label_key, label_value, usage_count, last_used_at
+            FROM used_labels
+            UNION ALL
+            SELECT label_keys.label_key,
+                   NULL AS label_value,
+                   0 AS usage_count,
+                   NULL AS last_used_at
+            FROM label_keys
+            WHERE label_keys.project_id = ?1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM used_labels
+                  WHERE used_labels.label_key = label_keys.label_key
+              )
             ORDER BY label_key ASC, label_value ASC
             "#,
             vec![project_id.into()],
@@ -427,10 +472,16 @@ mod tests {
             .iter()
             .find(|label| label.key == "bug" && label.value.is_none())
             .unwrap();
+        let unused_built_in = summaries
+            .iter()
+            .find(|label| label.key == STATE_LABEL_KEY && label.value.is_none())
+            .unwrap();
 
         assert_that!(&(severity.usage_count)).is_equal_to(2);
-        assert_that!(&(severity.last_used_at)).is_equal_to("2026-06-18T00:00:03Z");
+        assert_that!(&(severity.last_used_at)).is_equal_to(Some("2026-06-18T00:00:03Z".to_owned()));
         assert_that!(&(bug.usage_count)).is_equal_to(1);
+        assert_that!(&(unused_built_in.usage_count)).is_equal_to(0);
+        assert_that!(&(unused_built_in.last_used_at)).is_equal_to(None);
     }
 
     #[tokio::test]

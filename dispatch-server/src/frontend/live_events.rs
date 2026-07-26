@@ -45,13 +45,16 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
         let run_service = run_service();
         let codex_service = codex_service();
         let api_docs_service = api_docs_service();
-        let UseWebSocketReturn { message, .. } =
-            use_websocket_with_options::<String, String, FromToStringCodec, _, _>(
-                "/api/events/ws",
-                UseWebSocketOptions::default()
-                    .reconnect_limit(ReconnectLimit::Infinite)
-                    .reconnect_interval(1_000),
-            );
+        let UseWebSocketReturn {
+            message,
+            ready_state,
+            ..
+        } = use_websocket_with_options::<String, String, FromToStringCodec, _, _>(
+            "/api/events/ws",
+            UseWebSocketOptions::default()
+                .reconnect_limit(ReconnectLimit::Infinite)
+                .reconnect_interval(1_000),
+        );
         Effect::new(move |_| {
             if let Some(raw) = message.get()
                 && let Ok(event) = serde_json::from_str::<UiEvent>(&raw)
@@ -92,7 +95,21 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
                 );
             }
         });
+        return view! {
+            <span
+                hidden
+                aria-hidden="true"
+                data-live-events-state=move || ready_state.get().to_string().to_ascii_lowercase()
+            />
+        }
+        .into_any();
     }
+
+    #[cfg(feature = "ssr")]
+    view! {
+        <span hidden aria-hidden="true" data-live-events-state="closed"/>
+    }
+    .into_any()
 }
 
 pub(crate) fn refetch_on_live_event(
@@ -213,7 +230,7 @@ pub(crate) fn item_event_matches(
         | UiEvent::SystemPromptChanged { .. }
         | UiEvent::MemoryChanged { .. }
         | UiEvent::SwimLaneChanged { .. } => false,
-        UiEvent::WorkItemStateChanged { .. } => true,
+        UiEvent::WorkItemStateChanged { .. } | UiEvent::LabelKeyChanged { .. } => true,
     }
 }
 
@@ -245,7 +262,8 @@ pub(crate) fn run_log_event_matches(
         | UiEvent::SystemPromptChanged { .. }
         | UiEvent::MemoryChanged { .. }
         | UiEvent::SwimLaneChanged { .. }
-        | UiEvent::WorkItemStateChanged { .. } => false,
+        | UiEvent::WorkItemStateChanged { .. }
+        | UiEvent::LabelKeyChanged { .. } => false,
     }
 }
 
@@ -258,6 +276,7 @@ pub(crate) fn board_items_event_matches(event: &UiEvent, project: &str) -> bool 
                 | UiEvent::AgentRunChanged { .. }
                 | UiEvent::SwimLaneChanged { .. }
                 | UiEvent::WorkItemStateChanged { .. }
+                | UiEvent::LabelKeyChanged { .. }
         )
 }
 
@@ -286,6 +305,7 @@ fn event_project(event: &UiEvent) -> Option<&str> {
         | UiEvent::MemoryChanged { project, .. }
         | UiEvent::SwimLaneChanged { project, .. }
         | UiEvent::WorkItemStateChanged { project, .. }
+        | UiEvent::LabelKeyChanged { project, .. }
         | UiEvent::AutomationChanged { project, .. }
         | UiEvent::AgentRunChanged { project, .. }
         | UiEvent::AgentOutputChanged { project, .. } => Some(project),
