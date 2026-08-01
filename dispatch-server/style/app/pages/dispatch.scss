@@ -2154,6 +2154,35 @@ a.claim-badge {
   }
 }
 
+.project-text-history-controls {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+
+  select {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  button {
+    flex: 0 0 auto;
+  }
+}
+
+.history-clear-modal {
+  leptonic-modal-body p {
+    margin: 0;
+
+    + p {
+      margin-top: $space;
+    }
+  }
+
+  leptonic-modal-footer {
+    gap: $space-sm;
+  }
+}
+
 .project-system-prompt-text.dirty,
 .project-memory-text.dirty {
   border-color: rgba($amber, 0.85);

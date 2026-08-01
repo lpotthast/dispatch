@@ -1,3 +1,13 @@
+---
+id: dispatch.api
+summary: "Dispatch HTTP, server-function, streaming, CrudKit, request, response, and error contracts."
+owns:
+  - "external and UI-facing transport contracts"
+  - "endpoint ownership, semantics, and error behavior"
+read_when:
+  - "changing endpoints, DTOs, streaming, server functions, CrudKit routes, or errors"
+---
+
 # API Design
 
 Dispatch exposes a custom JSON API for domain workflows and a separate CrudKit API for ordinary admin resources. The standalone CLI uses the custom JSON API through `dispatch-api-client`.
@@ -21,7 +31,7 @@ GET  /api/projects/{project}/memory
 PUT  /api/projects/{project}/memory
 POST /api/projects/{project}/memory/append
 GET  /api/projects/{project}/memory/events
-POST /api/projects/{project}/memory/events/compact
+POST /api/projects/{project}/memory/events/clear
 ```
 
 Work item endpoints:
@@ -124,7 +134,7 @@ Portable bundles use strict YAML schema version 1 with stable lowercase bundle/o
 
 Relationship mutations validate that both work items exist in the same project, the source and target differ, the relationship kind is non-empty after trimming, and the exact `(project, source, target, kind)` relationship is not already present. Mutations touch both source and target work items, emit item events for both sides, and publish item-change notifications for both item detail views.
 
-Project memory writes require Dispatch agent attribution in the request body. `PUT /memory` rewrites the complete memory field; `POST /memory/append` appends to the existing memory. Both create `MemoryChanged` events containing the full post-write memory snapshot. Compaction deletes memory history events only; the current project memory remains on the project record.
+Project memory writes require Dispatch agent attribution in the request body. `PUT /memory` rewrites the complete memory field; `POST /memory/append` appends to the existing memory. Both create `MemoryChanged` events containing the full post-write memory snapshot. Clearing history deletes memory history events only; the current project memory remains on the project record. History-clear operations return the shared `HistoryClearResult` with the number of deleted events.
 
 ## CrudKit Endpoints
 
@@ -158,7 +168,8 @@ Project delete is an exception to ordinary row-level CRUD implementation: CrudKi
 operator handler both delegate to the authoritative project-deletion lifecycle. A successful
 response means automation has stopped, active runs have been cancelled and reaped, Dispatch-owned
 runtime artifacts have been removed, and the database cascade has completed. Cleanup or shutdown
-failure rejects deletion without removing the project row.
+failure rejects deletion without removing the project row. A concurrent deletion already operating
+on the same immutable project id is rejected as in progress.
 
 Automation rule CRUD exposes the explicit run mutability and selected personality for work-consuming rules. Create and update requests validate storage values `mutating` and `read_only`; new custom rules default to `mutating` unless the operator chooses read-only. Consume-work create and update requests default a missing personality to the project `Default` personality and reject missing or cross-project personality references. Existing rules migrated from older schemas remain `mutating` until edited.
 
@@ -190,7 +201,7 @@ authoritative backend services as the direct handlers.
 
 Direct automation starts may include an explicit mutability value. Omitted mutability defaults to `mutating`; work-producing evaluations ignore run mutability because they do not launch agents. Automation status responses include aggregate running runs plus separate mutating/read-only running counts and the effective mutating allowance.
 
-Project system prompt writes create `SystemPromptChanged` events containing the full post-write prompt snapshot. System prompt history compaction deletes only old prompt events; the current project system prompt remains on the project record.
+Project system prompt writes create `SystemPromptChanged` events containing the full post-write prompt snapshot. Clearing system prompt history deletes only old prompt events; the current project system prompt remains on the project record.
 
 ## Errors
 

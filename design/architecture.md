@@ -1,3 +1,13 @@
+---
+id: dispatch.architecture
+summary: "Dispatch process boundaries, crate responsibilities, storage ownership, and integration architecture."
+owns:
+  - "process, crate, and storage ownership"
+  - "dependency and integration boundaries"
+read_when:
+  - "changing crate structure, process boundaries, storage ownership, or major integrations"
+---
+
 # Architecture
 
 Dispatch is a local-first Rust application with a server-rendered and hydrated Leptos UI. The server owns persistence, workflow state, automation launch, and the HTTP API. The standalone CLI is an API client for agents and tooling.
@@ -67,7 +77,22 @@ Project lifecycle coordination is keyed by immutable database project id. The se
 service is the single authority shared by direct operator and CrudKit paths; it coordinates the
 automation controller, process-session registry, filesystem artifacts, Git workspaces and refs,
 managed Codex state, and finally the SQLite cascade. Name remains a reusable routing key, but it is
-not used to associate live process or cleanup state across project lifetimes.
+not used to associate live process or cleanup state across project lifetimes. Deletion admission is
+single-flight per project id: a concurrent duplicate is rejected while different project ids remain
+independent. Session entries and deletion admission share one synchronized state boundary. After
+deletion closes admission, a late session start is rejected as cancelled without entering the
+registry, so an observed empty session set remains stable. Automation-controller activation is
+registered synchronously through this same boundary: deletion either observes and stops the
+registered controller or closes admission first and rejects the activation. Controller entries,
+cancellation receivers, and scheduler snapshots are keyed by immutable project id, so a snapshot
+from an old project lifetime cannot activate a same-name replacement. The owning deletion holds an
+admission permit. Failure or task cancellation drops the permit and reopens admission for retry;
+successful row deletion synchronously converts it to a process-lifetime tombstone, permanently
+rejecting delayed starts for that old id. A duplicate caller never owns a permit and cannot release
+the owner's state. CrudKit reaches the service through the project resource's dedicated repository only
+after its before-delete validation succeeds; project lifecycle hooks do not perform destructive
+cleanup. Detached automation execution likewise owns session completion through an unwind-safe
+guard.
 
 Dispatch minimizes control-plane traffic to OpenAI. It performs one Codex readiness probe when the server starts and one immediately before each actual automation run so authentication or an active rate-limit block fails before work is claimed. It does not poll Codex status globally while idle, and enabling project automation does not add a probe before the per-run check. Readiness probes read account and rate-limit state only. While an operator has `/system` mounted, that page loads a detailed status immediately and refreshes it every five minutes, including the token-activity summary; duplicate page or live-event requests within four minutes share the most recent detailed result. The manual Refresh action always forces a new detailed check. Managed Codex config disables automatic update checks and optional remote app or plugin catalogs that Dispatch automation does not use.
 

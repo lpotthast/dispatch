@@ -74,7 +74,7 @@ pub(crate) async fn push_codex_output_piece(
     output.push(piece.clone());
     trim_output_pieces(output, MAX_AGENT_OUTPUT_BYTES);
     if let Some(registry) = sessions {
-        registry.append_output_piece(run_id, piece).await;
+        registry.append_output_piece(run_id, piece);
     }
 }
 

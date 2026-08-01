@@ -16,7 +16,7 @@ use crate::backend::{
         project::{Project, ProjectModel},
     },
     events,
-    process_sessions::ProcessSessionRegistry,
+    process_sessions::{ProcessSessionRegistry, ProjectDeletionAdmissionRejection},
     projects,
     storage::Store,
 };
@@ -28,7 +28,8 @@ const SESSION_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 ///
 /// A project row is deleted only after its automation has stopped and every Dispatch-owned
 /// filesystem or repository artifact has been removed. Every entry point, including CrudKit,
-/// must use this service instead of deleting the project row directly.
+/// must use this service instead of deleting the project row directly. CrudKit invokes it through
+/// `ProjectCrudRepository` after its before-delete validation has succeeded.
 #[derive(Clone)]
 pub(crate) struct ProjectDeletionService {
     store: Store,
@@ -61,11 +62,26 @@ impl ProjectDeletionService {
     pub(crate) async fn delete_model(&self, project: ProjectModel) -> Result<()> {
         let project_id = project.id;
         let project_name = project.name.clone();
-        self.sessions.begin_project_deletion(project_id).await;
+        let admission = match self.sessions.begin_project_deletion(project_id) {
+            Ok(admission) => admission,
+            Err(ProjectDeletionAdmissionRejection::InProgress) => {
+                bail!(
+                    "project '{}' (id {}) deletion is already in progress",
+                    project_name,
+                    project_id
+                );
+            }
+            Err(ProjectDeletionAdmissionRejection::AlreadyDeleted) => {
+                bail!(
+                    "project '{}' (id {}) was already deleted",
+                    project_name,
+                    project_id
+                );
+            }
+        };
 
-        let result = self.delete_after_admission_closed(&project).await;
-        self.sessions.end_project_deletion(project_id).await;
-        result?;
+        self.delete_after_admission_closed(&project).await?;
+        admission.mark_deleted();
 
         events::publish_project_deleted(project_id, &project_name);
         events::publish_project_list_changed();
@@ -77,7 +93,7 @@ impl ProjectDeletionService {
             .stop_project(project.id, &project.name, &self.sessions)
             .await?;
         self.wait_for_sessions_to_stop(project).await?;
-        automation::stop_automation(&self.store, &project.name).await?;
+        automation::stop_automation(&self.store, project.id, &project.name).await?;
 
         let runs = AgentRun::find()
             .filter(agent_run::Column::ProjectId.eq(project.id))
@@ -104,7 +120,7 @@ impl ProjectDeletionService {
     async fn wait_for_sessions_to_stop(&self, project: &ProjectModel) -> Result<()> {
         tokio::time::timeout(SESSION_SHUTDOWN_TIMEOUT, async {
             loop {
-                if self.sessions.list_for_project(project.id).await.is_empty() {
+                if self.sessions.list_for_project(project.id).is_empty() {
                     return;
                 }
                 tokio::time::sleep(SESSION_SHUTDOWN_POLL_INTERVAL).await;
@@ -186,11 +202,24 @@ fn remove_path_if_exists(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{borrow::Cow, sync::Arc};
+
     use super::*;
     use assertr::prelude::*;
+    use crudkit_core::{
+        id::Id,
+        validation::violation::{Violation, Violations},
+    };
+    use crudkit_rs::prelude::{
+        CrudError, DeleteById, EntityValidator, HasId, RequestContext, ValidationTrigger,
+        delete_by_id,
+    };
     use tempfile::TempDir;
 
-    use crate::backend::projects::{CreateProject, create_project, get_project};
+    use crate::backend::{
+        crudkit_resources::{self, CrudProjectResource},
+        projects::{CreateProject, create_project, find_project_by_name, get_project},
+    };
 
     async fn test_store(temp: &TempDir) -> Store {
         Store::open(temp.path().join("dispatch.sqlite3"))
@@ -210,6 +239,108 @@ mod tests {
         }
     }
 
+    fn deletion_service(temp: &TempDir, store: &Store) -> (ProjectDeletionService, PathBuf) {
+        let codex_projects_dir = temp.path().join("codex-projects");
+        (
+            ProjectDeletionService {
+                store: store.clone(),
+                automation_controller: AutomationController::new(),
+                sessions: ProcessSessionRegistry::new(),
+                run_artifact_dir: temp.path().join("runs"),
+                codex_projects_dir: codex_projects_dir.clone(),
+            },
+            codex_projects_dir,
+        )
+    }
+
+    struct RejectProjectDeletion;
+
+    impl EntityValidator<CrudProjectResource> for RejectProjectDeletion {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("reject_project_deletion")
+        }
+
+        fn version(&self) -> u32 {
+            1
+        }
+
+        fn validate_model(&self, _model: &ProjectModel, _trigger: ValidationTrigger) -> Violations {
+            let mut violations = Violations::empty();
+            violations.push(Violation::critical("project deletion rejected"));
+            violations
+        }
+    }
+
+    #[tokio::test]
+    async fn crudkit_deletion_runs_project_lifecycle_exactly_once() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = test_store(&temp).await;
+        create_project(&store, project_input("demo", &workspace, None))
+            .await
+            .unwrap();
+        let project = find_project_by_name(&store, "demo").await.unwrap();
+        let (deletion, codex_projects_dir) = deletion_service(&temp, &store);
+        let project_codex_home = codex_projects_dir.join(project.id.to_string());
+        fs::create_dir_all(&project_codex_home).unwrap();
+        fs::write(project_codex_home.join("config.toml"), "managed").unwrap();
+        let context = crudkit_resources::build_contexts(store.clone(), deletion).project;
+
+        let deleted = delete_by_id::<CrudProjectResource>(
+            RequestContext::unauthenticated(),
+            context,
+            DeleteById {
+                id: project.id().to_serializable_id(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_that!(&(deleted.entities_affected)).is_equal_to(1);
+        assert_that!(&(get_project(&store, "demo").await.is_err())).is_true();
+        assert_that!(&(!project_codex_home.exists())).is_true();
+    }
+
+    #[tokio::test]
+    async fn crudkit_validation_rejects_before_project_cleanup() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = test_store(&temp).await;
+        create_project(&store, project_input("demo", &workspace, None))
+            .await
+            .unwrap();
+        let project = find_project_by_name(&store, "demo").await.unwrap();
+        let (deletion, codex_projects_dir) = deletion_service(&temp, &store);
+        let project_codex_home = codex_projects_dir.join(project.id.to_string());
+        fs::create_dir_all(&project_codex_home).unwrap();
+        fs::write(project_codex_home.join("config.toml"), "managed").unwrap();
+        let context = crudkit_resources::build_contexts(store.clone(), deletion).project;
+        let mut context = match Arc::try_unwrap(context) {
+            Ok(context) => context,
+            Err(_) => panic!("project CrudKit context should have a single owner"),
+        };
+        context.validators.push(Arc::new(RejectProjectDeletion));
+
+        let error = delete_by_id::<CrudProjectResource>(
+            RequestContext::unauthenticated(),
+            Arc::new(context),
+            DeleteById {
+                id: project.id().to_serializable_id(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        match error {
+            CrudError::CriticalValidationErrors { .. } => {}
+            other => panic!("expected critical validation error, got {other:?}"),
+        }
+        assert_that!(&(get_project(&store, "demo").await.is_ok())).is_true();
+        assert_that!(&(project_codex_home.exists())).is_true();
+    }
+
     #[tokio::test]
     async fn deletion_removes_managed_state_and_recreated_key_is_fresh() {
         let temp = TempDir::new().unwrap();
@@ -224,6 +355,7 @@ mod tests {
         )
         .await
         .unwrap();
+        let old_model = find_project_by_name(&store, "demo").await.unwrap();
 
         let run_artifact_dir = temp.path().join("runs");
         let codex_projects_dir = temp.path().join("codex-projects");
@@ -231,21 +363,20 @@ mod tests {
         fs::create_dir_all(&old_codex_home).unwrap();
         fs::write(old_codex_home.join("config.toml"), "old").unwrap();
         let automation_controller = AutomationController::new();
+        let sessions = ProcessSessionRegistry::new();
         automation_controller
-            .start_project(&store, "demo".to_owned())
+            .start_project(&store, "demo".to_owned(), &sessions)
             .await
             .unwrap();
-        let sessions = ProcessSessionRegistry::new();
-        let mut cancellation = sessions
-            .begin(crate::backend::process_sessions::ProcessSessionStart {
+        let mut cancellation =
+            sessions.begin(crate::backend::process_sessions::ProcessSessionStart {
                 run_id: 99,
                 project_id: old.id,
                 project_name: old.name.clone(),
                 tool_name: "codex".to_owned(),
                 command: String::new(),
                 working_dir: old_workspace.to_string_lossy().into_owned(),
-            })
-            .await;
+            });
         let deletion = ProjectDeletionService {
             store: store.clone(),
             automation_controller: automation_controller.clone(),
@@ -254,23 +385,113 @@ mod tests {
             codex_projects_dir,
         };
 
-        let deletion_task = tokio::spawn(async move { deletion.delete_by_name("demo").await });
-        cancellation.changed().await.unwrap();
-        assert_that!(&(*cancellation.borrow())).is_true();
+        let deletion_task = {
+            let deletion = deletion.clone();
+            tokio::spawn(async move { deletion.delete_by_name("demo").await })
+        };
+        cancellation.wait_for_cancellation().await;
+        assert_that!(&(cancellation.cancellation_requested())).is_true();
         assert_that!(&(!deletion_task.is_finished())).is_true();
-        sessions.finish(99).await;
+        let duplicate_error = deletion.delete_by_name("demo").await.unwrap_err();
+        let expected_error = format!(
+            "project 'demo' (id {}) deletion is already in progress",
+            old.id
+        );
+        assert_that!(&(duplicate_error.to_string())).contains(expected_error.as_str());
+
+        let during_deletion =
+            sessions.begin(crate::backend::process_sessions::ProcessSessionStart {
+                run_id: 100,
+                project_id: old.id,
+                project_name: old.name.clone(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: old_workspace.to_string_lossy().into_owned(),
+            });
+        assert_that!(&(during_deletion.cancellation_requested())).is_true();
+        assert_that!(&(!during_deletion.is_registered())).is_true();
+        assert_that!(&(sessions.get_for_project(old.id, 100).is_none())).is_true();
+
+        sessions.finish(99);
         deletion_task.await.unwrap().unwrap();
         assert_that!(&(!old_codex_home.exists())).is_true();
         assert_that!(&(!automation_controller.is_project_running(old.id).await)).is_true();
 
+        let stale_deletion_error = deletion.delete_model(old_model).await.unwrap_err();
+        let expected_error = format!("project 'demo' (id {}) was already deleted", old.id);
+        assert_that!(&(stale_deletion_error.to_string())).contains(expected_error.as_str());
+
         let recreated = create_project(&store, project_input("demo", &new_workspace, None))
             .await
             .unwrap();
+        let delayed_old_session =
+            sessions.begin(crate::backend::process_sessions::ProcessSessionStart {
+                run_id: 101,
+                project_id: old.id,
+                project_name: old.name.clone(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: old_workspace.to_string_lossy().into_owned(),
+            });
+        let replacement_session =
+            sessions.begin(crate::backend::process_sessions::ProcessSessionStart {
+                run_id: 102,
+                project_id: recreated.id,
+                project_name: recreated.name.clone(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: new_workspace.to_string_lossy().into_owned(),
+            });
         let loaded = get_project(&store, "demo").await.unwrap();
         assert_that!(&(recreated.id)).is_not_equal_to(old.id);
+        assert_that!(&(delayed_old_session.cancellation_requested())).is_true();
+        assert_that!(&(!delayed_old_session.is_registered())).is_true();
+        assert_that!(&(sessions.get_for_project(old.id, 101).is_none())).is_true();
+        assert_that!(&(!replacement_session.cancellation_requested())).is_true();
+        assert_that!(&(replacement_session.is_registered())).is_true();
         assert_that!(&(!automation_controller.is_project_running(recreated.id).await)).is_true();
         assert_that!(&(loaded.path.as_deref())).is_equal_to(new_workspace.to_str());
         assert_that!(&(loaded.memory.is_empty())).is_true();
+    }
+
+    #[tokio::test]
+    async fn aborted_deletion_releases_single_flight_admission() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = test_store(&temp).await;
+        let project = create_project(&store, project_input("demo", &workspace, None))
+            .await
+            .unwrap();
+        let sessions = ProcessSessionRegistry::new();
+        let mut cancellation =
+            sessions.begin(crate::backend::process_sessions::ProcessSessionStart {
+                run_id: 99,
+                project_id: project.id,
+                project_name: project.name.clone(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: workspace.to_string_lossy().into_owned(),
+            });
+        let deletion = ProjectDeletionService {
+            store: store.clone(),
+            automation_controller: AutomationController::new(),
+            sessions: sessions.clone(),
+            run_artifact_dir: temp.path().join("runs"),
+            codex_projects_dir: temp.path().join("codex-projects"),
+        };
+        let deletion_task = {
+            let deletion = deletion.clone();
+            tokio::spawn(async move { deletion.delete_by_name("demo").await })
+        };
+        cancellation.wait_for_cancellation().await;
+
+        deletion_task.abort();
+        assert_that!(&(deletion_task.await.unwrap_err().is_cancelled())).is_true();
+        sessions.finish(99);
+
+        deletion.delete_by_name("demo").await.unwrap();
+        assert_that!(&(get_project(&store, "demo").await.is_err())).is_true();
     }
 
     #[test]

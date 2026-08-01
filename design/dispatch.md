@@ -1,3 +1,13 @@
+---
+id: dispatch.index
+summary: "Entry point for Dispatch behavior, boundaries, invariants, actors, and focused design documents."
+owns:
+  - "the design map and minimum reading path"
+  - "system purpose, actors, boundaries, and core invariants"
+read_when:
+  - "starting Dispatch work or changing a cross-cutting product contract"
+---
+
 # Dispatch Design Overview
 
 Dispatch coordinates software work across a local project, a server-owned work item database, a web UI, and launched coding agents. The server is the source of truth for persistence and workflow rules. Agents use the `dispatch` CLI as an HTTP relay to the server; they do not open SQLite or write Dispatch state directly.

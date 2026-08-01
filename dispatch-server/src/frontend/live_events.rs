@@ -25,6 +25,13 @@ struct LiveEventContext {
     latest_event: ReadSignal<Option<UiEvent>>,
 }
 
+#[cfg(any(not(feature = "ssr"), test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectDeletionSelectionAction {
+    Ignore,
+    Resolve,
+}
+
 #[component]
 pub(crate) fn LiveEventsProvider() -> impl IntoView {
     let (latest_event, set_latest_event) = signal(None::<UiEvent>);
@@ -79,20 +86,42 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
             run_service.clear_cache();
             codex_service.clear_cache();
             api_docs_service.clear_cache();
-            project_cache.remove(project_id, &project);
             let selected = query
                 .read()
                 .get("project")
                 .or_else(|| params.read().get("project"));
-            if selected.as_deref() == Some(project.as_str()) {
-                navigate(
-                    "/projects",
-                    NavigateOptions {
-                        replace: true,
-                        scroll: true,
-                        ..NavigateOptions::default()
-                    },
-                );
+            project_cache.remove_deleted(project_id);
+            match project_deletion_selection_action(&project, selected.as_deref()) {
+                ProjectDeletionSelectionAction::Ignore => {}
+                ProjectDeletionSelectionAction::Resolve => {
+                    let project_service = project_service.clone();
+                    let navigate = navigate.clone();
+                    let query = query.clone();
+                    let params = params.clone();
+                    leptos::task::spawn_local(async move {
+                        let Ok(current_project_id) =
+                            project_service.current_project_id(project.clone()).await
+                        else {
+                            return;
+                        };
+                        let selected = query
+                            .read()
+                            .get("project")
+                            .or_else(|| params.read().get("project"));
+                        if selected.as_deref() == Some(project.as_str())
+                            && resolved_project_was_deleted(project_id, current_project_id)
+                        {
+                            navigate(
+                                "/projects",
+                                NavigateOptions {
+                                    replace: true,
+                                    scroll: true,
+                                    ..NavigateOptions::default()
+                                },
+                            );
+                        }
+                    });
+                }
             }
         });
         return view! {
@@ -110,6 +139,22 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
         <span hidden aria-hidden="true" data-live-events-state="closed"/>
     }
     .into_any()
+}
+
+#[cfg(any(not(feature = "ssr"), test))]
+fn project_deletion_selection_action(
+    deleted_project_name: &str,
+    selected_project_name: Option<&str>,
+) -> ProjectDeletionSelectionAction {
+    if selected_project_name != Some(deleted_project_name) {
+        return ProjectDeletionSelectionAction::Ignore;
+    }
+    ProjectDeletionSelectionAction::Resolve
+}
+
+#[cfg(any(not(feature = "ssr"), test))]
+fn resolved_project_was_deleted(deleted_project_id: i64, current_project_id: Option<i64>) -> bool {
+    current_project_id.is_none_or(|project_id| project_id == deleted_project_id)
 }
 
 pub(crate) fn refetch_on_live_event(
@@ -172,6 +217,18 @@ pub(crate) fn projects_page_event_matches(event: &UiEvent) -> bool {
             | UiEvent::AutomationChanged { .. }
             | UiEvent::CodexStatusChanged { .. }
     )
+}
+
+pub(crate) fn project_page_event_matches(event: &UiEvent, project: Option<&str>) -> bool {
+    event_scopes_named_project(event, project)
+        && matches!(
+            event,
+            UiEvent::ProjectListChanged { .. }
+                | UiEvent::ProjectChanged { .. }
+                | UiEvent::ProjectDeleted { .. }
+                | UiEvent::SystemPromptChanged { .. }
+                | UiEvent::MemoryChanged { .. }
+        )
 }
 
 pub(crate) fn api_docs_event_matches(event: &UiEvent) -> bool {
@@ -318,10 +375,11 @@ fn event_project(event: &UiEvent) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        api_docs_event_matches, board_items_event_matches, codex_event_matches,
-        event_scopes_named_project, item_event_matches, projects_page_event_matches,
-        run_log_event_matches, runs_page_event_matches, runs_section_event_matches,
-        trigger_runs_event_matches,
+        ProjectDeletionSelectionAction, api_docs_event_matches, board_items_event_matches,
+        codex_event_matches, event_scopes_named_project, item_event_matches,
+        project_deletion_selection_action, project_page_event_matches, projects_page_event_matches,
+        resolved_project_was_deleted, run_log_event_matches, runs_page_event_matches,
+        runs_section_event_matches, trigger_runs_event_matches,
     };
     use crate::shared::view_models::UiEvent;
     use assertr::prelude::*;
@@ -332,6 +390,21 @@ mod tests {
 
     fn timestamp() -> String {
         TIMESTAMP.to_owned()
+    }
+
+    #[test]
+    fn project_deletion_selection_always_resolves_matching_names() {
+        assert_that!(&(project_deletion_selection_action(DEMO_PROJECT, Some(OTHER_PROJECT))))
+            .is_equal_to(ProjectDeletionSelectionAction::Ignore);
+        assert_that!(&(project_deletion_selection_action(DEMO_PROJECT, Some(DEMO_PROJECT),)))
+            .is_equal_to(ProjectDeletionSelectionAction::Resolve);
+    }
+
+    #[test]
+    fn resolved_project_identity_preserves_only_a_replacement() {
+        assert_that!(&(resolved_project_was_deleted(1, None))).is_true();
+        assert_that!(&(resolved_project_was_deleted(1, Some(1)))).is_true();
+        assert_that!(&(!resolved_project_was_deleted(1, Some(2)))).is_true();
     }
 
     fn project_list_changed() -> UiEvent {
@@ -349,9 +422,18 @@ mod tests {
         }
     }
 
+    fn project_deleted(project: &str, project_id: i64) -> UiEvent {
+        UiEvent::ProjectDeleted {
+            sequence: 3,
+            timestamp: timestamp(),
+            project_id,
+            project: project.to_owned(),
+        }
+    }
+
     fn system_prompt_changed(project: &str) -> UiEvent {
         UiEvent::SystemPromptChanged {
-            sequence: 3,
+            sequence: 4,
             timestamp: timestamp(),
             project: project.to_owned(),
         }
@@ -476,6 +558,27 @@ mod tests {
         assert_that!(&(projects_page_event_matches(&automation_changed(DEMO_PROJECT)))).is_true();
         assert_that!(&(projects_page_event_matches(&codex_status_changed()))).is_true();
         assert_that!(&(!projects_page_event_matches(&agent_tool_changed()))).is_true();
+    }
+
+    #[test]
+    fn project_page_refreshes_selected_project_lifecycle_and_history() {
+        for event in [
+            project_list_changed(),
+            project_changed(DEMO_PROJECT),
+            project_deleted(DEMO_PROJECT, 1),
+            system_prompt_changed(DEMO_PROJECT),
+            memory_changed(DEMO_PROJECT),
+        ] {
+            assert_that!(&(project_page_event_matches(&event, Some(DEMO_PROJECT)))).is_true();
+        }
+        for event in [
+            project_changed(OTHER_PROJECT),
+            project_deleted(OTHER_PROJECT, 2),
+            system_prompt_changed(OTHER_PROJECT),
+            memory_changed(OTHER_PROJECT),
+        ] {
+            assert_that!(&(!project_page_event_matches(&event, Some(DEMO_PROJECT)))).is_true();
+        }
     }
 
     #[test]

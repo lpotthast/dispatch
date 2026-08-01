@@ -134,18 +134,18 @@ async fn wait_for_shutdown_signal() {
 }
 
 async fn cancel_active_sessions(store: &Store, sessions: &ProcessSessionRegistry) {
-    let active = sessions.list_all().await;
+    let active = sessions.list_all();
     let mut projects = active
         .into_iter()
-        .map(|session| session.project_name)
+        .map(|session| (session.project_id, session.project_name))
         .collect::<Vec<_>>();
     projects.sort();
     projects.dedup();
 
-    sessions.cancel_all().await;
+    sessions.cancel_all();
     if let Err(_elapsed) = tokio::time::timeout(ACTIVE_SESSION_SHUTDOWN_TIMEOUT, async {
         loop {
-            if sessions.list_all().await.is_empty() {
+            if sessions.list_all().is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -156,10 +156,10 @@ async fn cancel_active_sessions(store: &Store, sessions: &ProcessSessionRegistry
         tracing::warn!("timed out waiting for active automation sessions to stop");
     }
 
-    for project in projects {
-        if let Err(err) = automation::stop_automation(store, &project).await {
+    for (project_id, project_name) in projects {
+        if let Err(err) = automation::stop_automation(store, project_id, &project_name).await {
             tracing::error!(
-                project = %project,
+                project = %project_name,
                 error = %format_args!("{err:#}"),
                 "failed to mark running automation cancelled"
             );

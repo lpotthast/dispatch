@@ -1,3 +1,13 @@
+---
+id: dispatch.workflows
+summary: "Dispatch work-item, automation, agent-run, deletion, Git-policy, and recovery workflows."
+owns:
+  - "workflow transitions and automation policy"
+  - "agent-run lifecycle, deletion, recovery, and Git behavior"
+read_when:
+  - "changing claims, progress, finish, release, automation, runs, deletion, or Git policy"
+---
+
 # Workflows
 
 Dispatch workflows are enforced by server services. The CLI and UI send intent; the server validates project scope, ownership, item state, and version safety.
@@ -128,7 +138,16 @@ Dispatch repairs stale shared-asset symlinks in a project Codex home before laun
 Project deletion is an ordered server lifecycle, not a raw project-row delete. Dispatch first
 closes run admission for the immutable project id, stops its automation scheduler, cancels every
 registered run including runs that have not spawned a child process yet, and waits for all sessions
-to finish. A session registered after deletion begins receives cancellation immediately.
+to finish. Session registration, automation-controller activation, and deletion admission share one
+atomic synchronous boundary. A session or controller start attempted after deletion begins is
+rejected without entering active state, while a start admitted first is visible to deletion and is
+stopped. Scheduler activation and cancellation snapshots carry immutable project ids rather than
+names, so an in-flight snapshot from the deleted lifetime cannot route work into a same-name
+replacement. Deletion is single-flight per project id: a concurrent duplicate fails as already in
+progress and cannot release the first deletion's admission marker. Failure or task cancellation
+drops the owning admission permit and reopens the id for retry. Successful row deletion instead
+converts the permit to a process-lifetime deleted-id tombstone, so a delayed start captured before
+deletion cannot register afterward.
 
 After processes have stopped, Dispatch removes every project-owned runtime artifact: per-run
 developer instructions, user prompts, structured output, Codex stderr diagnostics, Git policy
@@ -140,7 +159,11 @@ deletes the configured source workspace itself.
 Only after cleanup succeeds does Dispatch delete the project row and its cascading project data.
 Both custom operator handlers and CrudKit deletion use this same lifecycle. Completion publishes a
 project-deleted live event containing both the deleted id and name, so a same-name replacement is
-never confused with the deleted project.
+never confused with the deleted project. Persisted run and claim cleanup use the captured project id;
+the reusable name is retained only for messages and event routing. A replacement with that name has a
+new id and is unaffected by the old id's session-admission tombstone. CrudKit validates the project
+before entering this lifecycle, and the lifecycle's row delete fulfills CrudKit's repository delete
+without a second row-delete attempt.
 
 ### Produced work
 

@@ -956,6 +956,7 @@ async fn failed_automation_claim_finalization_blocks_retry() {
     finalize_automation_claim(
         &store,
         AutomationClaimFinalization {
+            project_id: item.project_id,
             project_name: "demo",
             run_id: 17,
             claimed_item_id: Some(item.id),
@@ -1039,6 +1040,7 @@ async fn successful_and_cancelled_automation_claim_finalization_remains_claimabl
         finalize_automation_claim(
             &store,
             AutomationClaimFinalization {
+                project_id: item.project_id,
                 project_name: "demo",
                 run_id: 20 + index,
                 claimed_item_id: Some(item.id),
@@ -1114,6 +1116,7 @@ async fn automation_claim_finalization_uses_finish_metadata_not_state_label() {
     finalize_automation_claim(
         &store,
         AutomationClaimFinalization {
+            project_id: item.project_id,
             project_name: "demo",
             run_id: 31,
             claimed_item_id: Some(item.id),
@@ -1171,6 +1174,7 @@ async fn automation_claim_finalization_leaves_finished_items_alone() {
     finalize_automation_claim(
         &store,
         AutomationClaimFinalization {
+            project_id: item.project_id,
             project_name: "demo",
             run_id: 41,
             claimed_item_id: Some(item.id),

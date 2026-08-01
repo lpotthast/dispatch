@@ -141,25 +141,25 @@ where
         .collect())
 }
 
-pub(super) async fn compact_system_prompt_events<C>(conn: &C, project_id: i64) -> Result<u64>
+pub(super) async fn clear_system_prompt_history<C>(conn: &C, project_id: i64) -> Result<u64>
 where
     C: ConnectionTrait,
 {
     Ok(
-        compact_project_text_events(conn, project_id, SYSTEM_PROMPT_CHANGED_EVENT_TYPE)
+        clear_project_text_history(conn, project_id, SYSTEM_PROMPT_CHANGED_EVENT_TYPE)
             .await
-            .context("failed to compact project system prompt events")?,
+            .context("failed to clear project system prompt history")?,
     )
 }
 
-pub(super) async fn compact_memory_events<C>(conn: &C, project_id: i64) -> Result<u64>
+pub(super) async fn clear_memory_history<C>(conn: &C, project_id: i64) -> Result<u64>
 where
     C: ConnectionTrait,
 {
     Ok(
-        compact_project_text_events(conn, project_id, MEMORY_CHANGED_EVENT_TYPE)
+        clear_project_text_history(conn, project_id, MEMORY_CHANGED_EVENT_TYPE)
             .await
-            .context("failed to compact project memory events")?,
+            .context("failed to clear project memory history")?,
     )
 }
 
@@ -295,7 +295,7 @@ where
         .await?)
 }
 
-async fn compact_project_text_events<C>(
+async fn clear_project_text_history<C>(
     conn: &C,
     project_id: i64,
     event_type: WorkItemEventType,

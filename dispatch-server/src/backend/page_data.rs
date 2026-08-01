@@ -165,7 +165,7 @@ pub(crate) async fn runs_section(
     let project_id = projects::project_id(store, project).await?;
     let automation_status = automation::automation_status(store, project).await?;
     let automation_running = automation_controller.is_project_running(project_id).await;
-    let active_sessions = sessions.list_for_project(project_id).await;
+    let active_sessions = sessions.list_for_project(project_id);
     let run_sessions = board_run_sessions(
         store,
         project,
@@ -251,7 +251,6 @@ pub(crate) async fn trigger_run_sessions(
     let run_ids = runs.iter().map(|run| run.id).collect::<HashSet<_>>();
     let active_sessions = sessions
         .list_for_project(project_id)
-        .await
         .into_iter()
         .filter(|session| run_ids.contains(&session.run_id))
         .collect::<Vec<_>>();

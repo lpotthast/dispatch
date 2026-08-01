@@ -1,3 +1,13 @@
+---
+id: dispatch.data-model
+summary: "Persistent Dispatch entities, relationships, identifiers, events, settings, and data invariants."
+owns:
+  - "the persistent domain model and relationships"
+  - "identifier, event, and data-integrity contracts"
+read_when:
+  - "changing stored entities, relationships, identifiers, events, or settings"
+---
+
 # Data Model
 
 Dispatch stores project-scoped work coordination data. The database schema lives in `dispatch-server`; shared API shapes live in `dispatch-types`.
@@ -92,9 +102,9 @@ Events are used by item watch commands, live board updates, and automation visib
 
 Event kinds form a closed audit vocabulary. Item workflow events cover item create, update, move, delete, claim, progress, finish, and release; feedback requests; comments; label create, update, and delete; and relationship create, update, and delete. Project snapshot events use the historical `SystemPromptChanged` and `MemoryChanged` names. Producers use the typed event kind and actor type rather than constructing storage strings, while the API and server-sent-event names retain their existing wire spellings.
 
-System prompt history is reconstructable from `SystemPromptChanged` event snapshots until a user compacts system prompt history. Compaction removes old system prompt events but does not change the current `projects.system_prompt` value.
+System prompt history is reconstructable from `SystemPromptChanged` event snapshots until a user clears system prompt history. Clearing history removes old system prompt events but does not change the current `projects.system_prompt` value.
 
-Memory history is reconstructable from `MemoryChanged` event snapshots until a user compacts memory history. Compaction removes old memory events but does not change the current `projects.memory` value. Agent runs may keep a memory event id reference; readers must tolerate the referenced event being unavailable after compaction.
+Memory history is reconstructable from `MemoryChanged` event snapshots until a user clears memory history. Clearing history removes old memory events but does not change the current `projects.memory` value. Agent runs may keep a memory event id reference; readers must tolerate the referenced event being unavailable after history is cleared.
 
 ## Agent Tools
 

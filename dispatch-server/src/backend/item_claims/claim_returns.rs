@@ -27,6 +27,7 @@ pub(crate) enum AutomationClaimOutcome {
 }
 
 pub(crate) struct AutomationClaimFinalization<'a> {
+    pub(crate) project_id: i64,
     pub(crate) project_name: &'a str,
     pub(crate) run_id: i64,
     pub(crate) claimed_item_id: Option<i64>,
@@ -143,8 +144,10 @@ pub(crate) async fn release_item(
     automation_disposition: ReleaseAutomationDisposition,
 ) -> Result<WorkItemView> {
     agent_ids::validate_agent_id(agent_id)?;
+    let project_id = projects::project_id(store, project_name).await?;
     return_claim_to_source_state(
         store,
+        project_id,
         project_name,
         item_id,
         agent_id,
@@ -161,6 +164,7 @@ pub(crate) async fn finalize_automation_claim(
     context: AutomationClaimFinalization<'_>,
 ) -> Result<()> {
     let AutomationClaimFinalization {
+        project_id,
         project_name,
         run_id,
         claimed_item_id,
@@ -172,19 +176,23 @@ pub(crate) async fn finalize_automation_claim(
         return Ok(());
     };
 
-    let project_id = projects::project_id(store, project_name).await?;
     let current = work_items::get(store.db().as_ref(), project_id, item_id).await?;
     if current.claimed_by.as_deref() != Some(agent_id) || current.finished_at.is_some() {
         return Ok(());
     }
 
-    release_item(
+    agent_ids::validate_agent_id(agent_id)?;
+    let comment = automation_claim_release_comment(outcome, run_id, detail);
+    return_claim_to_source_state(
         store,
+        project_id,
         project_name,
         item_id,
         agent_id,
-        Some(automation_claim_release_comment(outcome, run_id, detail)),
-        outcome.release_disposition(),
+        ClaimReturnMode::Release {
+            comment: Some(&comment),
+            automation_disposition: outcome.release_disposition(),
+        },
     )
     .await?;
     Ok(())
@@ -202,8 +210,10 @@ pub(crate) async fn request_feedback(
         bail!("feedback request body cannot be empty");
     }
 
+    let project_id = projects::project_id(store, project_name).await?;
     return_claim_to_source_state(
         store,
+        project_id,
         project_name,
         item_id,
         agent_id,
@@ -214,12 +224,12 @@ pub(crate) async fn request_feedback(
 
 async fn return_claim_to_source_state(
     store: &Store,
+    project_id: i64,
     project_name: &str,
     item_id: i64,
     agent_id: &str,
     mode: ClaimReturnMode<'_>,
 ) -> Result<WorkItemView> {
-    let project_id = projects::project_id(store, project_name).await?;
     let txn = store.db().begin().await.context(mode.start_context())?;
     let claim = active_claims::load_in_tx(&txn, project_id, item_id, agent_id).await?;
     let labels = work_item_labels::for_item(&txn, project_id, item_id).await?;

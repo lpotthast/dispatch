@@ -9,7 +9,7 @@ use crate::{
         pages::{ProjectPage, ProjectsPage, WorkspaceBarData},
         services::{cache::LocalStorageCache, origin::api_base_url, request::ServiceRequest},
     },
-    shared::view_models::{AgentGitCommandPolicy, ProjectView, RevertStrategy},
+    shared::view_models::{AgentGitCommandPolicy, HistoryClearResult, ProjectView, RevertStrategy},
 };
 use codee::string::JsonSerdeCodec;
 use leptos::prelude::*;
@@ -32,9 +32,13 @@ pub(crate) struct ProjectService {
     load_page: ServiceRequest<(), ProjectsPage>,
     load_project_page: ServiceRequest<Option<String>, ProjectPage>,
     load_workspace_bar: ServiceRequest<Option<String>, WorkspaceBarData>,
+    #[cfg(not(feature = "ssr"))]
+    current_project_id: ServiceRequest<String, Option<i64>>,
     update_auto_commit: ServiceRequest<(String, bool), ()>,
     update_system_prompt: ServiceRequest<(String, String), ()>,
+    clear_system_prompt_history: ServiceRequest<String, HistoryClearResult>,
     update_memory: ServiceRequest<(String, String), ()>,
+    clear_memory_history: ServiceRequest<String, HistoryClearResult>,
     update_commit_policy: ServiceRequest<(String, CommitPolicyUpdate), ()>,
     open_workspace: ServiceRequest<(String, String), ()>,
     cleanup_worktrees: ServiceRequest<String, ()>,
@@ -48,9 +52,13 @@ struct ProjectRequests {
     load_page: ServiceRequest<(), ProjectsPage>,
     load_project_page: ServiceRequest<Option<String>, ProjectPage>,
     load_workspace_bar: ServiceRequest<Option<String>, WorkspaceBarData>,
+    #[cfg(not(feature = "ssr"))]
+    current_project_id: ServiceRequest<String, Option<i64>>,
     update_auto_commit: ServiceRequest<(String, bool), ()>,
     update_system_prompt: ServiceRequest<(String, String), ()>,
+    clear_system_prompt_history: ServiceRequest<String, HistoryClearResult>,
     update_memory: ServiceRequest<(String, String), ()>,
+    clear_memory_history: ServiceRequest<String, HistoryClearResult>,
     update_commit_policy: ServiceRequest<(String, CommitPolicyUpdate), ()>,
     open_workspace: ServiceRequest<(String, String), ()>,
     cleanup_worktrees: ServiceRequest<String, ()>,
@@ -62,9 +70,13 @@ impl ProjectService {
             load_page: requests.load_page,
             load_project_page: requests.load_project_page,
             load_workspace_bar: requests.load_workspace_bar,
+            #[cfg(not(feature = "ssr"))]
+            current_project_id: requests.current_project_id,
             update_auto_commit: requests.update_auto_commit,
             update_system_prompt: requests.update_system_prompt,
+            clear_system_prompt_history: requests.clear_system_prompt_history,
             update_memory: requests.update_memory,
+            clear_memory_history: requests.clear_memory_history,
             update_commit_policy: requests.update_commit_policy,
             open_workspace: requests.open_workspace,
             cleanup_worktrees: requests.cleanup_worktrees,
@@ -90,14 +102,24 @@ impl ProjectService {
                 load_workspace_bar: ServiceRequest::new(|selected_project| {
                     Box::pin(load_workspace_bar(selected_project))
                 }),
+                #[cfg(not(feature = "ssr"))]
+                current_project_id: ServiceRequest::new(|project| {
+                    Box::pin(current_project_id(project))
+                }),
                 update_auto_commit: ServiceRequest::new(|(project, enabled)| {
                     Box::pin(update_auto_commit(project, enabled))
                 }),
                 update_system_prompt: ServiceRequest::new(|(project, body)| {
                     Box::pin(update_system_prompt(project, body))
                 }),
+                clear_system_prompt_history: ServiceRequest::new(|project| {
+                    Box::pin(clear_system_prompt_history(project))
+                }),
                 update_memory: ServiceRequest::new(|(project, body)| {
                     Box::pin(update_memory(project, body))
+                }),
+                clear_memory_history: ServiceRequest::new(|project| {
+                    Box::pin(clear_memory_history(project))
                 }),
                 update_commit_policy: ServiceRequest::new(|(project, update)| {
                     Box::pin(update_commit_policy(project, update))
@@ -210,6 +232,14 @@ impl ProjectService {
         Ok(data)
     }
 
+    #[cfg(not(feature = "ssr"))]
+    pub(crate) async fn current_project_id(
+        &self,
+        project: String,
+    ) -> Result<Option<i64>, ServerFnError> {
+        self.current_project_id.execute(project).await
+    }
+
     pub(crate) async fn update_auto_commit(
         &self,
         project: String,
@@ -226,12 +256,26 @@ impl ProjectService {
         self.update_system_prompt.execute((project, body)).await
     }
 
+    pub(crate) async fn clear_system_prompt_history(
+        &self,
+        project: String,
+    ) -> Result<HistoryClearResult, ServerFnError> {
+        self.clear_system_prompt_history.execute(project).await
+    }
+
     pub(crate) async fn update_memory(
         &self,
         project: String,
         body: String,
     ) -> Result<(), ServerFnError> {
         self.update_memory.execute((project, body)).await
+    }
+
+    pub(crate) async fn clear_memory_history(
+        &self,
+        project: String,
+    ) -> Result<HistoryClearResult, ServerFnError> {
+        self.clear_memory_history.execute(project).await
     }
 
     pub(crate) async fn update_commit_policy(
@@ -316,6 +360,14 @@ async fn load_workspace_bar(
 }
 
 #[server(prefix = "/leptos")]
+async fn current_project_id(project: String) -> Result<Option<i64>, ServerFnError> {
+    let state = app_state::app_state();
+    projects::find_project_id_by_name(&state.store, &project)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server(prefix = "/leptos")]
 async fn update_auto_commit(project: String, enabled: bool) -> Result<(), ServerFnError> {
     let state = app_state::app_state();
     projects::update_settings(
@@ -341,6 +393,14 @@ async fn update_system_prompt(project: String, body: String) -> Result<(), Serve
 }
 
 #[server(prefix = "/leptos")]
+async fn clear_system_prompt_history(project: String) -> Result<HistoryClearResult, ServerFnError> {
+    let state = app_state::app_state();
+    projects::clear_system_prompt_history(&state.store, &project)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server(prefix = "/leptos")]
 async fn update_memory(project: String, body: String) -> Result<(), ServerFnError> {
     let state = app_state::app_state();
     projects::update_memory_with_source(
@@ -352,6 +412,14 @@ async fn update_memory(project: String, body: String) -> Result<(), ServerFnErro
     .await
     .map(|_| ())
     .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server(prefix = "/leptos")]
+async fn clear_memory_history(project: String) -> Result<HistoryClearResult, ServerFnError> {
+    let state = app_state::app_state();
+    projects::clear_memory_history(&state.store, &project)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
@@ -441,9 +509,95 @@ impl ProjectCache {
     }
 
     #[cfg(not(feature = "ssr"))]
-    pub(crate) fn remove(self, project_id: i64, project_name: &str) {
-        self.set_projects.update(|projects| {
-            projects.retain(|project| project.id != project_id && project.name != project_name);
-        });
+    pub(crate) fn remove_deleted(self, project_id: i64) {
+        self.set_projects
+            .update(|projects| apply_project_deletion(projects, project_id));
+    }
+}
+
+#[cfg(any(not(feature = "ssr"), test))]
+fn apply_project_deletion(projects: &mut Vec<ProjectView>, deleted_project_id: i64) {
+    projects.retain(|project| project.id != deleted_project_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use assertr::prelude::*;
+
+    use super::apply_project_deletion;
+    use crate::shared::view_models::{
+        AgentGitCommandPolicy, AgentSandboxMode, AgentToolName, ProjectView, RevertStrategy,
+        WorkspaceMode, WorktreeCleanupPolicy,
+    };
+
+    #[test]
+    fn delayed_deletion_preserves_same_name_replacement() {
+        let mut projects = vec![project(2, "demo"), project(3, "other")];
+
+        apply_project_deletion(&mut projects, 1);
+
+        assert_that!(&(project_ids(&projects))).is_equal_to(vec![2, 3]);
+    }
+
+    #[test]
+    fn deletion_removes_matching_project_by_id() {
+        let mut projects = vec![project(1, "demo"), project(2, "other")];
+
+        apply_project_deletion(&mut projects, 1);
+
+        assert_that!(&(project_ids(&projects))).is_equal_to(vec![2]);
+    }
+
+    #[test]
+    fn deletion_of_an_unrelated_project_preserves_other_entries() {
+        let mut projects = vec![project(1, "demo"), project(2, "other")];
+
+        apply_project_deletion(&mut projects, 2);
+
+        assert_that!(&(project_ids(&projects))).is_equal_to(vec![1]);
+    }
+
+    #[test]
+    fn deletion_from_an_empty_cache_is_a_noop() {
+        let mut projects = Vec::new();
+
+        apply_project_deletion(&mut projects, 1);
+
+        assert_that!(&(projects)).is_empty();
+    }
+
+    fn project_ids(projects: &[ProjectView]) -> Vec<i64> {
+        projects.iter().map(|project| project.id).collect()
+    }
+
+    fn project(id: i64, name: &str) -> ProjectView {
+        ProjectView {
+            id,
+            name: name.to_owned(),
+            display_name: name.to_owned(),
+            path: None,
+            path_exists: false,
+            path_checked_at: None,
+            git_status: None,
+            system_prompt: String::new(),
+            memory: String::new(),
+            workspace_mode: WorkspaceMode::CurrentBranch,
+            max_code_edit_agents: 1,
+            max_read_only_agents: 1,
+            create_pr: false,
+            auto_commit: false,
+            commit_standard: String::new(),
+            revert_strategy: RevertStrategy::Manual,
+            stale_claim_minutes: 1,
+            worktree_cleanup_policy: WorktreeCleanupPolicy::Manual,
+            default_agent_tool: AgentToolName::Codex,
+            default_agent_model: None,
+            default_agent_reasoning_effort: None,
+            agent_sandbox_mode: AgentSandboxMode::WorkspaceWrite,
+            agent_extra_writable_roots: Vec::new(),
+            agent_git_command_policy: AgentGitCommandPolicy::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
     }
 }

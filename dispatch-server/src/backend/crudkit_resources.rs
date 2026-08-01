@@ -82,7 +82,6 @@ impl CollaborationService for NoopCollaborationService {
 #[derive(Clone)]
 pub struct ProjectResourceContext {
     store: Store,
-    deletion: ProjectDeletionService,
 }
 
 impl fmt::Debug for ProjectResourceContext {
@@ -107,6 +106,164 @@ impl std::error::Error for ProjectHookError {}
 #[derive(Debug, Default)]
 pub struct ProjectHookData {
     previous_memory: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ProjectCrudRepositoryError {
+    SeaOrm(crudkit_sea_orm::repo::SeaOrmRepoError),
+    Deletion(String),
+}
+
+impl fmt::Display for ProjectCrudRepositoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SeaOrm(err) => write!(f, "project CRUD repository SeaORM error: {err:?}"),
+            Self::Deletion(err) => write!(f, "project deletion failed: {err}"),
+        }
+    }
+}
+
+impl RepositoryError for ProjectCrudRepositoryError {}
+
+pub struct ProjectCrudRepository {
+    fallback: SeaOrmRepo,
+    deletion: ProjectDeletionService,
+}
+
+impl ProjectCrudRepository {
+    fn new(store: &Store, deletion: ProjectDeletionService) -> Self {
+        Self {
+            fallback: SeaOrmRepo::new(store.db()),
+            deletion,
+        }
+    }
+}
+
+impl Repository<CrudProjectResource> for ProjectCrudRepository {
+    type Error = ProjectCrudRepositoryError;
+
+    async fn insert(
+        &self,
+        create_model: project::CreateModel,
+    ) -> Result<project::Model, Self::Error> {
+        <SeaOrmRepo as Repository<CrudProjectResource>>::insert(&self.fallback, create_model)
+            .await
+            .map_err(ProjectCrudRepositoryError::SeaOrm)
+    }
+
+    async fn count(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<project::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<u64, Self::Error> {
+        <SeaOrmRepo as Repository<CrudProjectResource>>::count(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(ProjectCrudRepositoryError::SeaOrm)
+    }
+
+    async fn fetch_one(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<project::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Option<project::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudProjectResource>>::fetch_one(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(ProjectCrudRepositoryError::SeaOrm)
+    }
+
+    async fn fetch_many(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<project::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Vec<project::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudProjectResource>>::fetch_many(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(ProjectCrudRepositoryError::SeaOrm)
+    }
+
+    async fn read_one(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<project::read_view::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Option<project::read_view::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudProjectResource>>::read_one(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(ProjectCrudRepositoryError::SeaOrm)
+    }
+
+    async fn read_many(
+        &self,
+        limit: Option<u64>,
+        skip: Option<u64>,
+        order_by: Option<IndexMap<project::read_view::ModelField, Order>>,
+        condition: Option<&Condition>,
+    ) -> Result<Vec<project::read_view::Model>, Self::Error> {
+        <SeaOrmRepo as Repository<CrudProjectResource>>::read_many(
+            &self.fallback,
+            limit,
+            skip,
+            order_by,
+            condition,
+        )
+        .await
+        .map_err(ProjectCrudRepositoryError::SeaOrm)
+    }
+
+    async fn update(
+        &self,
+        existing: project::Model,
+        update_model: project::UpdateModel,
+    ) -> Result<project::Model, Self::Error> {
+        <SeaOrmRepo as Repository<CrudProjectResource>>::update(
+            &self.fallback,
+            existing,
+            update_model,
+        )
+        .await
+        .map_err(ProjectCrudRepositoryError::SeaOrm)
+    }
+
+    async fn delete(&self, model: project::Model) -> Result<DeleteResult, Self::Error> {
+        self.deletion
+            .delete_model(model)
+            .await
+            .map_err(|err| ProjectCrudRepositoryError::Deletion(err.to_string()))?;
+        Ok(DeleteResult {
+            entities_affected: 1,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -343,18 +500,12 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
     }
 
     async fn before_delete(
-        model: &project::Model,
+        _model: &project::Model,
         _delete_request: &DeleteRequest<CrudProjectResource>,
-        context: &ProjectResourceContext,
+        _context: &ProjectResourceContext,
         _request: RequestContext<NoAuth>,
         data: ProjectHookData,
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
-        context
-            .deletion
-            .delete_model(model.clone())
-            .await
-            .map_err(|err| ProjectHookError(err.to_string()))
-            .map_err(HookError::Internal)?;
         Ok(data)
     }
 
@@ -387,7 +538,7 @@ impl CrudResource for CrudProjectResource {
     type Id = project::ProjectId;
     type ModelField = project::ModelField;
 
-    type Repository = SeaOrmRepo;
+    type Repository = ProjectCrudRepository;
     type ValidationResultRepository =
         crudkit_sea_orm::validation::unified::repository::UnifiedValidationRepository;
     type CollaborationService = NoopCollaborationService;
@@ -2566,6 +2717,7 @@ pub struct CrudContexts {
 pub fn build_contexts(store: Store, project_deletion: ProjectDeletionService) -> CrudContexts {
     let db = store.db();
     let repository = Arc::new(SeaOrmRepo::new(db.clone()));
+    let project_repository = Arc::new(ProjectCrudRepository::new(&store, project_deletion));
     let validation_result_repository = Arc::new(
         crudkit_sea_orm::validation::unified::repository::UnifiedValidationRepository { db },
     );
@@ -2575,9 +2727,8 @@ pub fn build_contexts(store: Store, project_deletion: ProjectDeletionService) ->
         project: Arc::new(CrudContext {
             res_context: Arc::new(ProjectResourceContext {
                 store: store.clone(),
-                deletion: project_deletion,
             }),
-            repository: repository.clone(),
+            repository: project_repository,
             validators: vec![],
             resource_validators: vec![],
             validation_result_repository: validation_result_repository.clone(),

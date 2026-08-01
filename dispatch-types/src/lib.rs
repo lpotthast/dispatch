@@ -209,10 +209,8 @@ pub struct ProjectMemoryUpdateView {
     pub event: ProjectMemoryEventView,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ProjectMemoryCompactionView {
-    pub project_id: i64,
-    pub project_name: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HistoryClearResult {
     pub deleted_events: u64,
 }
 
@@ -242,13 +240,6 @@ pub struct ProjectSystemPromptEventView {
 pub struct ProjectSystemPromptUpdateView {
     pub project: ProjectView,
     pub event: ProjectSystemPromptEventView,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ProjectSystemPromptCompactionView {
-    pub project_id: i64,
-    pub project_name: String,
-    pub deleted_events: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

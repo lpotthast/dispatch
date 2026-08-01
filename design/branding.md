@@ -1,3 +1,13 @@
+---
+id: dispatch.branding
+summary: "Dispatch brand identity, icon concept, source prompt, assets, and visual iteration guidance."
+owns:
+  - "brand and icon direction"
+  - "branding source assets and iteration constraints"
+read_when:
+  - "changing the Dispatch name, icon, brand assets, or visual identity"
+---
+
 # Branding and Application Icon
 
 Dispatch's application icon represents work routing and coordination. Its capital-`D` silhouette is built from routing lanes converging at a dispatch junction, while the amber square represents a work item moving through the system.

@@ -67,8 +67,8 @@ where
             get(list_project_memory_events),
         )
         .route(
-            "/api/projects/{project}/memory/events/compact",
-            post(compact_project_memory_events),
+            "/api/projects/{project}/memory/events/clear",
+            post(clear_project_memory_history),
         )
         .route(
             "/api/projects/{project}/items",
@@ -353,11 +353,11 @@ async fn append_project_memory(
     )
 }
 
-async fn compact_project_memory_events(
+async fn clear_project_memory_history(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
 ) -> Response {
-    json_result(projects::compact_memory_events(&state.store, &project).await)
+    json_result(projects::clear_memory_history(&state.store, &project).await)
 }
 
 async fn list_items(
@@ -1004,7 +1004,7 @@ async fn active_sessions(
 ) -> Response {
     let result: Result<Vec<ProcessSessionView>> = async {
         let project_id = projects::project_id(&state.store, &project).await?;
-        Ok(state.sessions.list_for_project(project_id).await)
+        Ok(state.sessions.list_for_project(project_id))
     }
     .await;
     json_result(result)
@@ -1316,10 +1316,10 @@ mod tests {
     use dispatch_types::{
         AUTOMATION_BLOCKED_LABEL_KEY, ClaimWorkItemResponse, CommentView,
         CreateWorkItemRelationshipRequest, DeleteWorkItemRelationshipResponse,
-        FEEDBACK_REQUESTED_LABEL_KEY, ProjectLabelView, ProjectMemoryCompactionView,
-        ProjectMemoryEventView, ProjectMemoryUpdateView, ProjectMemoryView,
-        UpdateWorkItemRelationshipRequest, WorkItemLabelView, WorkItemRelationshipDirection,
-        WorkItemRelationshipListEntry, WorkItemRelationshipView, WorkItemView,
+        FEEDBACK_REQUESTED_LABEL_KEY, HistoryClearResult, ProjectLabelView, ProjectMemoryEventView,
+        ProjectMemoryUpdateView, ProjectMemoryView, UpdateWorkItemRelationshipRequest,
+        WorkItemLabelView, WorkItemRelationshipDirection, WorkItemRelationshipListEntry,
+        WorkItemRelationshipView, WorkItemView,
     };
     use serde::de::DeserializeOwned;
     use tempfile::{TempDir, tempdir};
@@ -1900,7 +1900,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_endpoints_snapshot_agent_changes_and_compact_history() {
+    async fn memory_endpoints_snapshot_agent_changes_and_clear_history() {
         let (_temp, state, _item_id) = test_state().await;
 
         let set: ProjectMemoryUpdateView = decode(
@@ -1954,11 +1954,11 @@ mod tests {
         assert_that!(&(events.len())).is_equal_to(2);
         assert_that!(&(events[0].id)).is_equal_to(appended.event.id);
 
-        let compacted: ProjectMemoryCompactionView = decode(
-            compact_project_memory_events(Extension(state.clone()), Path("demo".to_owned())).await,
+        let cleared: HistoryClearResult = decode(
+            clear_project_memory_history(Extension(state.clone()), Path("demo".to_owned())).await,
         )
         .await;
-        assert_that!(&(compacted.deleted_events)).is_equal_to(2);
+        assert_that!(&(cleared.deleted_events)).is_equal_to(2);
 
         let events: Vec<ProjectMemoryEventView> = decode(
             list_project_memory_events(Extension(state.clone()), Path("demo".to_owned())).await,
@@ -1967,9 +1967,15 @@ mod tests {
         assert_that!(&(events.is_empty())).is_true();
 
         let current: ProjectMemoryView =
-            decode(get_project_memory(Extension(state), Path("demo".to_owned())).await).await;
+            decode(get_project_memory(Extension(state.clone()), Path("demo".to_owned())).await)
+                .await;
         assert_that!(&(current.memory))
             .is_equal_to("Remember the relay CLI.\n\nUse Dispatch memory commands.");
         assert_that!(&(current.last_event.is_none())).is_true();
+
+        let cleared: HistoryClearResult =
+            decode(clear_project_memory_history(Extension(state), Path("demo".to_owned())).await)
+                .await;
+        assert_that!(&(cleared.deleted_events)).is_equal_to(0);
     }
 }

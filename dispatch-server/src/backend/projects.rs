@@ -23,11 +23,10 @@ use crate::{
     },
     shared::view_models::{
         AgentGitCommandPolicy, AgentReasoningEffort, AgentSandboxMode, AgentToolName,
-        CodexAgentModel, ProjectGitStatusView, ProjectMemoryCompactionView, ProjectMemoryEventView,
+        CodexAgentModel, HistoryClearResult, ProjectGitStatusView, ProjectMemoryEventView,
         ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView,
-        ProjectSystemPromptCompactionView, ProjectSystemPromptEventView,
-        ProjectSystemPromptUpdateView, ProjectView, RevertStrategy, WorkspaceMode,
-        WorktreeCleanupPolicy,
+        ProjectSystemPromptEventView, ProjectSystemPromptUpdateView, ProjectView, RevertStrategy,
+        WorkspaceMode, WorktreeCleanupPolicy,
     },
 };
 
@@ -521,17 +520,15 @@ pub async fn list_system_prompt_events(
     change_events::list_system_prompt_events(store.db().as_ref(), project.id, project_name).await
 }
 
-pub async fn compact_system_prompt_events(
+pub async fn clear_system_prompt_history(
     store: &Store,
     project_name: &str,
-) -> Result<ProjectSystemPromptCompactionView> {
+) -> Result<HistoryClearResult> {
     let project_id = project_id(store, project_name).await?;
     let deleted =
-        change_events::compact_system_prompt_events(store.db().as_ref(), project_id).await?;
+        change_events::clear_system_prompt_history(store.db().as_ref(), project_id).await?;
     events::publish_system_prompt_changed(project_name);
-    Ok(ProjectSystemPromptCompactionView {
-        project_id,
-        project_name: project_name.to_owned(),
+    Ok(HistoryClearResult {
         deleted_events: deleted,
     })
 }
@@ -580,16 +577,11 @@ pub async fn list_memory_events(
     change_events::list_memory_events(store.db().as_ref(), project.id, project_name).await
 }
 
-pub async fn compact_memory_events(
-    store: &Store,
-    project_name: &str,
-) -> Result<ProjectMemoryCompactionView> {
+pub async fn clear_memory_history(store: &Store, project_name: &str) -> Result<HistoryClearResult> {
     let project_id = project_id(store, project_name).await?;
-    let deleted = change_events::compact_memory_events(store.db().as_ref(), project_id).await?;
+    let deleted = change_events::clear_memory_history(store.db().as_ref(), project_id).await?;
     events::publish_memory_changed(project_name);
-    Ok(ProjectMemoryCompactionView {
-        project_id,
-        project_name: project_name.to_owned(),
+    Ok(HistoryClearResult {
         deleted_events: deleted,
     })
 }
@@ -770,13 +762,30 @@ pub(crate) async fn project_id(store: &Store, name: &str) -> Result<i64> {
     Ok(find_project_by_name(store, name).await?.id)
 }
 
+pub(crate) async fn find_project_id_by_name(store: &Store, name: &str) -> Result<Option<i64>> {
+    Ok(Project::find()
+        .filter(project::Column::Name.eq(name))
+        .one(store.db().as_ref())
+        .await
+        .context_with(|| format!("failed to load project identity for '{name}'"))?
+        .map(|project| project.id))
+}
+
 pub(crate) async fn project_name_by_id(store: &Store, project_id: i64) -> Result<String> {
+    find_project_name_by_id(store, project_id)
+        .await?
+        .ok_or_else(|| report!("project {project_id} does not exist"))
+}
+
+pub(crate) async fn find_project_name_by_id(
+    store: &Store,
+    project_id: i64,
+) -> Result<Option<String>> {
     Ok(Project::find_by_id(project_id)
         .one(store.db().as_ref())
         .await
         .context_with(|| format!("failed to load project {project_id}"))?
-        .ok_or_else(|| report!("project {project_id} does not exist"))?
-        .name)
+        .map(|project| project.name))
 }
 
 pub(crate) async fn find_project_by_name(store: &Store, name: &str) -> Result<ProjectModel> {
@@ -1531,8 +1540,8 @@ mod tests {
         assert_that!(&(events.len())).is_equal_to(2);
         assert_that!(&(events[0].id)).is_equal_to(updated.event.id);
 
-        let compacted = compact_system_prompt_events(&store, "demo").await.unwrap();
-        assert_that!(&(compacted.deleted_events)).is_equal_to(2);
+        let cleared = clear_system_prompt_history(&store, "demo").await.unwrap();
+        assert_that!(&(cleared.deleted_events)).is_equal_to(2);
         assert_that!(
             &(list_system_prompt_events(&store, "demo")
                 .await
@@ -1542,6 +1551,9 @@ mod tests {
         .is_true();
         let current = get_project(&store, "demo").await.unwrap();
         assert_that!(&(current.system_prompt)).is_equal_to("Updated prompt.");
+
+        let cleared = clear_system_prompt_history(&store, "demo").await.unwrap();
+        assert_that!(&(cleared.deleted_events)).is_equal_to(0);
     }
 
     #[tokio::test]

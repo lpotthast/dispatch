@@ -244,7 +244,7 @@ async fn cancel_run(project: String, run_id: i64) -> Result<(), ServerFnError> {
             "automation run {run_id} is not running"
         )));
     }
-    if !state.sessions.cancel_run(&project, run_id).await {
+    if !state.sessions.cancel_run(&project, run_id) {
         return Err(ServerFnError::new(format!(
             "automation run {run_id} does not have an active session"
         )));

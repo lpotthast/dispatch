@@ -106,14 +106,14 @@ pub(crate) fn router(
             post(update_system_prompt),
         )
         .route(
-            "/projects/{project}/system-prompt/events/compact",
-            post(compact_system_prompt_events),
+            "/projects/{project}/system-prompt/events/clear",
+            post(clear_system_prompt_history),
         )
         .route("/projects/{project}/memory", post(update_memory))
         .route("/projects/{project}/memory/append", post(append_memory))
         .route(
-            "/projects/{project}/memory/events/compact",
-            post(compact_memory_events),
+            "/projects/{project}/memory/events/clear",
+            post(clear_memory_history),
         )
         .route("/projects/{project}/settings", post(update_settings))
         .route(
@@ -409,11 +409,11 @@ async fn update_system_prompt(
     }
 }
 
-async fn compact_system_prompt_events(
+async fn clear_system_prompt_history(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
 ) -> Response {
-    match projects::compact_system_prompt_events(&state.store, &project).await {
+    match projects::clear_system_prompt_history(&state.store, &project).await {
         Ok(_) => Redirect::to(&format!(
             "/project?project={}",
             urlencoding::encode(&project)
@@ -467,11 +467,11 @@ async fn append_memory(
     }
 }
 
-async fn compact_memory_events(
+async fn clear_memory_history(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
 ) -> Response {
-    match projects::compact_memory_events(&state.store, &project).await {
+    match projects::clear_memory_history(&state.store, &project).await {
         Ok(_) => Redirect::to(&format!(
             "/project?project={}",
             urlencoding::encode(&project)
@@ -774,7 +774,7 @@ async fn cancel_run(
         if run.status != AgentRunStatus::Running {
             bail!("automation run {run_id} is not running");
         }
-        if !state.sessions.cancel_run(&project, run_id).await {
+        if !state.sessions.cancel_run(&project, run_id) {
             bail!("automation run {run_id} does not have an active session");
         }
         Ok(())
@@ -854,7 +854,7 @@ async fn start_automation(
     } else {
         state
             .automation_controller
-            .start_project(&state.store, project.clone())
+            .start_project(&state.store, project.clone(), &state.sessions)
             .await
     };
 
@@ -879,7 +879,7 @@ async fn stop_automation(
         .stop_project(project_id, &project, &state.sessions)
         .await
     {
-        Ok(()) => match automation::stop_automation(&state.store, &project).await {
+        Ok(()) => match automation::stop_automation(&state.store, project_id, &project).await {
             Ok(_) => Redirect::to(&format!("/?project={}", urlencoding::encode(&project)))
                 .into_response(),
             Err(err) => error_response(err).await,

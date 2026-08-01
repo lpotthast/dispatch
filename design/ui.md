@@ -1,3 +1,13 @@
+---
+id: dispatch.ui
+summary: "Dispatch routes, page ownership, interaction contracts, live updates, layout, and browser coverage."
+owns:
+  - "UI information architecture and page ownership"
+  - "interaction, navigation, layout, and browser contracts"
+read_when:
+  - "changing routes, pages, navigation, shared layout, interactions, or browser tests"
+---
+
 # UI Design
 
 Dispatch's web UI is an operator surface for project setup, workflow visibility, automation control, and admin maintenance. It is server-rendered and hydrated with Leptos.
@@ -91,7 +101,10 @@ Project selection is explicit URL-owned state. Pages and the workspace dock do n
 the first project when the URL has no project. When the selected project is deleted, the live
 project-deleted event clears its typed browser caches and navigates to the unselected Projects page
 without choosing a replacement. The project switcher shows a choose-project placeholder until the
-operator explicitly selects another project.
+operator explicitly selects another project. Cache invalidation removes projects only by immutable
+id and never decides whether to keep or clear the route. For every deletion event matching the
+selected route name, the UI resolves the current server identity before navigating so stale cache
+state cannot preserve a deleted project or clear a same-name replacement.
 
 Full Work items administration, known label-key configuration, work item state authoring, and swim-lane authoring live on the selected-project administration surface, not the main board or project collection. The label-key table shows key, active usage count, accent, persistence, built-in status, and last usage. Operators can create persistent unused keys and edit accent or persistence, while built-in keys cannot be made non-persistent and generic delete controls remain hidden. Label-key and work-item live events refresh this table. Known zero-use keys participate in existing label suggestions and autocomplete. Board label chips with a configured accent use a tinted background, border, and readable foreground derived from that color; label-key changes live-refresh the board without navigation. The board shows small lane edit controls that navigate to the selected swim-lane editor. New item creation is lane-scoped: eligible state-backed lanes show `+ Add` in the lane header and preselect that lane's state. The add control may appear on lane hover or keyboard focus on precise-pointer devices, but remains visible on narrow, coarse-pointer, and non-hover devices. Swim-lane filter create and edit forms expose structured label-condition controls for nested `All`/`Any` groups, label presence, flag labels, string equality, string inequality, and string-list membership while continuing to store the existing CrudKit `Condition` JSON string; invalid or unsupported existing filters remain editable through a raw JSON escape hatch.
 On item detail pages, the `state` label's value editor should render as a state picker backed by the current project's authored work item states instead of a free-text value field. That picker submits through the item move/update workflow path, while ordinary label rows use generic label add/update/delete handlers.
@@ -121,7 +134,7 @@ Project settings should expose:
 - filesystem path, path health, and Git repository status;
 - copy/open actions for the project folder and available RustRover or VS Code editor targets;
 - system prompt and memory;
-- system prompt and memory history snapshots, with manual history compaction;
+- system prompt and memory history snapshots, with confirmed manual history clearing that preserves the current value;
 - workspace mode;
 - agent concurrency for mutating and read-only automation;
 - pull request creation;
@@ -134,6 +147,13 @@ Project settings should expose:
 - default agent tool, model, and reasoning effort.
 
 Settings changes should go through server handlers and be reflected in automation launches without requiring agents to know settings internals.
+Clearing system prompt or memory history requires a Leptonic confirmation modal that identifies
+the affected history, states that the currently saved value is preserved, and warns that the
+deleted snapshots cannot be restored. Clear-history actions remain disabled while either current
+editor has unsaved changes. A same-project live-event refresh may update the saved values and
+history options, but it must preserve dirty system-prompt and memory drafts, history selection when
+the selected snapshot still exists, and pending clear-history modal state. Changing or clearing the
+selected immutable project identity resets that editor state.
 The model and reasoning effort controls should prevent known-incompatible Codex combinations, while server handlers remain authoritative for all API, CLI, and frontend-service submissions.
 Selector/prompt-based automations do not expose a project-level refinement concurrency exception in settings. Read-only automation concurrency is a general setting, not a refinement-specific bypass.
 

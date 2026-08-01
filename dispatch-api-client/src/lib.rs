@@ -6,15 +6,14 @@ use dispatch_types::{
     ClaimWorkItemRequest, ClaimWorkItemResponse, CommentView, CreateWorkItemGroupRequest,
     CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest, CreateWorkItemRequest,
     DeleteWorkItemLabelResponse, DeleteWorkItemRelationshipResponse, FinishWorkItemRequest,
-    InstalledAutomationBundleView, PersonalityRevisionView, PersonalityView,
-    ProgressWorkItemRequest, ProjectLabelView, ProjectMemoryCompactionView, ProjectMemoryEventView,
-    ProjectMemoryUpdateView, ProjectMemoryView, ProjectSettingsView, ProjectView,
-    ReleaseWorkItemRequest, RemoveAutomationBundleRequest, RequestFeedbackWorkItemRequest,
-    RestoreRevisionRequest, RevisionAnalyticsView, RoutingExplainRequest, RoutingExplanationView,
-    RunLogView, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
-    UpdateWorkItemRelationshipRequest, UpdateWorkItemRequest, WorkItemGroupView, WorkItemLabelView,
-    WorkItemPage, WorkItemRelationshipListEntry, WorkItemRelationshipView, WorkItemSearchRequest,
-    WorkItemView,
+    HistoryClearResult, InstalledAutomationBundleView, PersonalityRevisionView, PersonalityView,
+    ProgressWorkItemRequest, ProjectLabelView, ProjectMemoryEventView, ProjectMemoryUpdateView,
+    ProjectMemoryView, ProjectSettingsView, ProjectView, ReleaseWorkItemRequest,
+    RemoveAutomationBundleRequest, RequestFeedbackWorkItemRequest, RestoreRevisionRequest,
+    RevisionAnalyticsView, RoutingExplainRequest, RoutingExplanationView, RunLogView,
+    UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRelationshipRequest,
+    UpdateWorkItemRequest, WorkItemGroupView, WorkItemLabelView, WorkItemPage,
+    WorkItemRelationshipListEntry, WorkItemRelationshipView, WorkItemSearchRequest, WorkItemView,
 };
 use rootcause::{Result, prelude::*};
 use serde::{Serialize, de::DeserializeOwned};
@@ -87,11 +86,8 @@ impl DispatchClient {
             .await
     }
 
-    pub async fn compact_project_memory_events(
-        &self,
-        project: &str,
-    ) -> Result<ProjectMemoryCompactionView> {
-        self.post(&project_path(project, "/memory/events/compact"), &())
+    pub async fn clear_project_memory_history(&self, project: &str) -> Result<HistoryClearResult> {
+        self.post(&project_path(project, "/memory/events/clear"), &())
             .await
     }
 

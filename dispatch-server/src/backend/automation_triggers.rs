@@ -728,10 +728,10 @@ async fn run_due_triggers_with_sessions_for_projects(
     store: &Store,
     sessions: Option<ProcessSessionRegistry>,
     codex_status: Option<SharedCodexStatus>,
-    active_project_names: Option<&[String]>,
-    project_cancellations: Option<&HashMap<String, watch::Receiver<bool>>>,
+    active_project_ids: Option<&[i64]>,
+    project_cancellations: Option<&HashMap<i64, watch::Receiver<bool>>>,
 ) -> Result<Vec<TriggerRunOutcome>> {
-    let scope = AutomationProjectScope::new(active_project_names, project_cancellations);
+    let scope = AutomationProjectScope::new(active_project_ids, project_cancellations);
     let mut outcomes =
         run_queued_evaluations(store, sessions.clone(), codex_status.clone(), scope).await?;
     let triggers = AutomationTrigger::find()
@@ -749,10 +749,10 @@ async fn run_due_triggers_with_sessions_for_projects(
         ) {
             continue;
         }
-        let project_name = projects::project_name_by_id(store, view.project_id).await?;
-        if !scope.includes_project(&project_name) {
+        if !scope.includes_project(view.project_id) {
             continue;
         }
+        let project_name = projects::project_name_by_id(store, view.project_id).await?;
         match view.activation {
             AutomationActivation::Manual => {}
             AutomationActivation::WorkItem => {}
@@ -765,7 +765,7 @@ async fn run_due_triggers_with_sessions_for_projects(
                         None,
                         sessions.clone(),
                         codex_status.clone(),
-                        scope.cancellation_for(&project_name),
+                        scope.cancellation_for(view.project_id),
                     )
                     .await
                 {
@@ -785,7 +785,7 @@ async fn run_due_triggers_with_sessions_for_projects(
                         event.work_item_id,
                         sessions.clone(),
                         codex_status.clone(),
-                        scope.cancellation_for(&project_name),
+                        scope.cancellation_for(view.project_id),
                     )
                     .await
                     {
@@ -798,14 +798,18 @@ async fn run_due_triggers_with_sessions_for_projects(
             }
         }
     }
-    if let Some(active_project_names) = scope.active_project_names() {
-        for project_name in active_project_names {
+    if let Some(active_project_ids) = scope.active_project_ids() {
+        for project_id in active_project_ids {
+            let Some(project_name) = projects::find_project_name_by_id(store, *project_id).await?
+            else {
+                continue;
+            };
             if let Some(outcome) = run_next_work_item_automation_for_project(
                 store,
-                project_name,
+                &project_name,
                 sessions.clone(),
                 codex_status.clone(),
-                scope.cancellation_for(project_name),
+                scope.cancellation_for(*project_id),
             )
             .await?
             {
@@ -818,37 +822,35 @@ async fn run_due_triggers_with_sessions_for_projects(
 
 #[derive(Clone, Copy)]
 struct AutomationProjectScope<'a> {
-    active_project_names: Option<&'a [String]>,
-    project_cancellations: Option<&'a HashMap<String, watch::Receiver<bool>>>,
+    active_project_ids: Option<&'a [i64]>,
+    project_cancellations: Option<&'a HashMap<i64, watch::Receiver<bool>>>,
 }
 
 impl<'a> AutomationProjectScope<'a> {
     fn new(
-        active_project_names: Option<&'a [String]>,
-        project_cancellations: Option<&'a HashMap<String, watch::Receiver<bool>>>,
+        active_project_ids: Option<&'a [i64]>,
+        project_cancellations: Option<&'a HashMap<i64, watch::Receiver<bool>>>,
     ) -> Self {
         Self {
-            active_project_names,
+            active_project_ids,
             project_cancellations,
         }
     }
 
-    fn includes_project(&self, project_name: &str) -> bool {
-        match self.active_project_names {
-            Some(active_project_names) => active_project_names
-                .iter()
-                .any(|active_project_name| active_project_name == project_name),
+    fn includes_project(&self, project_id: i64) -> bool {
+        match self.active_project_ids {
+            Some(active_project_ids) => active_project_ids.contains(&project_id),
             None => true,
         }
     }
 
-    fn active_project_names(&self) -> Option<&'a [String]> {
-        self.active_project_names
+    fn active_project_ids(&self) -> Option<&'a [i64]> {
+        self.active_project_ids
     }
 
-    fn cancellation_for(&self, project_name: &str) -> Option<watch::Receiver<bool>> {
+    fn cancellation_for(&self, project_id: i64) -> Option<watch::Receiver<bool>> {
         self.project_cancellations
-            .and_then(|cancellations| cancellations.get(project_name))
+            .and_then(|cancellations| cancellations.get(&project_id))
             .cloned()
     }
 }
@@ -896,10 +898,10 @@ async fn run_queued_evaluations(
 
     let mut outcomes = Vec::new();
     for trigger in triggers {
-        let project_name = projects::project_name_by_id(store, trigger.project_id).await?;
-        if !scope.includes_project(&project_name) {
+        if !scope.includes_project(trigger.project_id) {
             continue;
         }
+        let project_name = projects::project_name_by_id(store, trigger.project_id).await?;
         let view = model_to_view(trigger.clone())?;
         if view.effect == AutomationEffect::ConsumeWork {
             let settings = projects::get_settings(store, &project_name).await?;
@@ -918,6 +920,7 @@ async fn run_queued_evaluations(
             }
         }
         let trigger = consume_queued_evaluation(store, trigger).await?;
+        let project_id = trigger.project_id;
         if let Some(outcome) = evaluate_trigger_once(
             store,
             &project_name,
@@ -925,7 +928,7 @@ async fn run_queued_evaluations(
             None,
             sessions.clone(),
             codex_status.clone(),
-            scope.cancellation_for(&project_name),
+            scope.cancellation_for(project_id),
         )
         .await
         {
@@ -1162,15 +1165,15 @@ pub fn spawn_scheduler_until(
                 _ = automation_interval.tick() => {
                     let project_cancellations = controller.project_cancellations().await;
                     if !project_cancellations.is_empty() {
-                        let active_projects = project_cancellations
+                        let active_project_ids = project_cancellations
                             .keys()
-                            .cloned()
+                            .copied()
                             .collect::<Vec<_>>();
                         if let Err(err) = run_due_triggers_with_sessions_for_projects(
                             &store,
                             sessions.clone(),
                             codex_status.clone(),
-                            Some(&active_projects),
+                            Some(&active_project_ids),
                             Some(&project_cancellations),
                         )
                         .await
@@ -3110,12 +3113,12 @@ mod tests {
             .await
             .unwrap();
 
-        let active_projects = vec!["demo".to_owned()];
+        let active_project_ids = vec![projects::project_id(&store, "demo").await.unwrap()];
         let outcomes = run_due_triggers_with_sessions_for_projects(
             &store,
             None,
             None,
-            Some(&active_projects),
+            Some(&active_project_ids),
             None,
         )
         .await
@@ -3127,6 +3130,76 @@ mod tests {
             .find(|candidate| candidate.id == trigger.id)
             .unwrap();
 
+        assert_that!(&(outcomes.is_empty())).is_true();
+        assert_that!(&(trigger.pending_evaluation_count)).is_equal_to(1);
+        assert_that!(&(trigger.evaluation_count)).is_equal_to(0);
+    }
+
+    #[tokio::test]
+    async fn stale_scheduler_scope_does_not_activate_same_name_replacement() {
+        use crate::backend::entities::project::Project;
+
+        let (temp, store) = test_store().await;
+        let old_project_id = projects::project_id(&store, "demo").await.unwrap();
+        Project::delete_by_id(old_project_id)
+            .exec(store.db().as_ref())
+            .await
+            .unwrap();
+        let replacement = create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+        let trigger = create_trigger(
+            &store,
+            "demo",
+            CreateAutomationTrigger {
+                name: "replacement-review".to_owned(),
+                enabled: true,
+                activation: AutomationActivation::Manual,
+                effect: AutomationEffect::ProduceWork,
+                schedule: "@every 15s".to_owned(),
+                tool_name: None,
+                mutability: AutomationRunMutability::Mutating,
+                personality_id: None,
+                prompt: "Review work in the replacement project.".to_owned(),
+                work_item_selector: None,
+                priority: 100,
+            },
+        )
+        .await
+        .unwrap();
+        schedule_trigger_evaluation(&store, "demo", trigger.id)
+            .await
+            .unwrap();
+
+        let stale_project_ids = [old_project_id];
+        let outcomes = run_due_triggers_with_sessions_for_projects(
+            &store,
+            None,
+            None,
+            Some(&stale_project_ids),
+            None,
+        )
+        .await
+        .unwrap();
+        let trigger = list_triggers(&store, "demo")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == trigger.id)
+            .unwrap();
+
+        assert_that!(&(replacement.id)).is_not_equal_to(old_project_id);
         assert_that!(&(outcomes.is_empty())).is_true();
         assert_that!(&(trigger.pending_evaluation_count)).is_equal_to(1);
         assert_that!(&(trigger.evaluation_count)).is_equal_to(0);

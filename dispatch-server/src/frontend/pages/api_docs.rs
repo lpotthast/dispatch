@@ -115,7 +115,7 @@ fn CustomEndpointsPanel() -> impl IntoView {
         "PUT /api/projects/{project}/memory",
         "POST /api/projects/{project}/memory/append",
         "GET /api/projects/{project}/memory/events",
-        "POST /api/projects/{project}/memory/events/compact",
+        "POST /api/projects/{project}/memory/events/clear",
         "GET /api/events/ws",
         "GET /api/projects/{project}/events",
         "GET /api/projects/{project}/items/{item_id}/events",

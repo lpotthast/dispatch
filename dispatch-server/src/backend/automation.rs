@@ -52,7 +52,9 @@ use crate::{
             work_item_origin::{self, WorkItemOrigin},
         },
         events, item_claims, items, personalities,
-        process_sessions::{ProcessSessionRegistry, ProcessSessionStart},
+        process_sessions::{
+            ProcessSessionRegistration, ProcessSessionRegistry, ProcessSessionStart,
+        },
         projects,
         storage::{Store, utc_now},
     },
@@ -372,7 +374,7 @@ fn single_line(value: &str) -> String {
 }
 
 struct RunCancellation {
-    session: Option<watch::Receiver<bool>>,
+    session: Option<ProcessSessionRegistration>,
     external: Option<watch::Receiver<bool>>,
 }
 
@@ -380,7 +382,7 @@ fn cancellation_requested(cancellation: &RunCancellation) -> bool {
     cancellation
         .session
         .as_ref()
-        .is_some_and(|cancellation| *cancellation.borrow())
+        .is_some_and(ProcessSessionRegistration::cancellation_requested)
         || cancellation
             .external
             .as_ref()
@@ -420,27 +422,70 @@ pub async fn start_automation_with_sessions_until(
 ) -> Result<AgentRunView> {
     let started = begin_automation_run(store, project_name, start).await?;
     let run_id = started.run.id;
-    let cancellation = register_pending_session(&started, sessions.as_ref(), cancellation).await;
+    let cancellation = register_pending_session(&started, sessions.as_ref(), cancellation);
     let store = store.clone();
-    let sessions_for_completion = sessions.clone();
-    let result = await_automation_execution(async move {
-        complete_started_automation_run(&store, started, sessions, codex_status, cancellation).await
+    let execution_sessions = sessions.clone();
+    await_automation_execution(run_id, sessions, async move {
+        complete_started_automation_run(
+            &store,
+            started,
+            execution_sessions,
+            codex_status,
+            cancellation,
+        )
+        .await
     })
-    .await;
-    if let Some(sessions) = sessions_for_completion {
-        sessions.finish(run_id).await;
-    }
-    result
+    .await
 }
 
-async fn await_automation_execution<T, F>(execution: F) -> Result<T>
+/// Runs an automation execution in a detached task that also owns its session cleanup.
+///
+/// Dropping the caller only detaches the task's join handle; the execution still removes its
+/// registered session before completing.
+async fn await_automation_execution<T, F>(
+    run_id: i64,
+    sessions: Option<ProcessSessionRegistry>,
+    execution: F,
+) -> Result<T>
 where
     T: Send + 'static,
     F: Future<Output = Result<T>> + Send + 'static,
 {
-    tokio::spawn(execution)
-        .await
-        .context("automation execution task terminated unexpectedly")?
+    tokio::spawn(async move {
+        let completion = ProcessSessionCompletion::new(run_id, sessions);
+        let result = execution.await;
+        completion.finish();
+        result
+    })
+    .await
+    .context("automation execution task terminated unexpectedly")?
+}
+
+struct ProcessSessionCompletion {
+    run_id: i64,
+    sessions: Option<ProcessSessionRegistry>,
+}
+
+impl ProcessSessionCompletion {
+    fn new(run_id: i64, sessions: Option<ProcessSessionRegistry>) -> Self {
+        Self { run_id, sessions }
+    }
+
+    fn finish(mut self) {
+        if let Some(sessions) = &self.sessions {
+            sessions.finish(self.run_id);
+        }
+        self.sessions = None;
+    }
+}
+
+impl Drop for ProcessSessionCompletion {
+    fn drop(&mut self) {
+        let Some(sessions) = self.sessions.take() else {
+            return;
+        };
+        sessions.finish(self.run_id);
+    }
 }
 
 pub async fn start_one_automation_run_in_background(
@@ -453,18 +498,21 @@ pub async fn start_one_automation_run_in_background(
     let started = begin_automation_run(&store, &project_name, start).await?;
     let initial_run = model_to_view(started.run.clone())?;
     let run_id = started.run.id;
-    let cancellation = register_pending_session(&started, sessions.as_ref(), None).await;
+    let cancellation = register_pending_session(&started, sessions.as_ref(), None);
     let project_for_task = started.project_name.clone();
     tokio::spawn(async move {
-        let sessions_for_completion = sessions.clone();
-        let result = await_automation_execution(async move {
-            complete_started_automation_run(&store, started, sessions, codex_status, cancellation)
-                .await
+        let execution_sessions = sessions.clone();
+        let result = await_automation_execution(run_id, sessions, async move {
+            complete_started_automation_run(
+                &store,
+                started,
+                execution_sessions,
+                codex_status,
+                cancellation,
+            )
+            .await
         })
         .await;
-        if let Some(sessions) = sessions_for_completion {
-            sessions.finish(run_id).await;
-        }
         match result {
             Ok(run) if run.status == AgentRunStatus::Failed => {
                 tracing::error!(
@@ -495,7 +543,7 @@ pub async fn start_one_automation_run_in_background(
     Ok(initial_run)
 }
 
-async fn register_pending_session(
+fn register_pending_session(
     started: &StartedAutomationRun,
     sessions: Option<&ProcessSessionRegistry>,
     fallback_cancellation: Option<watch::Receiver<bool>>,
@@ -507,18 +555,14 @@ async fn register_pending_session(
         };
     };
     RunCancellation {
-        session: Some(
-            sessions
-                .begin(ProcessSessionStart {
-                    run_id: started.run.id,
-                    project_id: started.project.id,
-                    project_name: started.project_name.clone(),
-                    tool_name: started.tool.as_storage().to_owned(),
-                    command: String::new(),
-                    working_dir: started.project.path.clone().unwrap_or_default(),
-                })
-                .await,
-        ),
+        session: Some(sessions.begin(ProcessSessionStart {
+            run_id: started.run.id,
+            project_id: started.project.id,
+            project_name: started.project_name.clone(),
+            tool_name: started.tool.as_storage().to_owned(),
+            command: String::new(),
+            working_dir: started.project.path.clone().unwrap_or_default(),
+        })),
         external: fallback_cancellation,
     }
 }
@@ -913,6 +957,7 @@ async fn complete_started_automation_run(
             item_claims::finalize_automation_claim(
                 store,
                 item_claims::AutomationClaimFinalization {
+                    project_id: run.project_id,
                     project_name: &project_name,
                     run_id: run.id,
                     claimed_item_id: claimed_item.as_ref().map(|item| item.id),
@@ -974,6 +1019,7 @@ async fn complete_started_automation_run(
             item_claims::finalize_automation_claim(
                 store,
                 item_claims::AutomationClaimFinalization {
+                    project_id: run.project_id,
                     project_name: &project_name,
                     run_id: run.id,
                     claimed_item_id: claimed_item.as_ref().map(|item| item.id),
@@ -1302,6 +1348,7 @@ async fn fail_run_after_claim(
     item_claims::finalize_automation_claim(
         store,
         item_claims::AutomationClaimFinalization {
+            project_id: run.project_id,
             project_name,
             run_id: run.id,
             claimed_item_id: claimed_item.map(|item| item.id),
@@ -1325,6 +1372,7 @@ async fn cancel_run_after_claim(
     item_claims::finalize_automation_claim(
         store,
         item_claims::AutomationClaimFinalization {
+            project_id: run.project_id,
             project_name,
             run_id: run.id,
             claimed_item_id: claimed_item.map(|item| item.id),
@@ -1337,8 +1385,11 @@ async fn cancel_run_after_claim(
     cancel_run(store, run, result_summary).await
 }
 
-pub async fn stop_automation(store: &Store, project_name: &str) -> Result<Vec<AgentRunView>> {
-    let project_id = projects::project_id(store, project_name).await?;
+pub async fn stop_automation(
+    store: &Store,
+    project_id: i64,
+    project_name: &str,
+) -> Result<Vec<AgentRunView>> {
     let running = AgentRun::find()
         .filter(agent_run::Column::ProjectId.eq(project_id))
         .filter(agent_run::Column::Status.eq(AgentRunStatus::Running.as_storage()))
@@ -1350,17 +1401,14 @@ pub async fn stop_automation(store: &Store, project_name: &str) -> Result<Vec<Ag
     for run in running {
         let run_id = run.id;
         let agent_id = agent_ids::dispatch_run_agent_id(run.id);
-        let claimed_item = match run.work_item_id {
-            Some(item_id) => Some(items::get_item(store, project_name, item_id).await?),
-            None => None,
-        };
         let result_summary = "Marked cancelled by automation stop".to_owned();
         item_claims::finalize_automation_claim(
             store,
             item_claims::AutomationClaimFinalization {
+                project_id,
                 project_name,
                 run_id,
-                claimed_item_id: claimed_item.as_ref().map(|item| item.id),
+                claimed_item_id: run.work_item_id,
                 agent_id: &agent_id,
                 outcome: item_claims::AutomationClaimOutcome::Cancelled,
                 detail: Some(&result_summary),
@@ -1694,7 +1742,7 @@ pub async fn read_run_log_with_active_session(
 ) -> Result<RunLogView> {
     let mut run_log = read_run_log(store, project_name, run_id).await?;
     let project_id = projects::project_id(store, project_name).await?;
-    if let Some(session) = sessions.get_for_project(project_id, run_id).await {
+    if let Some(session) = sessions.get_for_project(project_id, run_id) {
         run_log.active = true;
         if !session.output.is_empty() {
             run_log.output = session.output;
@@ -2070,18 +2118,14 @@ async fn run_agent_process(
 ) -> Result<AgentProcessOutput> {
     let command_label = format!("{} app-server", start.codex_binary.display());
     let session_cancellation = if let Some(registry) = &sessions {
-        Some(
-            registry
-                .begin(ProcessSessionStart {
-                    run_id: start.run_id,
-                    project_id: start.project_id,
-                    project_name: start.project_name.clone(),
-                    tool_name: start.tool_name.to_string(),
-                    command: command_label.clone(),
-                    working_dir: start.working_dir.to_string_lossy().into_owned(),
-                })
-                .await,
-        )
+        Some(registry.begin(ProcessSessionStart {
+            run_id: start.run_id,
+            project_id: start.project_id,
+            project_name: start.project_name.clone(),
+            tool_name: start.tool_name.to_string(),
+            command: command_label.clone(),
+            working_dir: start.working_dir.to_string_lossy().into_owned(),
+        }))
     } else {
         None
     };
@@ -2104,7 +2148,7 @@ async fn run_agent_process(
 async fn run_agent_process_inner(
     start: AgentProcessStart,
     sessions: Option<ProcessSessionRegistry>,
-    session_cancellation: Option<watch::Receiver<bool>>,
+    session_cancellation: Option<ProcessSessionRegistration>,
     external_cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentProcessOutput> {
     let process_timeout = start.timeout;
@@ -2120,7 +2164,7 @@ async fn run_agent_process_inner(
 async fn run_agent_process_turn_with_cancellation(
     turn: impl std::future::Future<Output = Result<AgentProcessOutput>>,
     process_timeout: Duration,
-    session_cancellation: Option<watch::Receiver<bool>>,
+    session_cancellation: Option<ProcessSessionRegistration>,
     external_cancellation: Option<watch::Receiver<bool>>,
 ) -> Result<AgentProcessOutput> {
     let turn = timeout(process_timeout, turn);
@@ -2141,18 +2185,21 @@ async fn run_agent_process_turn_with_cancellation(
 }
 
 async fn wait_for_any_cancellation(
-    session_cancellation: Option<watch::Receiver<bool>>,
+    session_cancellation: Option<ProcessSessionRegistration>,
     external_cancellation: Option<watch::Receiver<bool>>,
 ) {
     match (session_cancellation, external_cancellation) {
         (Some(mut session_cancellation), Some(mut external_cancellation)) => {
             tokio::select! {
-                _ = wait_for_cancellation(&mut session_cancellation) => {}
+                _ = session_cancellation.wait_for_cancellation() => {}
                 _ = wait_for_cancellation(&mut external_cancellation) => {}
             }
         }
-        (Some(mut cancellation), None) | (None, Some(mut cancellation)) => {
-            wait_for_cancellation(&mut cancellation).await;
+        (Some(mut session_cancellation), None) => {
+            session_cancellation.wait_for_cancellation().await;
+        }
+        (None, Some(mut external_cancellation)) => {
+            wait_for_cancellation(&mut external_cancellation).await;
         }
         (None, None) => {}
     }
@@ -2919,7 +2966,7 @@ mod tests {
     async fn awaited_automation_execution_uses_a_fresh_task_boundary() {
         let (caller, execution) = tokio::spawn(async {
             let caller = tokio::task::id();
-            let execution = await_automation_execution(async { Ok(tokio::task::id()) })
+            let execution = await_automation_execution(0, None, async { Ok(tokio::task::id()) })
                 .await
                 .unwrap();
             (caller, execution)
@@ -2928,6 +2975,171 @@ mod tests {
         .unwrap();
 
         assert_that!(&(caller)).is_not_equal_to(execution);
+    }
+
+    #[tokio::test]
+    async fn awaited_automation_execution_finishes_session_after_caller_is_aborted() {
+        let sessions = ProcessSessionRegistry::new();
+        sessions.begin(ProcessSessionStart {
+            run_id: 7,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: "/tmp/demo".to_owned(),
+        });
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
+        let sessions_for_caller = sessions.clone();
+
+        let caller = tokio::spawn(async move {
+            await_automation_execution(7, Some(sessions_for_caller), async move {
+                started_tx.send(()).unwrap();
+                complete_rx.await.unwrap();
+                Err::<(), _>(report!("expected execution failure"))
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        caller.abort();
+        assert_that!(&(caller.await.unwrap_err().is_cancelled())).is_true();
+
+        complete_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if sessions.get_for_project(1, 7).is_none() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn awaited_automation_execution_finishes_session_after_execution_panics() {
+        let sessions = ProcessSessionRegistry::new();
+        sessions.begin(ProcessSessionStart {
+            run_id: 8,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: "/tmp/demo".to_owned(),
+        });
+        let sessions_for_execution = sessions.clone();
+
+        let result: Result<()> =
+            await_automation_execution(8, Some(sessions_for_execution), async move {
+                panic!("expected automation execution panic")
+            })
+            .await;
+
+        assert_that!(&(result.unwrap_err().to_string()))
+            .contains("automation execution task terminated unexpectedly");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if sessions.get_for_project(1, 8).is_none() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delayed_old_project_session_cannot_claim_same_name_replacement_work() {
+        let (temp, store) = test_store().await;
+        let old_project = get_project(&store, "demo").await.unwrap();
+        let started = begin_automation_run(
+            &store,
+            "demo",
+            StartAutomation {
+                tool: Some(AgentToolName::Codex),
+                work_item_id: None,
+                work_item_selector: None,
+                extra_prompt: None,
+                mutability: Some(AutomationRunMutability::Mutating),
+                personality_id: None,
+                trigger: None,
+                execution: Default::default(),
+                postconditions: None,
+            },
+        )
+        .await
+        .unwrap();
+        let old_run_id = started.run.id;
+        let sessions = ProcessSessionRegistry::new();
+        let deletion = sessions.begin_project_deletion(old_project.id).unwrap();
+
+        crate::backend::entities::project::Project::delete_by_id(old_project.id)
+            .exec(store.db().as_ref())
+            .await
+            .unwrap();
+        deletion.mark_deleted();
+        let replacement = create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+        let replacement_item = create_item(
+            &store,
+            "demo",
+            CreateWorkItem {
+                title: "Replacement work".to_owned(),
+                description: "Must not be claimed by the deleted project run".to_owned(),
+                state: DEFAULT_STATE_LABEL.to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let cancellation = register_pending_session(&started, Some(&sessions), None);
+        assert_that!(&(cancellation_requested(&cancellation))).is_true();
+        assert_that!(
+            &(sessions
+                .get_for_project(old_project.id, old_run_id)
+                .is_none())
+        )
+        .is_true();
+
+        let result = complete_started_automation_run(
+            &store,
+            started,
+            Some(sessions.clone()),
+            None,
+            cancellation,
+        )
+        .await;
+        let unchanged_item = get_item(&store, "demo", replacement_item.id).await.unwrap();
+        assert_that!(&(result.is_err())).is_true();
+        assert_that!(&(unchanged_item.claimed_by)).is_equal_to(None);
+
+        let replacement_session = sessions.begin(ProcessSessionStart {
+            run_id: old_run_id + 1,
+            project_id: replacement.id,
+            project_name: replacement.name,
+            tool_name: "codex".to_owned(),
+            command: String::new(),
+            working_dir: temp.path().to_string_lossy().into_owned(),
+        });
+        assert_that!(&(!replacement_session.cancellation_requested())).is_true();
+        assert_that!(&(replacement_session.is_registered())).is_true();
     }
 
     async fn test_store() -> (TempDir, Store) {
@@ -3194,29 +3406,25 @@ mod tests {
         .await
         .unwrap();
         let sessions = ProcessSessionRegistry::new();
-        let _cancel = sessions
-            .begin(ProcessSessionStart {
-                run_id: run.id,
-                project_id: run.project_id,
-                project_name: "demo".to_owned(),
-                tool_name: "codex".to_owned(),
-                command: "codex app-server".to_owned(),
-                working_dir: temp.path().to_string_lossy().into_owned(),
-            })
-            .await;
-        sessions
-            .append_output_piece(
-                run.id,
-                new_output_piece(
-                    1,
-                    AgentRunOutputKind::ModelMessage,
-                    None,
-                    "active",
-                    "active output",
-                    serde_json::json!({}),
-                ),
-            )
-            .await;
+        let _cancel = sessions.begin(ProcessSessionStart {
+            run_id: run.id,
+            project_id: run.project_id,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: temp.path().to_string_lossy().into_owned(),
+        });
+        sessions.append_output_piece(
+            run.id,
+            new_output_piece(
+                1,
+                AgentRunOutputKind::ModelMessage,
+                None,
+                "active",
+                "active output",
+                serde_json::json!({}),
+            ),
+        );
 
         let run_log = read_run_log_with_active_session(&store, &sessions, "demo", run.id)
             .await
@@ -3741,7 +3949,7 @@ mod tests {
         .await
         .unwrap();
 
-        let cancelled = stop_automation(&store, "demo").await.unwrap();
+        let cancelled = stop_automation(&store, project.id, "demo").await.unwrap();
         let item = get_item(&store, "demo", item.id).await.unwrap();
 
         assert_that!(&(cancelled.len())).is_equal_to(1);
@@ -3755,5 +3963,58 @@ mod tests {
                 .all(|label| label.key != AUTOMATION_BLOCKED_LABEL_KEY))
         )
         .is_true();
+    }
+
+    #[tokio::test]
+    async fn stop_automation_by_id_does_not_cancel_same_name_replacement() {
+        let (temp, store) = test_store().await;
+        let old_project = get_project(&store, "demo").await.unwrap();
+        crate::backend::entities::project::Project::delete_by_id(old_project.id)
+            .exec(store.db().as_ref())
+            .await
+            .unwrap();
+
+        let replacement = create_project(
+            &store,
+            CreateProject {
+                name: "demo".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            },
+        )
+        .await
+        .unwrap();
+        let replacement_run = create_run(
+            &store,
+            replacement.id,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::Mutating,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let cancelled = stop_automation(&store, old_project.id, "demo")
+            .await
+            .unwrap();
+        let persisted_replacement_run = AgentRun::find_by_id(replacement_run.id)
+            .one(store.db().as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_that!(&(replacement.id)).is_not_equal_to(old_project.id);
+        assert_that!(&(cancelled.is_empty())).is_true();
+        assert_that!(&(persisted_replacement_run.status))
+            .is_equal_to(AgentRunStatus::Running.as_storage().to_owned());
     }
 }

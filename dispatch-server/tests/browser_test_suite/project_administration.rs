@@ -1,7 +1,7 @@
 use std::{borrow::Cow, time::Duration};
 
 use assertr::prelude::*;
-use browser_test::thirtyfour::{By, Key, WebDriver, components::SelectElement};
+use browser_test::thirtyfour::{By, Key, WebDriver, WebElement, components::SelectElement};
 use browser_test::{BrowserTest, async_trait};
 use leptos_browser_test::{Report, ResultExt, bail};
 use rootcause::option_ext::OptionExt;
@@ -68,6 +68,7 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
         assert_source_contains(driver, "system prompt history").await?;
         assert_source_contains(driver, "memory history").await?;
         assert_source_does_not_contain(driver, "Compact history").await?;
+        assert_source_contains(driver, "Clear history").await?;
         assert_source_does_not_contain(driver, "Append memory").await?;
         assert_source_does_not_contain(driver, "append-memory").await?;
         assert_source_does_not_contain(driver, "/memory/append").await?;
@@ -80,6 +81,13 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
         find(driver, By::Css("#project-memory-version")).await?;
         find(driver, By::Css("textarea.project-memory-text")).await?;
         assert_memory_history_selector_behaviour(driver).await?;
+        assert_dirty_project_text_survives_live_event(driver).await?;
+        driver
+            .goto(app.url("/project?project=demo"))
+            .await
+            .context("failed to reset project text drafts before clearing history")?;
+        find(driver, By::Css("section.project-settings")).await?;
+        assert_history_clear_behaviour(driver).await?;
         find(
             driver,
             By::Css("[data-crudkit-leptos='work-item-states'] .crud-nav"),
@@ -639,12 +647,15 @@ async fn seed_system_prompt_history(driver: &WebDriver) -> Result<(), Report> {
 async fn assert_memory_history_selector_behaviour(driver: &WebDriver) -> Result<(), Report> {
     assert_history_selector_behaviour(
         driver,
-        "#project-memory-version",
-        "textarea.project-memory-text",
-        ".project-memory-editor button",
-        "Unsaved current memory",
-        "Initial shared memory",
-        "memory",
+        HistorySelectorCase {
+            select_selector: "#project-memory-version",
+            textarea_selector: "textarea.project-memory-text",
+            save_selector: ".project-memory-save",
+            clear_selector: ".project-memory-history-clear",
+            current_draft: "Unsaved current memory",
+            historical_value: "Initial shared memory",
+            description: "memory",
+        },
     )
     .await
 }
@@ -652,14 +663,68 @@ async fn assert_memory_history_selector_behaviour(driver: &WebDriver) -> Result<
 async fn assert_system_prompt_history_selector_behaviour(driver: &WebDriver) -> Result<(), Report> {
     assert_history_selector_behaviour(
         driver,
-        "#project-system-prompt-version",
-        "textarea.project-system-prompt-text",
-        ".project-system-prompt-editor button",
-        "Unsaved current prompt",
-        "Initial project prompt",
-        "system prompt",
+        HistorySelectorCase {
+            select_selector: "#project-system-prompt-version",
+            textarea_selector: "textarea.project-system-prompt-text",
+            save_selector: ".project-system-prompt-save",
+            clear_selector: ".project-system-prompt-history-clear",
+            current_draft: "Unsaved current prompt",
+            historical_value: "Initial project prompt",
+            description: "system prompt",
+        },
     )
     .await
+}
+
+async fn assert_dirty_project_text_survives_live_event(driver: &WebDriver) -> Result<(), Report> {
+    const PROMPT_TEXTAREA: &str = "textarea.project-system-prompt-text";
+    const MEMORY_TEXTAREA: &str = "textarea.project-memory-text";
+    const MEMORY_SELECT: &str = "#project-memory-version";
+
+    let memory_history_count = history_option_count(driver, MEMORY_SELECT, "memory").await?;
+    let response = browser_request(driver, reqwest::Method::POST, "/projects/demo/memory")
+        .await?
+        .form(&[("body", "Current shared memory")])
+        .send()
+        .await
+        .context("failed to publish live memory event while project text was dirty")?;
+    response_text(response, "live project-memory update").await?;
+
+    wait_until("project text live refresh", || async {
+        Ok(
+            (history_option_count(driver, MEMORY_SELECT, "memory").await? > memory_history_count)
+                .then_some(()),
+        )
+    })
+    .await?;
+
+    let prompt = find(driver, By::Css(PROMPT_TEXTAREA)).await?;
+    assert_that!(element_value(&prompt, "dirty system prompt after live refresh").await?)
+        .is_equal_to("Unsaved current prompt");
+    assert_that!(
+        prompt
+            .class_name()
+            .await
+            .context("failed to inspect system-prompt state after live refresh")?
+            .unwrap_or_default()
+            .split_whitespace()
+            .any(|class| class == "dirty")
+    )
+    .is_true();
+    let memory = find(driver, By::Css(MEMORY_TEXTAREA)).await?;
+    assert_that!(element_value(&memory, "dirty memory after live refresh").await?)
+        .is_equal_to("Unsaved current memory");
+    assert_that!(
+        memory
+            .class_name()
+            .await
+            .context("failed to inspect memory state after live refresh")?
+            .unwrap_or_default()
+            .split_whitespace()
+            .any(|class| class == "dirty")
+    )
+    .is_true();
+    Ok(())
 }
 
 async fn assert_crudkit_create_form_survives_live_event(driver: &WebDriver) -> Result<(), Report> {
@@ -1007,15 +1072,29 @@ async fn assert_request_error_toast_preserves_project_page(
     Ok(())
 }
 
+struct HistorySelectorCase<'a> {
+    select_selector: &'a str,
+    textarea_selector: &'a str,
+    save_selector: &'a str,
+    clear_selector: &'a str,
+    current_draft: &'a str,
+    historical_value: &'a str,
+    description: &'a str,
+}
+
 async fn assert_history_selector_behaviour(
     driver: &WebDriver,
-    select_selector: &str,
-    textarea_selector: &str,
-    save_selector: &str,
-    current_draft: &str,
-    historical_value: &str,
-    description: &str,
+    case: HistorySelectorCase<'_>,
 ) -> Result<(), Report> {
+    let HistorySelectorCase {
+        select_selector,
+        textarea_selector,
+        save_selector,
+        clear_selector,
+        current_draft,
+        historical_value,
+        description,
+    } = case;
     let textarea = find(driver, By::Css(textarea_selector)).await?;
     replace_element_value(&textarea, current_draft, description).await?;
     wait_until(&format!("{description} editor hydration"), || async {
@@ -1031,6 +1110,14 @@ async fn assert_history_selector_behaviour(
             .then_some(()))
     })
     .await?;
+    assert_that!(
+        find(driver, By::Css(clear_selector))
+            .await?
+            .is_enabled()
+            .await
+            .context_with(|| format!("failed to inspect dirty {description} clear action"))?
+    )
+    .is_false();
 
     let select = find(driver, By::Css(select_selector)).await?;
     assert_that!(element_value(&select, description).await?).is_equal_to("current");
@@ -1124,5 +1211,218 @@ async fn assert_history_selector_behaviour(
             .context_with(|| format!("failed to inspect current {description} save action"))?
     )
     .is_true();
+    assert_that!(
+        find(driver, By::Css(clear_selector))
+            .await?
+            .is_enabled()
+            .await
+            .context_with(|| format!("failed to inspect current {description} clear action"))?
+    )
+    .is_false();
+    Ok(())
+}
+
+async fn assert_history_clear_behaviour(driver: &WebDriver) -> Result<(), Report> {
+    const MODAL: &str = "leptonic-modal#project-history-clear-modal";
+    const PROMPT_SELECT: &str = "#project-system-prompt-version";
+    const MEMORY_SELECT: &str = "#project-memory-version";
+    const PROMPT_CLEAR: &str = ".project-system-prompt-history-clear";
+    const MEMORY_CLEAR: &str = ".project-memory-history-clear";
+
+    assert_history_available(driver, PROMPT_SELECT, "system prompt").await?;
+    assert_history_available(driver, MEMORY_SELECT, "memory").await?;
+    assert_that!(
+        find(driver, By::Css(PROMPT_CLEAR))
+            .await?
+            .is_enabled()
+            .await
+            .context("failed to inspect system prompt clear action")?
+    )
+    .is_true();
+    assert_that!(
+        find(driver, By::Css(MEMORY_CLEAR))
+            .await?
+            .is_enabled()
+            .await
+            .context("failed to inspect memory clear action")?
+    )
+    .is_true();
+
+    click(driver, By::Css(PROMPT_CLEAR)).await?;
+    find(driver, By::Css(MODAL)).await?;
+    assert_source_contains(driver, "Clear system prompt history?").await?;
+    assert_source_contains(driver, "The currently saved system prompt is kept.").await?;
+    click(driver, By::Css(".history-clear-cancel")).await?;
+    wait_for_history_clear_modal_closed(driver).await?;
+    assert_history_available(driver, PROMPT_SELECT, "system prompt").await?;
+
+    click(driver, By::Css(PROMPT_CLEAR)).await?;
+    find(driver, By::Css(MODAL)).await?;
+    find(driver, By::Css("body"))
+        .await?
+        .send_keys(Key::Escape)
+        .await
+        .context("failed to dismiss history-clear modal with Escape")?;
+    wait_for_history_clear_modal_closed(driver).await?;
+    assert_history_available(driver, PROMPT_SELECT, "system prompt").await?;
+
+    click(driver, By::Css(PROMPT_CLEAR)).await?;
+    find(driver, By::Css(MODAL)).await?;
+    click_backdrop(driver).await?;
+    wait_for_history_clear_modal_closed(driver).await?;
+    assert_history_available(driver, PROMPT_SELECT, "system prompt").await?;
+
+    let history_clear_document_url = driver
+        .current_url()
+        .await
+        .context("failed to capture history-clear document URL")?
+        .to_string();
+    let history_clear_document_body = find(driver, By::Css("body"))
+        .await
+        .context("failed to capture history-clear document body")?;
+    click(driver, By::Css(PROMPT_CLEAR)).await?;
+    find(driver, By::Css(MODAL)).await?;
+    click(driver, By::Css(".history-clear-confirm")).await?;
+    wait_until("system prompt history clear", || async {
+        Ok(
+            (history_option_count(driver, PROMPT_SELECT, "system prompt").await? == 1)
+                .then_some(()),
+        )
+    })
+    .await?;
+    wait_for_history_clear_modal_closed(driver).await?;
+    let current_prompt = find(driver, By::Css("textarea.project-system-prompt-text")).await?;
+    assert_that!(
+        element_value(&current_prompt, "current system prompt after history clear").await?
+    )
+    .is_equal_to("Current project prompt");
+    assert_that!(
+        current_prompt
+            .attr("readonly")
+            .await
+            .context("failed to inspect current system prompt after history clear")?
+            .is_none()
+    )
+    .is_true();
+    assert_history_available(driver, MEMORY_SELECT, "memory").await?;
+    assert_that!(
+        find(driver, By::Css(PROMPT_CLEAR))
+            .await?
+            .is_enabled()
+            .await
+            .context("failed to inspect cleared system prompt action")?
+    )
+    .is_false();
+    assert_history_clear_document_state(
+        driver,
+        &history_clear_document_url,
+        &history_clear_document_body,
+    )
+    .await?;
+
+    click(driver, By::Css(MEMORY_CLEAR)).await?;
+    find(driver, By::Css(MODAL)).await?;
+    assert_source_contains(driver, "Clear memory history?").await?;
+    assert_source_contains(driver, "The currently saved memory is kept.").await?;
+    click(driver, By::Css(".history-clear-confirm")).await?;
+    wait_until("memory history clear", || async {
+        Ok((history_option_count(driver, MEMORY_SELECT, "memory").await? == 1).then_some(()))
+    })
+    .await?;
+    wait_for_history_clear_modal_closed(driver).await?;
+    let current_memory = find(driver, By::Css("textarea.project-memory-text")).await?;
+    assert_that!(element_value(&current_memory, "current memory after history clear").await?)
+        .is_equal_to("Current shared memory");
+    assert_that!(
+        current_memory
+            .attr("readonly")
+            .await
+            .context("failed to inspect current memory after history clear")?
+            .is_none()
+    )
+    .is_true();
+    assert_that!(history_option_count(driver, PROMPT_SELECT, "system prompt").await?)
+        .is_equal_to(1);
+    assert_that!(
+        find(driver, By::Css(MEMORY_CLEAR))
+            .await?
+            .is_enabled()
+            .await
+            .context("failed to inspect cleared memory action")?
+    )
+    .is_false();
+    assert_history_clear_document_state(
+        driver,
+        &history_clear_document_url,
+        &history_clear_document_body,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn history_option_count(
+    driver: &WebDriver,
+    selector: &str,
+    description: &str,
+) -> Result<usize, Report> {
+    let select = find(driver, By::Css(selector)).await?;
+    let select = SelectElement::new(&select)
+        .await
+        .context_with(|| format!("failed to inspect {description} history selector"))?;
+    Ok(select
+        .options()
+        .await
+        .context_with(|| format!("failed to read {description} history options"))
+        .map(|options| options.len())?)
+}
+
+async fn assert_history_available(
+    driver: &WebDriver,
+    selector: &str,
+    description: &str,
+) -> Result<(), Report> {
+    let count = history_option_count(driver, selector, description).await?;
+    if count < 3 {
+        bail!("expected current plus history options for {description}, got {count}");
+    }
+    Ok(())
+}
+
+async fn wait_for_history_clear_modal_closed(driver: &WebDriver) -> Result<(), Report> {
+    wait_until("history-clear modal close", || async {
+        let modals = driver
+            .find_all(By::Css("leptonic-modal#project-history-clear-modal"))
+            .await
+            .context("failed to inspect history-clear modal state")?;
+        for modal in modals {
+            if modal
+                .is_displayed()
+                .await
+                .context("failed to inspect history-clear modal visibility")?
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(()))
+    })
+    .await
+}
+
+async fn assert_history_clear_document_state(
+    driver: &WebDriver,
+    expected_url: &str,
+    document_body: &WebElement,
+) -> Result<(), Report> {
+    let current_url = driver
+        .current_url()
+        .await
+        .context("failed to inspect history-clear document URL")?
+        .to_string();
+    let body_tag = document_body
+        .tag_name()
+        .await
+        .context("history-clear action replaced the browser document")?;
+    assert_that!(current_url).is_equal_to(expected_url.to_owned());
+    assert_that!(body_tag).is_equal_to("body".to_owned());
     Ok(())
 }

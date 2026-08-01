@@ -1,3 +1,13 @@
+---
+id: dispatch.cli
+summary: "Agent-facing Dispatch CLI commands, context resolution, transport, and binary selection contracts."
+owns:
+  - "CLI command and context semantics"
+  - "development and published binary resolution"
+read_when:
+  - "changing CLI commands, environment context, API relay behavior, or binary selection"
+---
+
 # CLI Design
 
 Dispatch has two command surfaces:

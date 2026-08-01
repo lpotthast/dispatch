@@ -411,7 +411,7 @@ async fn set_automation_running(project: String, running: bool) -> Result<(), Se
     let result = if running {
         state
             .automation_controller
-            .start_project(&state.store, project)
+            .start_project(&state.store, project, &state.sessions)
             .await
     } else {
         let project_id = projects::project_id(&state.store, &project)
@@ -422,7 +422,7 @@ async fn set_automation_running(project: String, running: bool) -> Result<(), Se
             .stop_project(project_id, &project, &state.sessions)
             .await
             .map_err(|err| ServerFnError::new(err.to_string()))?;
-        automation::stop_automation(&state.store, &project)
+        automation::stop_automation(&state.store, project_id, &project)
             .await
             .map(|_| ())
     };

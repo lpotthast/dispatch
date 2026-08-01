@@ -1,9 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
+    collections::{HashMap, hash_map::Entry},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 
 use crate::{
     backend::{events, storage::utc_now},
@@ -17,33 +17,117 @@ const MAX_SESSION_OUTPUT_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct ProcessSessionRegistry {
-    sessions: Arc<Mutex<HashMap<i64, ProcessSession>>>,
-    deleting_projects: Arc<Mutex<HashSet<i64>>>,
+    state: Arc<Mutex<ProcessSessionState>>,
+}
+
+#[derive(Debug, Default)]
+struct ProcessSessionState {
+    sessions: HashMap<i64, ProcessSession>,
+    project_lifecycle: HashMap<i64, ProjectLifecycleState>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectLifecycleState {
+    Deleting,
+    Deleted,
+}
+
+#[derive(Debug)]
+pub(crate) enum ProcessSessionRegistration {
+    Registered { cancellation: watch::Receiver<bool> },
+    RejectedByProjectDeletion,
+}
+
+impl ProcessSessionRegistration {
+    pub(crate) fn cancellation_requested(&self) -> bool {
+        match self {
+            Self::Registered { cancellation } => *cancellation.borrow(),
+            Self::RejectedByProjectDeletion => true,
+        }
+    }
+
+    pub(crate) async fn wait_for_cancellation(&mut self) {
+        let Self::Registered { cancellation } = self else {
+            return;
+        };
+        loop {
+            if *cancellation.borrow() {
+                return;
+            }
+            if cancellation.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_registered(&self) -> bool {
+        matches!(self, Self::Registered { .. })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProjectDeletionAdmissionRejection {
+    InProgress,
+    AlreadyDeleted,
+}
+
+#[derive(Debug)]
+pub(crate) struct ProjectDeletionAdmission {
+    registry: ProcessSessionRegistry,
+    project_id: i64,
+    completed: bool,
+}
+
+impl ProjectDeletionAdmission {
+    pub(crate) fn mark_deleted(mut self) {
+        self.registry.mark_project_deleted(self.project_id);
+        self.completed = true;
+    }
+}
+
+impl Drop for ProjectDeletionAdmission {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.registry.abort_project_deletion(self.project_id);
+    }
 }
 
 impl ProcessSessionRegistry {
     pub fn new() -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            deleting_projects: Arc::new(Mutex::new(HashSet::new())),
+            state: Arc::new(Mutex::new(ProcessSessionState::default())),
         }
     }
 
-    pub async fn begin(&self, start: ProcessSessionStart) -> watch::Receiver<bool> {
-        let deleting_projects = self.deleting_projects.lock().await;
-        let project_is_deleting = deleting_projects.contains(&start.project_id);
+    fn lock_state(&self) -> MutexGuard<'_, ProcessSessionState> {
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    pub(crate) fn begin(&self, start: ProcessSessionStart) -> ProcessSessionRegistration {
+        let mut state = self.lock_state();
+        if state.project_lifecycle.contains_key(&start.project_id) {
+            return ProcessSessionRegistration::RejectedByProjectDeletion;
+        }
+
         let now = utc_now();
         let project_name = start.project_name.clone();
         let run_id = start.run_id;
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(&run_id) {
+        if let Some(session) = state.sessions.get_mut(&run_id) {
             session.tool_name = start.tool_name;
             session.command = start.command;
             session.working_dir = start.working_dir;
             session.updated_at = now;
-            return session.cancel_tx.subscribe();
+            return ProcessSessionRegistration::Registered {
+                cancellation: session.cancel_tx.subscribe(),
+            };
         }
-        let (cancel_tx, cancel_rx) = watch::channel(project_is_deleting);
+        let (cancel_tx, cancellation) = watch::channel(false);
         let session = ProcessSession {
             run_id: start.run_id,
             project_id: start.project_id,
@@ -57,15 +141,35 @@ impl ProcessSessionRegistry {
             started_at: now.clone(),
             updated_at: now,
         };
-        sessions.insert(session.run_id, session);
-        drop(sessions);
-        drop(deleting_projects);
+        state.sessions.insert(session.run_id, session);
+        drop(state);
         events::publish_agent_run_changed(&project_name, run_id, None);
-        cancel_rx
+        ProcessSessionRegistration::Registered { cancellation }
     }
 
-    pub async fn append_output_piece(&self, run_id: i64, piece: AgentRunOutputPiece) {
-        let project_name = if let Some(session) = self.sessions.lock().await.get_mut(&run_id) {
+    /// Runs a synchronous project-runtime registration while holding the same lifecycle boundary
+    /// used by deletion admission. Deletion either observes the completed registration and stops
+    /// it, or closes admission first and causes the registration to be rejected.
+    pub(crate) fn with_project_start_admitted<T>(
+        &self,
+        project_id: i64,
+        register: impl FnOnce() -> T,
+    ) -> Result<T, ProjectDeletionAdmissionRejection> {
+        let state = self.lock_state();
+        match state.project_lifecycle.get(&project_id) {
+            None => Ok(register()),
+            Some(ProjectLifecycleState::Deleting) => {
+                Err(ProjectDeletionAdmissionRejection::InProgress)
+            }
+            Some(ProjectLifecycleState::Deleted) => {
+                Err(ProjectDeletionAdmissionRejection::AlreadyDeleted)
+            }
+        }
+    }
+
+    pub fn append_output_piece(&self, run_id: i64, piece: AgentRunOutputPiece) {
+        let mut state = self.lock_state();
+        let project_name = if let Some(session) = state.sessions.get_mut(&run_id) {
             session.output.push(piece);
             trim_output_pieces(&mut session.output, MAX_SESSION_OUTPUT_BYTES);
             session.updated_at = utc_now();
@@ -73,23 +177,23 @@ impl ProcessSessionRegistry {
         } else {
             None
         };
+        drop(state);
         if let Some(project_name) = project_name {
             events::publish_agent_output_changed(&project_name, run_id, None);
         }
     }
 
-    pub async fn finish(&self, run_id: i64) {
-        let session = self.sessions.lock().await.remove(&run_id);
+    pub fn finish(&self, run_id: i64) {
+        let session = self.lock_state().sessions.remove(&run_id);
         if let Some(session) = session {
             events::publish_agent_run_changed(&session.project_name, run_id, None);
         }
     }
 
-    pub async fn list_for_project(&self, project_id: i64) -> Vec<ProcessSessionView> {
+    pub fn list_for_project(&self, project_id: i64) -> Vec<ProcessSessionView> {
         let mut sessions = self
+            .lock_state()
             .sessions
-            .lock()
-            .await
             .values()
             .filter(|session| session.project_id == project_id)
             .map(ProcessSessionView::from)
@@ -98,24 +202,18 @@ impl ProcessSessionRegistry {
         sessions
     }
 
-    pub async fn get_for_project(
-        &self,
-        project_id: i64,
-        run_id: i64,
-    ) -> Option<ProcessSessionView> {
-        self.sessions
-            .lock()
-            .await
+    pub fn get_for_project(&self, project_id: i64, run_id: i64) -> Option<ProcessSessionView> {
+        self.lock_state()
+            .sessions
             .get(&run_id)
             .filter(|session| session.project_id == project_id)
             .map(ProcessSessionView::from)
     }
 
-    pub async fn list_all(&self) -> Vec<ProcessSessionView> {
+    pub fn list_all(&self) -> Vec<ProcessSessionView> {
         let mut sessions = self
+            .lock_state()
             .sessions
-            .lock()
-            .await
             .values()
             .map(ProcessSessionView::from)
             .collect::<Vec<_>>();
@@ -123,11 +221,10 @@ impl ProcessSessionRegistry {
         sessions
     }
 
-    pub async fn cancel_project(&self, project_id: i64) -> usize {
+    pub fn cancel_project(&self, project_id: i64) -> usize {
         let senders = self
+            .lock_state()
             .sessions
-            .lock()
-            .await
             .values()
             .filter(|session| session.project_id == project_id)
             .map(|session| session.cancel_tx.clone())
@@ -139,34 +236,62 @@ impl ProcessSessionRegistry {
     }
 
     /// Prevents newly registered sessions for this project from starting and cancels existing
-    /// sessions. The marker remains in place until project deletion finishes or is aborted.
-    pub async fn begin_project_deletion(&self, project_id: i64) -> usize {
-        let mut deleting_projects = self.deleting_projects.lock().await;
-        deleting_projects.insert(project_id);
-        let senders = self
+    /// sessions. The returned admission reopens session admission if it is dropped before deletion
+    /// succeeds; successful deletion permanently closes admission for the immutable project id.
+    pub(crate) fn begin_project_deletion(
+        &self,
+        project_id: i64,
+    ) -> Result<ProjectDeletionAdmission, ProjectDeletionAdmissionRejection> {
+        let mut state = self.lock_state();
+        match state.project_lifecycle.entry(project_id) {
+            Entry::Vacant(entry) => {
+                entry.insert(ProjectLifecycleState::Deleting);
+            }
+            Entry::Occupied(entry) => {
+                return Err(match entry.get() {
+                    ProjectLifecycleState::Deleting => {
+                        ProjectDeletionAdmissionRejection::InProgress
+                    }
+                    ProjectLifecycleState::Deleted => {
+                        ProjectDeletionAdmissionRejection::AlreadyDeleted
+                    }
+                });
+            }
+        }
+        let senders = state
             .sessions
-            .lock()
-            .await
             .values()
             .filter(|session| session.project_id == project_id)
             .map(|session| session.cancel_tx.clone())
             .collect::<Vec<_>>();
-        drop(deleting_projects);
+        drop(state);
         for sender in &senders {
             let _ = sender.send(true);
         }
-        senders.len()
+        Ok(ProjectDeletionAdmission {
+            registry: self.clone(),
+            project_id,
+            completed: false,
+        })
     }
 
-    pub async fn end_project_deletion(&self, project_id: i64) {
-        self.deleting_projects.lock().await.remove(&project_id);
+    fn mark_project_deleted(&self, project_id: i64) {
+        self.lock_state()
+            .project_lifecycle
+            .insert(project_id, ProjectLifecycleState::Deleted);
     }
 
-    pub async fn cancel_all(&self) -> usize {
+    fn abort_project_deletion(&self, project_id: i64) {
+        let mut state = self.lock_state();
+        if state.project_lifecycle.get(&project_id) == Some(&ProjectLifecycleState::Deleting) {
+            state.project_lifecycle.remove(&project_id);
+        }
+    }
+
+    pub fn cancel_all(&self) -> usize {
         let senders = self
+            .lock_state()
             .sessions
-            .lock()
-            .await
             .values()
             .map(|session| session.cancel_tx.clone())
             .collect::<Vec<_>>();
@@ -176,11 +301,10 @@ impl ProcessSessionRegistry {
         senders.len()
     }
 
-    pub async fn cancel_run(&self, project_name: &str, run_id: i64) -> bool {
+    pub fn cancel_run(&self, project_name: &str, run_id: i64) -> bool {
         let sender = self
+            .lock_state()
             .sessions
-            .lock()
-            .await
             .get(&run_id)
             .filter(|session| session.project_name == project_name)
             .map(|session| session.cancel_tx.clone());
@@ -281,22 +405,18 @@ mod tests {
     #[tokio::test]
     async fn session_output_is_retained_in_memory() {
         let sessions = ProcessSessionRegistry::new();
-        sessions
-            .begin(ProcessSessionStart {
-                run_id: 7,
-                project_id: 1,
-                project_name: "demo".to_owned(),
-                tool_name: "codex".to_owned(),
-                command: "codex app-server".to_owned(),
-                working_dir: "/tmp/demo".to_owned(),
-            })
-            .await;
+        sessions.begin(ProcessSessionStart {
+            run_id: 7,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: "/tmp/demo".to_owned(),
+        });
 
-        sessions
-            .append_output_piece(7, test_piece(1, "line one"))
-            .await;
+        sessions.append_output_piece(7, test_piece(1, "line one"));
 
-        let active = sessions.list_for_project(1).await;
+        let active = sessions.list_for_project(1);
         assert_that!(&(active.len())).is_equal_to(1);
         assert_that!(&(active[0].output.len())).is_equal_to(1);
         assert_that!(&(active[0].output[0].kind)).is_equal_to(AgentRunOutputKind::ModelMessage);
@@ -306,67 +426,110 @@ mod tests {
     #[tokio::test]
     async fn session_can_be_looked_up_and_cancelled_by_run() {
         let sessions = ProcessSessionRegistry::new();
-        let mut cancellation = sessions
-            .begin(ProcessSessionStart {
-                run_id: 7,
-                project_id: 1,
-                project_name: "demo".to_owned(),
-                tool_name: "codex".to_owned(),
-                command: "codex app-server".to_owned(),
-                working_dir: "/tmp/demo".to_owned(),
-            })
-            .await;
+        let mut cancellation = sessions.begin(ProcessSessionStart {
+            run_id: 7,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: "/tmp/demo".to_owned(),
+        });
 
-        assert_that!(&(sessions.get_for_project(1, 7).await.is_some())).is_true();
-        assert_that!(&(sessions.get_for_project(2, 7).await.is_none())).is_true();
-        assert_that!(&(sessions.cancel_run("demo", 7).await)).is_true();
-        assert_that!(&(!sessions.cancel_run("other", 7).await)).is_true();
+        assert_that!(&(sessions.get_for_project(1, 7).is_some())).is_true();
+        assert_that!(&(sessions.get_for_project(2, 7).is_none())).is_true();
+        assert_that!(&(sessions.cancel_run("demo", 7))).is_true();
+        assert_that!(&(!sessions.cancel_run("other", 7))).is_true();
 
-        cancellation.changed().await.unwrap();
-        assert_that!(&(*cancellation.borrow())).is_true();
+        cancellation.wait_for_cancellation().await;
+        assert_that!(&(cancellation.cancellation_requested())).is_true();
     }
 
     #[tokio::test]
-    async fn project_deletion_cancels_existing_and_new_sessions() {
+    async fn successful_project_deletion_permanently_rejects_old_project_sessions() {
         let sessions = ProcessSessionRegistry::new();
-        let mut existing = sessions
-            .begin(ProcessSessionStart {
-                run_id: 7,
-                project_id: 1,
-                project_name: "demo".to_owned(),
-                tool_name: "codex".to_owned(),
-                command: String::new(),
-                working_dir: "/tmp/demo".to_owned(),
-            })
-            .await;
+        let mut existing = sessions.begin(ProcessSessionStart {
+            run_id: 7,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: String::new(),
+            working_dir: "/tmp/demo".to_owned(),
+        });
 
-        assert_that!(&(sessions.begin_project_deletion(1).await)).is_equal_to(1);
-        existing.changed().await.unwrap();
-        assert_that!(&(*existing.borrow())).is_true();
+        let deletion = sessions.begin_project_deletion(1).unwrap();
+        existing.wait_for_cancellation().await;
+        assert_that!(&(existing.cancellation_requested())).is_true();
+        assert_that!(
+            &(matches!(
+                sessions.begin_project_deletion(1),
+                Err(ProjectDeletionAdmissionRejection::InProgress)
+            ))
+        )
+        .is_true();
+        let other_deletion = sessions.begin_project_deletion(2).unwrap();
+        drop(other_deletion);
 
-        let during_deletion = sessions
-            .begin(ProcessSessionStart {
-                run_id: 8,
-                project_id: 1,
-                project_name: "demo".to_owned(),
-                tool_name: "codex".to_owned(),
-                command: String::new(),
-                working_dir: "/tmp/demo".to_owned(),
-            })
-            .await;
-        assert_that!(&(*during_deletion.borrow())).is_true();
+        let during_deletion = sessions.begin(ProcessSessionStart {
+            run_id: 8,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: String::new(),
+            working_dir: "/tmp/demo".to_owned(),
+        });
+        assert_that!(&(during_deletion.cancellation_requested())).is_true();
+        assert_that!(&(!during_deletion.is_registered())).is_true();
+        assert_that!(&(sessions.get_for_project(1, 8).is_none())).is_true();
+        assert_that!(&(sessions.list_for_project(1).len())).is_equal_to(1);
 
-        sessions.end_project_deletion(1).await;
-        let after_deletion = sessions
-            .begin(ProcessSessionStart {
-                run_id: 9,
-                project_id: 2,
-                project_name: "demo".to_owned(),
-                tool_name: "codex".to_owned(),
-                command: String::new(),
-                working_dir: "/tmp/new-demo".to_owned(),
-            })
-            .await;
-        assert_that!(&(!*after_deletion.borrow())).is_true();
+        deletion.mark_deleted();
+        let after_deletion = sessions.begin(ProcessSessionStart {
+            run_id: 9,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: String::new(),
+            working_dir: "/tmp/demo".to_owned(),
+        });
+        assert_that!(&(after_deletion.cancellation_requested())).is_true();
+        assert_that!(&(!after_deletion.is_registered())).is_true();
+        assert_that!(&(sessions.get_for_project(1, 9).is_none())).is_true();
+        assert_that!(
+            &(matches!(
+                sessions.begin_project_deletion(1),
+                Err(ProjectDeletionAdmissionRejection::AlreadyDeleted)
+            ))
+        )
+        .is_true();
+
+        let replacement = sessions.begin(ProcessSessionStart {
+            run_id: 10,
+            project_id: 3,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: String::new(),
+            working_dir: "/tmp/demo-replacement".to_owned(),
+        });
+        assert_that!(&(!replacement.cancellation_requested())).is_true();
+        assert_that!(&(replacement.is_registered())).is_true();
+    }
+
+    #[tokio::test]
+    async fn dropping_project_deletion_admission_reopens_session_admission() {
+        let sessions = ProcessSessionRegistry::new();
+        let deletion = sessions.begin_project_deletion(1).unwrap();
+
+        drop(deletion);
+
+        let after_abort = sessions.begin(ProcessSessionStart {
+            run_id: 9,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: String::new(),
+            working_dir: String::new(),
+        });
+        assert_that!(&(!after_abort.cancellation_requested())).is_true();
+        assert_that!(&(after_abort.is_registered())).is_true();
     }
 }
