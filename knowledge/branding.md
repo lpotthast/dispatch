@@ -1,16 +1,13 @@
 ---
 id: dispatch.branding
-summary: "Dispatch brand identity, icon concept, source prompt, assets, and visual iteration guidance."
-owns:
-  - "brand and icon direction"
-  - "branding source assets and iteration constraints"
-read_when:
-  - "changing the Dispatch name, icon, brand assets, or visual identity"
+refines:
+  - dispatch.index
 ---
 
 # Branding and Application Icon
 
-Dispatch's application icon represents work routing and coordination. Its capital-`D` silhouette is built from routing lanes converging at a dispatch junction, while the amber square represents a work item moving through the system.
+Dispatch's application icon represents work routing and coordination. Its capital-`D` silhouette is built from routing
+lanes converging at a dispatch junction, while the amber square represents a work item moving through the system.
 
 ## Current Assets
 
@@ -19,7 +16,8 @@ Dispatch's application icon represents work routing and coordination. Its capita
 - `dispatch-server/public/branding/dispatch-icon-64.png`: compact UI and header icon.
 - `dispatch-server/public/branding/favicon-32.png`: browser favicon.
 
-The smaller assets should be derived from the master and checked at their actual display sizes. The route geometry, `D` silhouette, and amber work-item accent must remain legible at 16–18px.
+The smaller assets should be derived from the master and checked at their actual display sizes. The route geometry, `D`
+silhouette, and amber work-item accent must remain legible at 16–18px.
 
 After replacing the master icon, regenerate every smaller asset from the repository root:
 
@@ -27,7 +25,9 @@ After replacing the master icon, regenerate every smaller asset from the reposit
 just icons
 ```
 
-The command runs `scripts/derive-icons.sh`, which accepts an optional master-image path and uses ImageMagick when available or macOS `sips` as a fallback. It validates that the master is square and at least 180px before atomically replacing the 180px, 64px, and 32px variants.
+The command runs `scripts/derive-icons.sh`, which accepts an optional master-image path and uses ImageMagick when
+available or macOS `sips` as a fallback. It validates that the master is square and at least 180px before atomically
+replacing the 180px, 64px, and 32px variants.
 
 ## Generation Prompt
 
@@ -47,4 +47,6 @@ Constraints: visually suggest routing, coordination, and forward progress; keep 
 
 ## Iteration Guidance
 
-When iterating, retain the semantic concept and palette unless intentionally changing the brand direction. Compare candidates at 1024px, 64px, 32px, and 18px before replacing the current assets. Favor a distinct silhouette and clean route geometry over additional detail.
+When iterating, retain the semantic concept and palette unless intentionally changing the brand direction. Compare
+candidates at 1024px, 64px, 32px, and 18px before replacing the current assets. Favor a distinct silhouette and clean
+route geometry over additional detail.

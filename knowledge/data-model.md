@@ -1,0 +1,362 @@
+---
+id: dispatch.data-model
+refines:
+  - dispatch.architecture
+---
+
+# Data Model
+
+Dispatch stores project-scoped work coordination data. The database schema lives in `dispatch-server`; shared API shapes
+live in `dispatch-types`.
+
+Database migrations currently live in the historical monolithic `dispatch-server/src/backend/migrations.rs`, where
+`Migrator::migrations()` freezes their names and order. The file is an explicit recovery exception, not the preferred
+module shape. A future split must replace rather than duplicate the module, preserve exactly one definition for every
+migration and helper, retain names, order, visibility, data transformations, and rollback behavior, compare fresh and
+upgraded schema/data, and pass the full migration and compilation gates before artifact selectors move. Until that
+verified pure-move package, canonical source ownership points to `migrations.rs`. Migration definitions use frozen
+identifiers and prefer typed SeaQuery builders where the pinned library supports the required construct; existing narrow
+raw SQL remains only where already required by SQLite triggers, FTS5, views, partial indexes, or additive foreign-key
+syntax.
+
+## Projects
+
+A project is the root scope for work items, automation settings, automation rules, comments, runs, and events.
+
+Project data includes:
+
+- stable name and display name;
+- filesystem path and path health metadata;
+- configured project knowledge directory, defaulting to `knowledge` for new projects;
+- project system prompt;
+- reusable automation personalities;
+- workspace mode;
+- automation concurrency settings;
+- stale-claim timeout;
+- pull request and worktree cleanup preferences;
+- default agent tool, model, and reasoning effort;
+- agent sandbox mode, extra writable roots, and mutable Git command policy.
+
+All item and automation API calls are project-scoped. Missing project context is an error for agent-facing operations.
+
+The database project id, not the reusable project name, is the lifecycle identity. Deleting a project cascades through
+every project-owned database record. Recreating the same name creates a new id and therefore a fresh scope; work items,
+events, automation runs, and other records from the deleted id cannot attach to the replacement project.
+
+The project system prompt is trusted project-owned instruction text included in the developer instructions for
+automation runs. It remains subordinate to Dispatch's execution contract and effective run policy. Every project system
+prompt write creates a project-level `SystemPromptChanged` event with the full prompt snapshot after the write. System
+prompt events carry optional actor and agent-run attribution so a prompt change can be traced back to the Dispatch user
+or agent/session that wrote it.
+
+Project personalities are reusable, project-scoped prompt fragments for automation-launched agents. Every project has a
+`Default` personality with an initially empty `personality_description`. Personality names are required after trimming,
+unique within a project, and suitable for display in automation selectors. The `personality_description` field is
+free-form text and defaults to empty.
+
+Personalities are not global, do not replace the project system prompt or canonical knowledge, and are not per-work-item
+overrides. Deleting `Default` is rejected to preserve the project invariant. Deleting any other personality that is
+referenced by an automation rule is rejected unless a future explicit reassignment flow is added.
+
+## Knowledge Operational Data
+
+Markdown and small frontmatter in the workspace own document content, identities, relationships, and source references.
+The project records the configured directory. Graph/search data, backlinks, fingerprints, and diagnostics are derived
+indexes scoped to a working copy and can be rebuilt. [Documents and relationships](knowledge-documents.md) owns their
+meaning.
+
+The server persists knowledge settings and jobs, links to shared agent runs, findings and resolutions, proposed diffs
+and decisions, and actual application outcomes. Retained artifacts contain the relevant inputs, drafts, reports, logs,
+and before/after content. These are durable operational history, not facts that can be reconstructed from the current
+Markdown. [Knowledge automation](knowledge-automation.md) owns job fields, statuses, kinds, and lifecycle.
+
+All records use the immutable project ID. Knowledge jobs have no required work-item foreign key and cannot enter
+item-claim code. Their source job and purpose remain visible on agent runs. Project deletion cleans up operational state
+under the normal lifecycle while preserving workspace knowledge. The new design does not require store UUIDs or
+signatures as canonical file authority.
+
+Legacy storage is replaced through the explicit preservation and migration steps
+in [Knowledge replacement](knowledge-transition.md); the old signed-store and cycle schemas are not target requirements.
+
+## Work Items
+
+Work items coordinate ordinary project work. A user may create one from a knowledge finding, but it does not own the
+knowledge job or resolve its findings merely by changing state.
+
+Core fields include:
+
+- title and description;
+- monotonically increasing version;
+- current claimant and claim timestamps;
+- claim expiration timestamp;
+- finish timestamp;
+- optional agent model and reasoning effort overrides;
+- optional project-scoped work-group membership;
+- comment count and timestamps.
+
+Work item labels are project-scoped item metadata. A label has a key and an optional value, such as `bug`,
+`severity=high`, or `state=open`. Non-state labels can be edited by human operators and agents. The `state` label is
+Dispatch's built-in workflow hook for claim, finish, release, and default automation transitions; it is managed through
+item create, item state update, and workflow transitions rather than generic label add, update, or delete operations.
+
+Dispatch keeps a project-scoped catalog of known label keys. A key is discovered when it is used by a work item and is
+forgotten when its final usage disappears, unless the key is persistent or built in. Operators may create an unused key,
+which makes it persistent, and may mark a discovered key persistent so its configuration survives zero usage. The
+built-in keys `state`,
+`dispatch:claimed-from-state`, `dispatch:automation-blocked`, and
+`dispatch:feedback-requested` always exist and must remain persistent. A known key may define an optional accent color
+as canonical lowercase `#rrggbb`; this is presentation metadata and does not change label or workflow semantics.
+
+Project default agent model and reasoning effort selections are validated as a compatible pair. Work item model and
+reasoning overrides are validated against the effective inherited project defaults so a saved item cannot produce a
+model/effort combination that the selected Codex model does not support.
+
+Dispatch also uses hardcoded workflow labels. `dispatch:claimed-from-state=<state-label>` is transient claim bookkeeping
+so release and feedback requests can restore the state an item came from. `dispatch:automation-blocked` marks released,
+non-operable work that automation should skip until the label is removed. `dispatch:feedback-requested` marks work where
+an agent is waiting for a user answer; automation treats it as a blocking label until a user or agent removes it after
+the feedback has been handled.
+
+Work item relationships are directed, project-scoped links between two different work items. Each relationship stores a
+source work item, a target work item, a free-form `kind` string, and timestamps. Relationship kinds are trimmed and must
+not be empty, but Dispatch does not define a fixed vocabulary. Exact duplicates for the same project, source item,
+target item, and kind are rejected; different kinds between the same pair and separately directed reverse relationships
+are allowed. Source and target items must both exist in the same project. Deleting either work item cascades to delete
+touching relationships so API, CLI, and UI readers do not see orphaned links.
+
+Relationship create, update-kind, and delete operations are Dispatch-owned workflow mutations, not label edits and not
+CrudKit-only CRUD. Mutations touch both source and target work items by incrementing their versions and updating their
+`updated_at` values, record item events for both sides, and publish item-change notifications for both item detail
+views.
+
+Work-item groups are project-scoped records with a stable lowercase key, display name, creation attribution, and
+timestamps. An item belongs to at most one group. Agents may create a group idempotently and atomically assign several
+same-project item ids; assigning an item that already belongs to another group rejects the complete assignment.
+Membership updates increment item versions and create attributed `ItemUpdated` events. Groups are display organization,
+not dependency semantics: relationships remain the directed semantic link mechanism.
+
+Work item states are project-scoped records with an identifier, display name, and position. They define the authored
+values that operators should use for the `state` label. New projects start with `idea`, `open`, `in_progress`, and
+`done` states.
+
+Swim-lanes are project-scoped records with an identifier, display name, position, item order, item creation flag, and a
+CrudKit `Condition`-shaped filter stored as JSON. Lane filters use work item label keys as `column_name` values, so a
+lane can show `state=open`, `severity=high`, or nested label combinations. New projects start with lanes that mirror the
+default states by filtering on `state=<state-identifier>`, but users can add, rename, reorder, remove, or redefine lanes
+independently from authored states. New projects also get editable work-consuming automations for ordinary open work,
+needs-refinement routing, and needs-verification routing. The ordinary open-work default targets `state=open` while
+excluding the refinement and verification routing labels.
+
+Swim-lane item order is a closed, typed choice: `updated_desc`, `updated_asc`, `created_desc`, `created_asc`, `id_desc`,
+`id_asc`, `title_asc`, or `title_desc`. Persisted values are validated before lane views reach the board; the UI does
+not silently treat an unknown value as a default.
+
+The version field supports optimistic safety for updates and workflow transitions. Claim ownership is enforced
+server-side.
+
+## Comments
+
+Comments are attached to work items and are used for user context, agent progress, completion reports, release notes,
+and discussion.
+
+Comment authors include user, agent, and system author types. The server records author name, body, work item, and
+creation time.
+
+## Events
+
+Dispatch records workflow and automation events for live UI updates and auditability. Event streams are project-scoped
+and can also be filtered to a work item.
+
+Events are used by item watch commands, live board updates, and automation visibility. They are not a substitute for the
+current state stored on projects, work item labels, comments, and runs.
+
+Event kinds form a closed audit vocabulary. Item workflow events cover item create, update, move, delete, claim,
+progress, finish, and release; feedback requests; comments; label create, update, and delete; and relationship create,
+update, and delete. Active project snapshot events use `SystemPromptChanged`. Producers use the typed event kind and
+actor type rather than constructing storage strings, while the API and server-sent-event names retain their existing
+wire spellings.
+
+System prompt history is reconstructable from `SystemPromptChanged` event snapshots until a user clears system prompt
+history. Clearing history removes old system prompt events but does not change the current `projects.system_prompt`
+value.
+
+Historical `MemoryChanged` rows and the legacy project field remain migration data rather than writable project
+knowledge. An explicit migration can review useful content before importing it into documents. No current DTO, API, CLI,
+prompt, or UI exposes writable project memory.
+
+## Agent Tools
+
+Agent tools describe launchable coding-agent integrations. The current implementation targets Codex. Tool records
+support discovery and configuration through the admin UI and server services.
+
+Agents launched by Dispatch receive a prepared environment and a CLI on `PATH`; they do not receive database access.
+
+## Agent Runs
+
+An agent run records an automation process.
+
+Run data includes:
+
+- project and optional work item;
+- tool name;
+- automation trigger origin, including trigger id and the trigger name as it existed when the run was created;
+- run mutability: `mutating` or `read_only`;
+- status: `running`, `completed`, `failed`, or `cancelled`;
+- command and working directory;
+- worktree path and branch name when applicable;
+- process id and exit code;
+- log path, developer-instructions path, and user-prompt path;
+- selected agent model and reasoning effort;
+- knowledge-job identity and purpose when applicable; the actual instructions remain in the normal run input;
+- Codex token usage when reported: input tokens, cached input tokens, and output tokens;
+- commit policy outcome: whether a commit was required, the commit outcome status, and created commit SHA (s);
+- pull request request and URL fields;
+- cleanup status;
+- timestamps.
+
+Run cleanup status is a closed lifecycle: `not_applicable` when no isolated worktree was created, `pending` while a
+created worktree still requires cleanup, and `cleaned` after successful removal. Invalid stored values are rejected when
+constructing run views rather than passed through as arbitrary UI text.
+
+Run logs are read through server endpoints. The log file path is an implementation detail and should not be handed to
+agents as the primary interface.
+
+Board run summaries read total counts grouped by requested work item and project only the newest three runs per item,
+ordered by creation time and then run id descending. The `agent_runs` storage index follows project, work item, and that
+ordering so recurring Board refreshes do not load or sort full historical run models in application code.
+
+Claimed work item views may include the active Dispatch run that owns the claim and the run's automation trigger origin
+when the claimant is a structurally linked `dispatch-run-*`. Readers must not infer a claim source from an agent id
+alone when the run is not linked to the same project item.
+
+## Automation
+
+Automation rules allow Dispatch to evaluate configured activation conditions. Evaluation is cheap. The result is either
+a new work item or an agent run scheduled against an existing work item.
+
+Automation records have an `activation` and an `effect`.
+
+Supported activations include:
+
+- `manual`: evaluated only when a user queues an evaluation;
+- `work_item`: polls for unclaimed work matching the selector on the configured schedule while project automation is
+  running;
+- `cron`: evaluates on the configured schedule;
+- `work_item_created`: evaluates for newly created work items.
+
+Supported effects are:
+
+- `produce_work`: creates a work item from the automation prompt and does not launch an agent;
+- `consume_work`: schedules an agent run for a matching work item.
+
+Automation records include enabled state, activation, effect, mutability, tool, selected personality, prompt, required
+schedule, priority, evaluation count, queued evaluation count, last and next evaluation metadata, and the last consumed
+event id when applicable. Work-consuming automation can include a CrudKit `Condition`-shaped work-item selector.
+Selector clauses use label keys as `column_name` values, so nested `All` and `Any` groups can model rules such as
+`state=open AND (bug OR severity=high)`. Dispatch implicitly excludes `dispatch:automation-blocked` from automation
+claims.
+
+Work-consuming automation references a personality in the same project. New consume-work rules default to the project
+`Default` personality when no personality is explicitly selected. Work-producing automation may store the column as null
+and does not use personality prompt injection. Server-side create and update paths validate that the selected
+personality exists in the automation rule's project.
+
+Work-consuming automation has an explicit run mutability:
+
+- `mutating`: the launched agent may edit the project checkout according to the project workspace, sandbox, Git, commit,
+  and pull-request settings.
+- `read_only`: the launched agent may inspect the project checkout and write Dispatch-owned metadata through the
+  API/CLI, but must not edit project files, Git index or refs, commits, pushes, resets, branches, worktrees, or pull
+  requests.
+
+Dispatch persists the selected mutability onto `agent_runs` when a run is created so concurrency accounting, logs, run
+views, and audit history remain stable even if the automation rule changes later. Direct starts without a trigger
+default to `mutating` unless the caller explicitly supplies a mutability value. Work-producing automation does not
+launch an agent and has no run mutability or concurrency effect.
+
+Default project automation rules are ordinary editable records. Dispatch creates and migrates these defaults:
+
+- `Claim open work`: mutating consume-work, selector `state=open` plus absence of `needs-refinement`,
+  `needs-verification`, and `dispatch:feedback-requested`.
+- `Refine needs-refinement work`: read-only consume-work, selector requiring the `needs-refinement` label.
+- `Verify needs-verification work`: read-only consume-work, selector requiring the `needs-verification` label.
+
+The refiner and verifier prompts instruct agents to update item title, description, comments, and labels, remove the
+triggering label when complete, and leave the underlying implementation work unfinished for later automation or humans.
+
+Migrations default existing automation triggers and existing agent runs to `mutating`. Dispatch must not infer
+`read_only` from trigger names, selectors, labels, or prompt text; operators opt existing custom automation into
+read-only behavior explicitly.
+
+Migrations create the `personalities` table for existing databases, seed one empty `Default` personality per project,
+and backfill existing automation rules to reference their project default. New project seeding creates the default
+personality before default automation rules so those rules can reference it.
+
+Knowledge jobs have separate schedules and settings and do not use work-producing or work-consuming rules. Legacy
+knowledge-rule cutover follows [Knowledge replacement](knowledge-transition.md); it never enables a second concurrent
+scheduler or silently opts the project into recurring model work.
+
+### Automation provenance, revisions, and bundles
+
+Every automation rule and personality has an immutable revision stream. Revisions store a monotonic number, canonical
+configuration or personality snapshot, SHA-256 fingerprint, change operation, actor attribution, and timestamp. Create,
+update, restore, detach, and bundle apply create a revision; restore never mutates history. Runs capture
+trigger/personality revision ids, the current system-prompt event id, and a SHA-256 fingerprint of the final
+role-separated developer instructions and user prompt.
+
+`automation_evaluations` records queued or due evaluations that create work, skip a duplicate, start a run, or fail.
+Idle polling checks create no row. `work_item_origins` stores one immutable origin for every item: historical, operator,
+producing automation, agent run, or system. Origin snapshots retain run/actor, trigger/revision/evaluation, bundle,
+deduplication, and display names after source objects are deleted or renamed.
+
+Existing rules and personalities receive revision 1 during migration, and existing items receive historical origins.
+Older runs retain null provenance fields where attribution cannot be reconstructed safely.
+
+Produce-work rules may define item title, initial state and labels, item model/effort overrides, and deduplication:
+always create, reuse an unfinished item from the same trigger, or reuse an unfinished item with a project-scoped key.
+Absence preserves legacy production behavior.
+
+Consume-work rules may be exclusive, override model/effort, set a positive timeout, cap their own active runs, join a
+project-scoped mutex group, and declare typed semantic postconditions. Postconditions are alternatives of all-of
+assertions over disposition, run-attributed events, label transitions, one or more created-item count/selectors,
+optional shared created-item group membership, and workspace change policy. Existing rules remain non-exclusive, use the
+legacy 12-hour timeout, and have no extra cap/group or semantic postconditions.
+
+Effective model and reasoning effort precedence is work-item override, then consuming-rule override, then project
+default. Produced-work overrides are stored on the created item and participate in the same precedence when later
+consumed. For work-item automation, token usage remains observational analytics rather than an enforceable ceiling.
+Knowledge-job budget handling is defined separately in the knowledge automation contract.
+
+Bundle ownership is identified by `(project, bundle_key, object_key)`. `automation_bundle_applies` records canonical
+manifest hashes, applied/removal diffs, actor/status metadata, and timestamps. The latest apply-history status
+determines whether a bundle is installed. Removing an installed bundle transactionally deletes only its managed rules
+and then its managed personalities, records `removed`, and permits a clean later reinstall. Managed objects cannot be
+individually edited or deleted until detached.
+
+## Settings
+
+Project settings control knowledge location and automation behavior:
+
+- configured knowledge directory, with explicit checked relocation;
+- separate knowledge schedules, change triggers, application mode, model/effort, timeout, and token budget as defined
+  in [Knowledge automation](knowledge-automation.md);
+
+- workspace mode: current branch, Git branch, or Git worktree;
+- maximum concurrent code-edit agents;
+- maximum concurrent read-only agents;
+- pull request creation;
+- auto-commit behavior for current-branch automation;
+- commit standard text used in generated agent commit instructions;
+- failure revert strategy for current-branch automation: manual revert or Git reset;
+- mutable Git command policy: whether agents may use `git add`, `git commit`, `git push`, and `git reset`, plus whether
+  hard reset is never allowed or only allowed in isolated branch/worktree runs;
+- stale-claim timeout;
+- worktree cleanup policy;
+- default agent tool, model, and reasoning effort;
+- agent sandbox mode and extra writable roots.
+
+Settings are applied by server services at launch and workflow boundaries, not by the agent-facing CLI. Mutating runs
+are limited by `max_code_edit_agents` after applying workspace-mode safety constraints such as the single mutating run
+cap for current-branch projects. Read-only runs are limited independently by `max_read_only_agents`, default to two
+concurrent runs for new and migrated projects, and may be disabled with zero. Selector/prompt-based automations do not
+have a separate project-level refinement concurrency exception.
