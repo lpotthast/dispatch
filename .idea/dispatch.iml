@@ -26,12 +26,14 @@
       <sourceFolder url="file://$MODULE_DIR$/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/dispatch-api-client/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/dispatch-types/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/dispatch-operator/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/dispatch-cli/target" />
       <excludeFolder url="file://$MODULE_DIR$/dispatch-server/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/dispatch-api-client/target" />
       <excludeFolder url="file://$MODULE_DIR$/dispatch-types/target" />
       <excludeFolder url="file://$MODULE_DIR$/crudkit/target" />
+      <excludeFolder url="file://$MODULE_DIR$/dispatch-operator/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

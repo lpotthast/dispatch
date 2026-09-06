@@ -33,22 +33,22 @@ Accepted requirements and decisions constrain the implementation. Code demonstra
 cases they exercise. Neither proves that observed behavior is intended. Comments and README files may be stale. A source
 link is a route to evidence, not evidence that the agent actually read it.
 
-Authors distinguish these situations in ordinary prose:
+Knowledge states accepted behavior, constraints, and consequential rationale in present tense. An accepted design is
+normative even while code is being changed to satisfy it. It does not become a weaker requirement because it is not yet
+implemented. Unsupported observations and disputed interpretations belong in findings until their meaning is resolved.
+An inference used as design rationale is labeled with its reasoning and uncertainty.
 
-- accepted intent, including the reason for an important requirement;
-- observed implementation, with the files or tests supporting the observation;
-- an inference, with its reasoning and uncertainty;
-- a known disagreement or missing evidence;
-- an accepted future change whose implementation is still pending.
+The knowledge tree contains no implementation status, cleanup narrative, TODO lists, rollout plans, planned work-item
+references, or task history. Acceptance documents describe observable required outcomes. Compatibility documents
+describe supported representations and preservation guarantees. Neither is an exception to the rule.
 
-Do not add machine-managed authority fields to every claim. Make material uncertainty explicit where readers encounter
-it. Historical material belongs in a clearly labeled history section or separate reference document; active summaries
-must not present obsolete behavior as current.
+For example, write "Claims expire after ten minutes." If the implementation still uses thirty minutes, report that gap
+in the task or drift finding, outside knowledge. Keep the accepted timeout in the owning contract. A failed or completed
+run cannot make the contradiction disappear. A rationale such as "Ten minutes bounds recovery time for abandoned work"
+can remain useful after the implementation effort and belongs with the requirement.
 
-For a new behavior change, record the intended contract and the implementation gap together. For example: "The accepted
-target is a ten-minute claim timeout; the current implementation still uses thirty minutes. This change is being
-implemented in the linked work." When implementation catches up, remove the transition wording after checking evidence.
-An unfinished transition must not disappear because a job timed out or an item was closed.
+Do not add machine-managed authority or implementation-status fields to individual claims. Preserve design rationale
+that continues to explain a decision; keep the chronology of how it was implemented in project history.
 
 ## What to retain
 

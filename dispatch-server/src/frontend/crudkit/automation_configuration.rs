@@ -971,10 +971,9 @@ fn label_assertion_storage(assertion: LabelAssertionKind) -> String {
     .to_owned()
 }
 
-fn work_item_event_types() -> [WorkItemEventType; 18] {
+fn work_item_event_types() -> [WorkItemEventType; 17] {
     [
         WorkItemEventType::SystemPromptChanged,
-        WorkItemEventType::MemoryChanged,
         WorkItemEventType::ItemCreated,
         WorkItemEventType::ItemUpdated,
         WorkItemEventType::ItemMoved,

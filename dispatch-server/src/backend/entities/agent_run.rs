@@ -13,6 +13,10 @@ fn default_mutability_storage() -> String {
     "mutating".to_owned()
 }
 
+fn default_run_kind_storage() -> String {
+    "task".to_owned()
+}
+
 #[derive(
     Clone,
     Debug,
@@ -42,6 +46,47 @@ pub struct Model {
     pub project_id: i64,
 
     pub work_item_id: Option<i64>,
+
+    #[serde(default = "default_run_kind_storage")]
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub run_kind: String,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub purpose: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub knowledge_revision: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub source_baseline_id: Option<i64>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub source_snapshot_id: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub knowledge_view_sha256: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub input_overlay_sha256: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub source_authority_kind: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub source_ref_name: Option<String>,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub source_raw_head: Option<String>,
 
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]

@@ -147,20 +147,41 @@ pub(crate) async fn set_input_value(
     selector: &str,
     value: &str,
 ) -> Result<(), Report> {
-    let fields = driver
-        .find_all(By::Css(selector))
-        .await
-        .context("failed to find browser-test input wrapper")?;
-    for field in fields {
-        if let Ok(input) = editable_element(&field).await
-            && input.is_enabled().await.unwrap_or(false)
-            && input.attr("readonly").await.unwrap_or(None).is_none()
-            && input.attr("type").await.unwrap_or(None).as_deref() != Some("hidden")
-        {
-            return replace_element_value(&input, value, selector).await;
+    let mut inspected = Vec::new();
+    for _ in 0..30 {
+        inspected.clear();
+        let fields = driver
+            .find_all(By::Css(selector))
+            .await
+            .context("failed to find browser-test input wrapper")?;
+        for field in fields {
+            match editable_element(&field).await {
+                Ok(input) => {
+                    let tag_name = input
+                        .tag_name()
+                        .await
+                        .unwrap_or_else(|_| "unknown".to_owned());
+                    let enabled = input.is_enabled().await.unwrap_or(false);
+                    let readonly = input.attr("readonly").await.unwrap_or(None);
+                    let input_type = input.attr("type").await.unwrap_or(None);
+                    inspected.push(format!(
+                        "{tag_name}[enabled={enabled}, readonly={readonly:?}, type={input_type:?}]"
+                    ));
+                    if enabled && readonly.is_none() && input_type.as_deref() != Some("hidden") {
+                        return replace_element_value(&input, value, selector).await;
+                    }
+                }
+                Err(error) => {
+                    inspected.push(format!("wrapper without an editable control: {error}"));
+                }
+            }
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    bail!("failed to find editable browser-test input for {selector:?}")
+    bail!(
+        "failed to find editable browser-test input for {selector:?}; inspected: {}",
+        inspected.join(", ")
+    )
 }
 
 pub(crate) async fn replace_element_value(
@@ -188,18 +209,22 @@ pub(crate) async fn replace_element_value(
 }
 
 pub(crate) async fn editable_element(field: &WebElement) -> Result<WebElement, Report> {
-    if matches!(
-        field
-            .tag_name()
+    let tag_name = field
+        .tag_name()
+        .await
+        .context("failed to inspect editable field type")?;
+    if matches!(tag_name.as_str(), "input" | "textarea" | "select")
+        || field
+            .attr("contenteditable")
             .await
-            .context("failed to inspect editable field type")?
-            .as_str(),
-        "input" | "textarea" | "select"
-    ) {
+            .context("failed to inspect editable field contenteditable state")?
+            .as_deref()
+            == Some("true")
+    {
         return Ok(field.clone());
     }
     let controls = field
-        .find_all(By::Css("input, textarea, select"))
+        .find_all(By::Css("input, textarea, select, [contenteditable='true']"))
         .await
         .context("failed to inspect wrapped editable field")?;
     Ok(controls

@@ -47,7 +47,7 @@ handoff can summarize what was read, its working copy, and what remains uncertai
 
 ## Immediate CLI contract
 
-These are target first-version commands, not a statement that today's binary supports them:
+The immediate command surface is:
 
 ```text
 dispatch knowledge root --json
@@ -66,9 +66,9 @@ dispatch knowledge check [<id-or-path>] --json
 | `check`     | Structural diagnostics for metadata, identity, hierarchy, references, source selectors, and size/routing signals.                  |
 
 Each response identifies its working copy and index generation. Document responses identify exact current content. Lists
-have a documented finite default limit and an explicit continuation cursor when more results exist; content must not
-silently disappear to meet a budget. Large document responses indicate any truncation and offer section or offset
-continuation. Initial routing summaries remain compact.
+default to 20 entries, accept limits from 1 through 100, and expose an explicit next offset when more results exist;
+content must not silently disappear to meet a budget. Document responses contain at most 32,000 Unicode characters and
+expose explicit offset continuation. Initial routing summaries remain compact.
 
 Navigation and lexical search are deterministic and do not start models. `check` cannot detect all semantic
 contradictions. `impact` suggests a scope and never declares that unlinked source changes have no documentation
@@ -128,9 +128,9 @@ editing, use impact mapping, update the lowest affected documents, check all aff
 dependents, and run structural checks. Preserve unchanged prose. Report meaningful changes, verification, and unresolved
 disagreements through the task's ordinary reporting path.
 
-Work-item completion still follows ordinary item rules. Knowledge quality is part of completing the task, but the new
-system does not require signed knowledge reviews or per-query receipts as an additional item transition protocol. Later
-checks can detect gaps; a successful item transition alone never resolves a drift finding.
+Work-item completion still follows ordinary item rules. Knowledge quality is part of completing the task, but the system
+does not require signed knowledge reviews or per-query receipts as an additional item transition protocol. Later checks
+can detect gaps; a successful item transition alone never resolves a drift finding.
 
 ## Knowledge-job reporting
 

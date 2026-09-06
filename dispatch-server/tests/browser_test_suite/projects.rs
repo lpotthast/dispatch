@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fs, fs::OpenOptions, path::Path, time::Duration};
 
 use assertr::prelude::*;
 use browser_test::thirtyfour::{By, WebDriver};
@@ -55,6 +55,46 @@ impl BrowserTest<DispatchTestApp> for ProjectsAndSystemTest {
         )
         .await?;
         find(driver, By::Css(".codex-status-panel")).await?;
+        wait_for_initial_codex_status(driver).await?;
+        let codex_home = app.temp_dir().join(".dispatch/codex");
+        fs::create_dir_all(&codex_home).context("failed to create browser-test Codex home")?;
+        let oversized_log = codex_home.join("logs_browser.sqlite");
+        let oversized_wal = codex_home.join("logs_browser.sqlite-wal");
+        let unrelated_state = codex_home.join("state_5.sqlite");
+        let unrelated_log = codex_home.join("session.log");
+        sparse_file(&oversized_log, 1024 * 1024 * 1024 + 1)?;
+        sparse_file(&oversized_wal, 4096)?;
+        fs::write(&unrelated_state, b"keep state")
+            .context("failed to write browser-test unrelated state database")?;
+        fs::write(&unrelated_log, b"keep session log")
+            .context("failed to write browser-test unrelated text log")?;
+        click(
+            driver,
+            By::XPath("//*[@class='codex-status-actions']//button[normalize-space()='Refresh']"),
+        )
+        .await?;
+        wait_for_source_text(driver, "logs_browser.sqlite", true).await?;
+        find(driver, By::Css(".codex-log-storage-warning")).await?;
+        assert_source_contains(driver, "logs_browser.sqlite").await?;
+        assert_source_contains(driver, "1.00 GiB").await?;
+        click(
+            driver,
+            By::XPath("//button[normalize-space()='Purge oversized Codex logs']"),
+        )
+        .await?;
+        wait_for_source_text(driver, "logs_browser.sqlite", false).await?;
+        assert_that!(
+            &driver
+                .find_all(By::Css(".codex-log-storage-warning"))
+                .await
+                .context("failed to verify removal of Codex log storage warning")?
+                .is_empty()
+        )
+        .is_true();
+        assert_that!(&(!oversized_log.exists())).is_true();
+        assert_that!(&(!oversized_wal.exists())).is_true();
+        assert_that!(&(unrelated_state.exists())).is_true();
+        assert_that!(&(unrelated_log.exists())).is_true();
         find(
             driver,
             By::Css(".system-page .codex-status-panel ~ .app-tools"),
@@ -125,6 +165,58 @@ impl BrowserTest<DispatchTestApp> for ProjectsAndSystemTest {
 
         Ok(())
     }
+}
+
+fn sparse_file(path: &Path, size_bytes: u64) -> Result<(), Report> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .context("failed to create sparse Codex log fixture")?;
+    file.set_len(size_bytes)
+        .context("failed to size sparse Codex log fixture")?;
+    Ok(())
+}
+
+async fn wait_for_initial_codex_status(driver: &WebDriver) -> Result<(), Report> {
+    for _ in 0..200 {
+        if let Ok(checked) = driver
+            .find(By::Css(".codex-status-grid > div:last-child strong"))
+            .await
+            && !checked
+                .text()
+                .await
+                .context("failed to read initial Codex status timestamp")?
+                .trim()
+                .is_empty()
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("timed out waiting for initial Codex status");
+}
+
+async fn wait_for_source_text(
+    driver: &WebDriver,
+    expected: &str,
+    present: bool,
+) -> Result<(), Report> {
+    for _ in 0..200 {
+        let source = driver
+            .source()
+            .await
+            .context("failed to inspect Codex log maintenance source")?;
+        if source.contains(expected) == present {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!(
+        "timed out waiting for page source to {} {expected:?}",
+        if present { "contain" } else { "omit" }
+    );
 }
 
 async fn assert_codex_auth_guide_when_blocked(driver: &WebDriver) -> Result<(), Report> {

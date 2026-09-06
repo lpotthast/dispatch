@@ -19,6 +19,54 @@ use crate::{
     },
 };
 
+pub(crate) fn validate_configuration(
+    postconditions: &AutomationPostconditions,
+    path: &str,
+) -> Result<()> {
+    if postconditions.any_of.is_empty() {
+        bail!("{path}.any_of cannot be empty");
+    }
+    for (outcome_index, outcome) in postconditions.any_of.iter().enumerate() {
+        for label in &outcome.labels {
+            item_labels::normalize_key(label.key.clone())
+                .context_with(|| format!("{path}.any_of[{outcome_index}] has invalid label"))?;
+        }
+        if let Some(created) = &outcome.created_items {
+            validate_created_item_assertion(
+                created,
+                &format!("{path}.any_of[{outcome_index}].created_items"),
+            )?;
+        }
+        for (assertion_index, created) in outcome.created_item_assertions.iter().enumerate() {
+            validate_created_item_assertion(
+                created,
+                &format!(
+                    "{path}.any_of[{outcome_index}].created_item_assertions[{assertion_index}]"
+                ),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_created_item_assertion(
+    created: &crate::shared::view_models::CreatedItemAssertion,
+    path: &str,
+) -> Result<()> {
+    if created.count.is_some() && (created.at_least.is_some() || created.at_most.is_some()) {
+        bail!("{path}.count cannot be combined with at_least or at_most");
+    }
+    if let (Some(minimum), Some(maximum)) = (created.at_least, created.at_most)
+        && minimum > maximum
+    {
+        bail!("{path} has at_least greater than at_most");
+    }
+    if let Some(selector) = &created.selector {
+        crate::backend::label_conditions::validate_condition(selector)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticEvaluation {
     pub(crate) status: SemanticPostconditionStatus,

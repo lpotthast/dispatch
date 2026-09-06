@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use rootcause::{Result, prelude::*};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
@@ -18,6 +20,39 @@ where
         .await
         .context_with(|| format!("failed to load item {item_id}"))?
         .ok_or_else(|| report!("item {item_id} does not exist in this project"))
+}
+
+pub(crate) async fn get_many<C>(
+    conn: &C,
+    project_id: i64,
+    item_ids: impl IntoIterator<Item = i64>,
+) -> Result<BTreeMap<i64, WorkItemModel>>
+where
+    C: ConnectionTrait,
+{
+    let item_ids = item_ids.into_iter().collect::<BTreeSet<_>>();
+    if item_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let items = WorkItem::find()
+        .filter(work_item::Column::ProjectId.eq(project_id))
+        .filter(work_item::Column::Id.is_in(item_ids.iter().copied()))
+        .all(conn)
+        .await
+        .context("failed to load items")?
+        .into_iter()
+        .map(|item| (item.id, item))
+        .collect::<BTreeMap<_, _>>();
+
+    if let Some(item_id) = item_ids
+        .into_iter()
+        .find(|item_id| !items.contains_key(item_id))
+    {
+        bail!("item {item_id} does not exist in this project");
+    }
+
+    Ok(items)
 }
 
 pub(crate) async fn touch<C>(conn: &C, item: WorkItemModel) -> Result<WorkItemModel>

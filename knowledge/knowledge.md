@@ -10,13 +10,6 @@ Dispatch helps a project maintain a readable, connected explanation of its inten
 ordinary Markdown. Agents use a short overview to find the detail relevant to their task. Background knowledge jobs
 initialize, update, inspect, and reorganize that explanation as the project changes.
 
-## Status of this design
-
-This branch defines the replacement first version of knowledge management. It supersedes the previous signed-store and
-knowledge-cycle designs. The current implementation does not yet implement this
-contract. [Transition and acceptance](knowledge-transition.md) defines that gap and the later implementation work.
-Publishing this specification does not migrate the running service or change its capabilities.
-
 ## Purpose and authority
 
 Knowledge is the project's accepted understanding and intent. It states what the project does, the constraints it must
@@ -25,9 +18,10 @@ satisfy those statements. Tests, schemas, configuration, code comments, and READ
 explanation.
 
 When implementation and accepted design disagree, there is a contradiction to resolve. An agent must not silently
-rewrite a requirement to match a bug. An intentional design change can update knowledge before implementation; the
-change must identify what is intended and what remains to be implemented. Observation, inference, unresolved
-disagreement, and future intent must be distinguishable in the text.
+rewrite a requirement to match a bug. An intentional design change can update knowledge before implementation;
+knowledge states that accepted contract in present tense. Implementation gaps, progress, and unresolved contradictions
+are recorded in task reports or findings outside the knowledge documents. Evidence and rationale support
+the design without turning its owning explanation into a record of the implementation effort.
 
 Knowledge is living documentation. It is neither an append-only activity log nor an exhaustive prose translation of
 code. Its value is helping a reader make a correct decision with the least necessary reading.
@@ -73,7 +67,7 @@ reset, or push the project.
 | [Agent interface](knowledge-agents.md)                | Launch context, working-copy reads, CLI operations, permissions, editing, and job reporting.                  |
 | [Automation](knowledge-automation.md)                 | Initialization, updates, drift, reorganization, scheduling, publication, and recovery.                        |
 | [User interface](knowledge-ui.md)                     | User actions, document and graph views, answers, proposals, findings, and visible jobs and runs.              |
-| [Transition and acceptance](knowledge-transition.md)  | Replacement scope, implementation sequence, migration obligations, and acceptance scenarios.                  |
+| [Integrity and preservation](knowledge-integrity.md)  | Validation, content preservation, compatibility guarantees, and observable acceptance criteria.               |
 
 Detailed rules live with the document that owns them. The general architecture, API, CLI, data-model, workflow, and UI
 documents link into this branch rather than maintaining a second specification of knowledge behavior.

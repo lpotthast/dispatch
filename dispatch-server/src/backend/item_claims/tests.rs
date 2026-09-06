@@ -11,6 +11,9 @@ use crate::backend::{
     agent_ids,
     comments::list_comments,
     entities::{agent_run, work_item::WorkItemActiveModel},
+    item_claims::claiming::{
+        claim_item_matching_condition, claim_specific_item_matching_condition,
+    },
     item_label_service::{add_label, delete_label, update_label},
     items::{CreateWorkItem, create_item, get_item, list_events, list_items, move_item},
     projects::{self, CreateProject, create_project},

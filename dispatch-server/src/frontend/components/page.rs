@@ -6,17 +6,34 @@ use std::{
 };
 
 use leptos::prelude::*;
-use leptos_router::hooks::{use_params_map, use_query_map};
+use leptos_router::hooks::{use_location, use_query_map};
 
 pub(crate) fn selected_project_signal() -> Memo<Option<String>> {
     let query = use_query_map();
-    let params = use_params_map();
+    let location = use_location();
     Memo::new(move |_| {
         query
             .read()
             .get("project")
-            .or_else(|| params.read().get("project"))
+            .or_else(|| project_from_path(&location.pathname.get()))
     })
+}
+
+// Layouts cannot read a child route's named parameters. Resolve the project
+// from the same canonical URL for the layout, dock, subscriptions, and pages.
+fn project_from_path(path: &str) -> Option<String> {
+    let segments = path.trim_end_matches('/').split('/').collect::<Vec<_>>();
+    let project = match segments.as_slice() {
+        ["", "projects", project, "items", _]
+        | ["", "projects", project, "automation", "runs", _, "log"] => *project,
+        _ => return None,
+    };
+    if project.is_empty() {
+        return None;
+    }
+    urlencoding::decode(project)
+        .ok()
+        .map(|project| project.into_owned())
 }
 
 #[derive(Clone, Copy)]
@@ -32,7 +49,42 @@ pub(crate) fn cached_query<Input, T, InputFn, CachedFn, LoadFn, LoadFuture>(
     load: LoadFn,
 ) -> CachedQuery<T>
 where
-    Input: Clone + 'static,
+    Input: Clone + PartialEq + 'static,
+    T: PartialEq + Send + Sync + 'static,
+    InputFn: Fn() -> Input + Clone + 'static,
+    CachedFn: Fn(&Input) -> Option<T> + Clone + 'static,
+    LoadFn: Fn(Input) -> LoadFuture + Clone + 'static,
+    LoadFuture: Future<Output = Result<T, ServerFnError>> + 'static,
+{
+    cached_query_inner(initial, input, cached, load, true)
+}
+
+pub(crate) fn seeded_cached_query<Input, T, InputFn, CachedFn, LoadFn, LoadFuture>(
+    initial: Option<T>,
+    input: InputFn,
+    cached: CachedFn,
+    load: LoadFn,
+) -> CachedQuery<T>
+where
+    Input: Clone + PartialEq + 'static,
+    T: PartialEq + Send + Sync + 'static,
+    InputFn: Fn() -> Input + Clone + 'static,
+    CachedFn: Fn(&Input) -> Option<T> + Clone + 'static,
+    LoadFn: Fn(Input) -> LoadFuture + Clone + 'static,
+    LoadFuture: Future<Output = Result<T, ServerFnError>> + 'static,
+{
+    cached_query_inner(initial, input, cached, load, false)
+}
+
+fn cached_query_inner<Input, T, InputFn, CachedFn, LoadFn, LoadFuture>(
+    initial: Option<T>,
+    input: InputFn,
+    cached: CachedFn,
+    load: LoadFn,
+    load_initially: bool,
+) -> CachedQuery<T>
+where
+    Input: Clone + PartialEq + 'static,
     T: PartialEq + Send + Sync + 'static,
     InputFn: Fn() -> Input + Clone + 'static,
     CachedFn: Fn(&Input) -> Option<T> + Clone + 'static,
@@ -45,17 +97,26 @@ where
     let refresh_coalescer = Arc::new(RefreshCoalescer::default());
 
     let input_for_cache = input.clone();
+    let mut previous_input = untrack(&input);
     Effect::new(move |_| {
         let input = input_for_cache();
+        if input != previous_input {
+            previous_input = input.clone();
+            set_value.set(None);
+        }
         if let Some(cached) = cached(&input) {
             set_query_value_if_changed(value, set_value, cached);
         }
     });
 
     let refresh_coalescer_for_load = Arc::clone(&refresh_coalescer);
+    let first_load = Rc::new(Cell::new(true));
     Effect::new(move |_| {
         revision.get();
         let input = input();
+        if first_load.replace(false) && !load_initially {
+            return;
+        }
 
         let next_generation = generation.get().wrapping_add(1);
         generation.set(next_generation);
@@ -70,7 +131,7 @@ where
                 set_query_value_if_changed(value, set_value, next);
             }
             if refresh_coalescer.finish_request() {
-                set_revision.update(|revision| *revision = revision.wrapping_add(1));
+                set_revision.try_update(|revision| *revision = revision.wrapping_add(1));
             }
         });
     });
@@ -80,7 +141,7 @@ where
         value,
         refresh: Callback::new(move |()| {
             if refresh_coalescer_for_callback.request_refresh() {
-                set_revision.update(|revision| *revision = revision.wrapping_add(1));
+                set_revision.try_update(|revision| *revision = revision.wrapping_add(1));
             }
         }),
     }
@@ -93,9 +154,8 @@ fn set_query_value_if_changed<T>(
 ) where
     T: PartialEq + Send + Sync + 'static,
 {
-    let unchanged = value.with_untracked(|current| current.as_ref() == Some(&next));
-    if !unchanged {
-        set_value.set(Some(next));
+    if value.try_with_untracked(|current| current.as_ref() == Some(&next)) == Some(false) {
+        set_value.try_set(Some(next));
     }
 }
 
@@ -146,8 +206,29 @@ impl RefreshCoalescer {
 
 #[cfg(test)]
 mod tests {
-    use super::RefreshCoalescer;
+    use super::{RefreshCoalescer, project_from_path};
     use assertr::prelude::*;
+
+    #[test]
+    fn layout_project_context_recognizes_only_project_scoped_routes() {
+        for path in [
+            "/projects/demo/items/42",
+            "/projects/demo/automation/runs/7/log/",
+        ] {
+            assert_that!(project_from_path(path)).is_equal_to(Some("demo".to_owned()));
+        }
+        assert_that!(project_from_path("/projects/space%20and%2Bplus/items/42"))
+            .is_equal_to(Some("space and+plus".to_owned()));
+        for path in [
+            "/",
+            "/projects",
+            "/projects/demo",
+            "/projects//items/42",
+            "/projects/demo/settings",
+        ] {
+            assert_that!(project_from_path(path)).is_none();
+        }
+    }
 
     #[test]
     fn refresh_runs_immediately_while_idle() {

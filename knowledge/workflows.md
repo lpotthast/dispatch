@@ -63,9 +63,8 @@ copy. They check affected explanations and report unresolved contradictions as p
 task. [Knowledge Agent Interface](knowledge-agents.md) owns reading, editing, impact mapping, checks, and working-copy
 behavior.
 
-The replacement does not add signed navigation or impact/review receipts to item completion. Existing runtime gates are
-retired with the instruction/runtime cutover described in [Knowledge replacement](knowledge-transition.md). Completing
-an item does not automatically resolve a knowledge drift finding.
+Item completion requires no signed knowledge navigation or review receipt. Completing an item does not automatically
+resolve a knowledge drift finding.
 
 ## Release
 
@@ -149,7 +148,7 @@ converted from stored Tiptap HTML to Markdown at this boundary; Dispatch preserv
 
 Dispatch injects the short project knowledge root and immediate child summaries from the run's assigned working copy.
 Agents fetch current item/comments when a work item exists and navigate further knowledge as needed. The full knowledge
-base and comment history are not injected by default. The replacement launch contract is defined
+base and comment history are not injected by default. The launch contract is defined
 in [Knowledge Agent Interface](knowledge-agents.md).
 
 For work-consuming automation runs started from an automation rule, Dispatch resolves the rule's selected project-local
@@ -175,7 +174,7 @@ Dispatch duplicating them in its generated input.
 
 Knowledge jobs receive the shared authoring rules and a role-specific procedure with their task, scope, working copy,
 and permissions. Their actual instructions are retained with ordinary run input. No separate versioned skill registry or
-signed instruction receipt is required by the replacement.
+signed instruction receipt is required.
 
 ## Automation Rule Behavior
 

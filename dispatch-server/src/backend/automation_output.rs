@@ -4,7 +4,7 @@ use codex_app_server_sdk::{ReviewModeItem, ThreadEvent, ThreadItem};
 use rootcause::{Result, prelude::*};
 
 use crate::{
-    backend::{process_sessions::ProcessSessionRegistry, storage::utc_now},
+    backend::{bounded_output, process_sessions::ProcessSessionRegistry, storage::utc_now},
     shared::view_models::{
         AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece, AgentRunTokenUsageView,
     },
@@ -63,6 +63,16 @@ pub(crate) async fn push_codex_output_piece(
     output: &mut Vec<AgentRunOutputPiece>,
     draft: OutputPieceDraft,
 ) {
+    let piece = append_output_piece(output, draft);
+    if let Some(registry) = sessions {
+        registry.append_output_piece(run_id, piece);
+    }
+}
+
+pub(crate) fn append_output_piece(
+    output: &mut Vec<AgentRunOutputPiece>,
+    draft: OutputPieceDraft,
+) -> AgentRunOutputPiece {
     let piece = new_output_piece(
         output.last().map(|piece| piece.sequence + 1).unwrap_or(1),
         draft.kind,
@@ -71,11 +81,8 @@ pub(crate) async fn push_codex_output_piece(
         draft.body,
         draft.metadata,
     );
-    output.push(piece.clone());
-    trim_output_pieces(output, MAX_AGENT_OUTPUT_BYTES);
-    if let Some(registry) = sessions {
-        registry.append_output_piece(run_id, piece);
-    }
+    bounded_output::push_with_limit(output, piece.clone(), MAX_AGENT_OUTPUT_BYTES);
+    piece
 }
 
 pub(crate) fn new_output_piece(
@@ -210,25 +217,6 @@ fn token_usage_from_metadata(metadata: &serde_json::Value) -> Option<AgentRunTok
 
 fn usage_i64(value: &serde_json::Value, keys: &[&str]) -> Option<i64> {
     keys.iter().find_map(|key| value.get(*key)?.as_i64())
-}
-
-fn trim_output_pieces(pieces: &mut Vec<AgentRunOutputPiece>, max_bytes: usize) {
-    while pieces.len() > 1 && output_pieces_size(pieces) > max_bytes {
-        pieces.remove(0);
-    }
-}
-
-fn output_pieces_size(pieces: &[AgentRunOutputPiece]) -> usize {
-    pieces.iter().map(output_piece_size).sum()
-}
-
-fn output_piece_size(piece: &AgentRunOutputPiece) -> usize {
-    piece.timestamp.len()
-        + piece.source.len()
-        + piece.item_id.as_deref().map(str::len).unwrap_or_default()
-        + piece.title.len()
-        + piece.body.len()
-        + piece.metadata.to_string().len()
 }
 
 fn started_thread_item_piece(item: &ThreadItem) -> Option<OutputPieceDraft> {
@@ -550,6 +538,32 @@ mod tests {
             output_tokens: 7,
             total_tokens: 27,
         });
+    }
+
+    #[test]
+    fn append_output_piece_continues_the_retained_sequence() {
+        let mut pieces = vec![new_output_piece(
+            41,
+            AgentRunOutputKind::System,
+            None,
+            "existing",
+            "",
+            serde_json::json!({}),
+        )];
+
+        let appended = append_output_piece(
+            &mut pieces,
+            OutputPieceDraft {
+                kind: AgentRunOutputKind::Error,
+                item_id: None,
+                title: "failure".to_owned(),
+                body: String::new(),
+                metadata: serde_json::json!({}),
+            },
+        );
+
+        assert_that!(&(appended.sequence)).is_equal_to(42);
+        assert_that!(&(pieces.last().map(|piece| piece.sequence))).is_equal_to(Some(42));
     }
 
     #[tokio::test]

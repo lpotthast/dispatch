@@ -36,9 +36,9 @@ impl BoardService {
             |selected_project| Box::pin(load_board_page(selected_project, api_base_url())),
             |project| Box::pin(load_board_items_section(project)),
         );
-        service.page_cache = Some(LocalStorageCache::persistent("dispatch.query.board.v2"));
+        service.page_cache = Some(LocalStorageCache::persistent("dispatch.query.board.v3"));
         service.items_cache = Some(LocalStorageCache::persistent(
-            "dispatch.query.board-items.v2",
+            "dispatch.query.board-items.v3",
         ));
         service
     }
@@ -68,10 +68,10 @@ impl BoardService {
             if let (Some(cache), Some((project, section))) =
                 (self.items_cache, board_items_section_from_page(&page))
             {
-                cache.store(&project, &section);
+                cache.store_owned(&project, section);
             }
             if let Some(cache) = self.page_cache {
-                cache.store(&key, &page);
+                cache.store_owned(&key, board_page_shell(&page));
             }
         }
         Ok(page)
@@ -128,6 +128,25 @@ fn board_items_section_from_page(page: &BoardPage) -> Option<(String, BoardItems
     ))
 }
 
+fn board_page_shell(page: &BoardPage) -> BoardPage {
+    BoardPage {
+        projects: page.projects.clone(),
+        active_project_names: page.active_project_names.clone(),
+        selected_project: page.selected_project.clone(),
+        selected_project_view: page.selected_project_view.clone(),
+        automation_status: page.automation_status.clone(),
+        automation_running: page.automation_running,
+        items: Vec::new(),
+        swim_lanes: Vec::new(),
+        work_item_states: Vec::new(),
+        label_suggestions: page.label_suggestions.clone(),
+        label_accent_colors: Default::default(),
+        misconfigured_item_count: 0,
+        api_base_url: page.api_base_url.clone(),
+        codex_status: page.codex_status.clone(),
+    }
+}
+
 #[server(prefix = "/leptos")]
 async fn load_board_page(
     selected_project: Option<String>,
@@ -135,12 +154,15 @@ async fn load_board_page(
 ) -> Result<BoardPage, ServerFnError> {
     let state = app_state::app_state();
     let codex_status = state.codex_status.read().await.clone();
-    page_data::board_page_data(
-        &state.store,
-        &state.automation_controller,
-        codex_status,
-        selected_project.as_deref(),
-        api_base_url,
+    crate::backend::metrics::time_repository(
+        "board.page",
+        page_data::board_page_data(
+            &state.store,
+            &state.automation_controller,
+            codex_status,
+            selected_project.as_deref(),
+            api_base_url,
+        ),
     )
     .await
     .map_err(|err| ServerFnError::new(err.to_string()))
@@ -149,7 +171,10 @@ async fn load_board_page(
 #[server(prefix = "/leptos")]
 async fn load_board_items_section(project: String) -> Result<BoardItemsSection, ServerFnError> {
     let state = app_state::app_state();
-    page_data::board_items_section(&state.store, &project)
-        .await
-        .map_err(|err| ServerFnError::new(err.to_string()))
+    crate::backend::metrics::time_repository(
+        "board.items_section",
+        page_data::board_items_section(&state.store, &project),
+    )
+    .await
+    .map_err(|err| ServerFnError::new(err.to_string()))
 }

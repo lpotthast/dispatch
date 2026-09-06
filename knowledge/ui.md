@@ -37,7 +37,7 @@ centrally. Generated CrudKit and Leptonic styles remain upstream-owned.
 The Knowledge page follows [Knowledge User Interface](knowledge-ui.md): readable and editable Markdown, graph/list
 navigation, immediate search, AI answers, proposals, findings, and visible knowledge jobs and agent runs. It has
 independent recurring-work controls and reuses shared run details/logs.
-The [replacement transition](knowledge-transition.md) identifies the old UI surfaces to retire.
+The graph occupies the left pane, the selected document the right pane, and actions open in a side drawer.
 
 Local document errors remain local. Missing initialization or an unavailable model does not disable ordinary repository
 work or unrelated document reading. No signer-trust workflow or synthetic maintenance work item is required.

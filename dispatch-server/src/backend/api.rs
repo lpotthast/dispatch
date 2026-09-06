@@ -21,8 +21,8 @@ use dispatch_types::{
     CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest, CreateWorkItemRequest,
     DEFAULT_STATE_LABEL, FinishWorkItemRequest, ProgressWorkItemRequest, ReleaseWorkItemRequest,
     RemoveAutomationBundleRequest, RequestFeedbackWorkItemRequest, RestoreRevisionRequest,
-    RoutingExplainRequest, UpdateProjectMemoryRequest, UpdateWorkItemLabelRequest,
-    UpdateWorkItemRelationshipRequest, UpdateWorkItemRequest, WorkItemSearchRequest,
+    RoutingExplainRequest, UpdateWorkItemLabelRequest, UpdateWorkItemRelationshipRequest,
+    UpdateWorkItemRequest, WorkItemSearchRequest,
 };
 use futures_core::Stream;
 use rootcause::Result;
@@ -49,26 +49,15 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
+        .route(
+            "/api/projects/{project}/knowledge/{operation}",
+            get(query_knowledge),
+        )
+        .route("/api/projects", get(list_projects))
         .route("/api/projects/{project}", get(get_project))
         .route(
             "/api/projects/{project}/settings",
             get(get_project_settings),
-        )
-        .route(
-            "/api/projects/{project}/memory",
-            get(get_project_memory).put(set_project_memory),
-        )
-        .route(
-            "/api/projects/{project}/memory/append",
-            post(append_project_memory),
-        )
-        .route(
-            "/api/projects/{project}/memory/events",
-            get(list_project_memory_events),
-        )
-        .route(
-            "/api/projects/{project}/memory/events/clear",
-            post(clear_project_memory_history),
         )
         .route(
             "/api/projects/{project}/items",
@@ -263,6 +252,10 @@ struct ListEvaluationsQuery {
     limit: Option<u64>,
 }
 
+async fn list_projects(Extension(state): Extension<AppState>) -> Response {
+    json_result(projects::list_projects(&state.store).await)
+}
+
 async fn get_project(
     Extension(state): Extension<AppState>,
     Path(project): Path<String>,
@@ -275,89 +268,6 @@ async fn get_project_settings(
     Path(project): Path<String>,
 ) -> Response {
     json_result(projects::get_settings(&state.store, &project).await)
-}
-
-async fn get_project_memory(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-) -> Response {
-    json_result(projects::get_memory(&state.store, &project).await)
-}
-
-async fn list_project_memory_events(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-) -> Response {
-    json_result(projects::list_memory_events(&state.store, &project).await)
-}
-
-async fn set_project_memory(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-    headers: HeaderMap,
-    Json(request): Json<UpdateProjectMemoryRequest>,
-) -> Response {
-    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
-    {
-        Ok(attribution) => attribution,
-        Err(err) => return json_result::<()>(Err(err)),
-    };
-    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
-        return json_result::<()>(Err(err));
-    }
-    if let Err(err) = attribution.cross_check_agent_run_id(request.agent_run_id) {
-        return json_result::<()>(Err(err));
-    }
-    json_result(
-        projects::update_memory_with_source(
-            &state.store,
-            &project,
-            request.body,
-            projects::ProjectChangeSource::Agent {
-                agent_id: request.agent_id,
-                agent_run_id: request.agent_run_id,
-            },
-        )
-        .await,
-    )
-}
-
-async fn append_project_memory(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-    headers: HeaderMap,
-    Json(request): Json<UpdateProjectMemoryRequest>,
-) -> Response {
-    let attribution = match RequestAttribution::from_headers(&state.store, &project, &headers).await
-    {
-        Ok(attribution) => attribution,
-        Err(err) => return json_result::<()>(Err(err)),
-    };
-    if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
-        return json_result::<()>(Err(err));
-    }
-    if let Err(err) = attribution.cross_check_agent_run_id(request.agent_run_id) {
-        return json_result::<()>(Err(err));
-    }
-    json_result(
-        projects::append_memory_with_source(
-            &state.store,
-            &project,
-            request.body,
-            projects::ProjectChangeSource::Agent {
-                agent_id: request.agent_id,
-                agent_run_id: request.agent_run_id,
-            },
-        )
-        .await,
-    )
-}
-
-async fn clear_project_memory_history(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-) -> Response {
-    json_result(projects::clear_memory_history(&state.store, &project).await)
 }
 
 async fn list_items(
@@ -716,6 +626,7 @@ async fn create_work_group(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("create work groups")?;
         work_item_groups::create_group(&state.store, &project, request, &attribution).await
     }
     .await;
@@ -731,6 +642,7 @@ async fn assign_work_group_items(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("assign work-group items")?;
         work_item_groups::assign_items(
             &state.store,
             &project,
@@ -753,6 +665,7 @@ async fn create_item(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("create work items")?;
         items::create_item_with_attribution(
             &state.store,
             &project,
@@ -796,6 +709,7 @@ async fn update_item(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("update work items")?;
         items::update_item_with_attribution(
             &state.store,
             &project,
@@ -830,6 +744,9 @@ async fn claim_item(
     if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
         return json_result::<()>(Err(err));
     }
+    if let Err(err) = attribution.ensure_generic_claim() {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         item_claims::claim_item(&state.store, &project, &request.agent_id, &request.state)
             .await
@@ -849,6 +766,9 @@ async fn progress_item(
         Err(err) => return json_result::<()>(Err(err)),
     };
     if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
+    if let Err(err) = attribution.ensure_item_mutation("record item progress") {
         return json_result::<()>(Err(err));
     }
     json_result(
@@ -877,6 +797,9 @@ async fn finish_item(
     if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
         return json_result::<()>(Err(err));
     }
+    if let Err(err) = attribution.ensure_item_mutation("finish work items") {
+        return json_result::<()>(Err(err));
+    }
     json_result(
         item_claims::finish_item(
             &state.store,
@@ -901,6 +824,9 @@ async fn release_item(
         Err(err) => return json_result::<()>(Err(err)),
     };
     if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
+    if let Err(err) = attribution.ensure_item_mutation("release work items") {
         return json_result::<()>(Err(err));
     }
     json_result(
@@ -928,6 +854,9 @@ async fn request_item_feedback(
         Err(err) => return json_result::<()>(Err(err)),
     };
     if let Err(err) = attribution.cross_check_agent_id(&request.agent_id) {
+        return json_result::<()>(Err(err));
+    }
+    if let Err(err) = attribution.ensure_item_mutation("request item feedback") {
         return json_result::<()>(Err(err));
     }
     json_result(
@@ -958,6 +887,7 @@ async fn add_comment(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("add item comments")?;
         comments::add_comment_with_attribution(
             &state.store,
             &project,
@@ -987,15 +917,14 @@ async fn get_run_log(
     Extension(state): Extension<AppState>,
     Path((project, run_id)): Path<(String, i64)>,
 ) -> Response {
-    json_result(
-        automation::read_run_log_with_active_session(
-            &state.store,
-            &state.sessions,
-            &project,
-            run_id,
-        )
-        .await,
+    let result = automation::read_run_log_with_active_session(
+        &state.store,
+        &state.sessions,
+        &project,
+        run_id,
     )
+    .await;
+    json_result(result)
 }
 
 async fn active_sessions(
@@ -1103,6 +1032,8 @@ where
             StatusCode::BAD_REQUEST,
             Json(ApiError {
                 error: err.to_string(),
+                code: None,
+                details: None,
             }),
         )
             .into_response(),
@@ -1126,6 +1057,7 @@ async fn add_item_label(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("add item labels")?;
         item_label_service::add_label_with_attribution(
             &state.store,
             &project,
@@ -1150,6 +1082,7 @@ async fn update_item_label(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("update item labels")?;
         item_label_service::update_label_with_attribution(
             &state.store,
             &project,
@@ -1177,6 +1110,7 @@ async fn delete_item_label(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("delete item labels")?;
         item_label_service::delete_label_with_attribution(
             &state.store,
             &project,
@@ -1207,6 +1141,7 @@ async fn create_item_relationship(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("create item relationships")?;
         relationships::create_relationship_with_attribution(
             &state.store,
             &project,
@@ -1230,6 +1165,7 @@ async fn update_relationship(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("update item relationships")?;
         relationships::update_relationship_with_attribution(
             &state.store,
             &project,
@@ -1251,6 +1187,7 @@ async fn delete_relationship(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("delete item relationships")?;
         relationships::delete_relationship_with_attribution(
             &state.store,
             &project,
@@ -1272,6 +1209,7 @@ async fn update_item_relationship(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("update item relationships")?;
         relationships::update_relationship_for_item_with_attribution(
             &state.store,
             &project,
@@ -1294,6 +1232,7 @@ async fn delete_item_relationship(
     let result = async {
         let attribution =
             RequestAttribution::from_headers(&state.store, &project, &headers).await?;
+        attribution.ensure_item_mutation("delete item relationships")?;
         relationships::delete_relationship_for_item_with_attribution(
             &state.store,
             &project,
@@ -1307,26 +1246,60 @@ async fn delete_item_relationship(
     json_result(result)
 }
 
+async fn query_knowledge(
+    Extension(state): Extension<AppState>,
+    Path((project, operation)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<dispatch_types::knowledge::KnowledgeQuery>,
+) -> Response {
+    use dispatch_types::knowledge::KnowledgeOperation;
+    let operation = match operation.as_str() {
+        "root" => KnowledgeOperation::Root,
+        "node" => KnowledgeOperation::Node,
+        "search" => KnowledgeOperation::Search,
+        "check" => KnowledgeOperation::Check,
+        "documents" => KnowledgeOperation::List,
+        "graph" => KnowledgeOperation::Graph,
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let result = async {
+        let attribution =
+            RequestAttribution::from_knowledge_headers(&state.store, &project, &headers).await?;
+        crate::backend::knowledge::query(&state.store, &project, &attribution, operation, query)
+            .await
+    }
+    .await;
+    json_result(result)
+}
+
 #[cfg(test)]
 mod tests {
     use assertr::prelude::*;
     use std::sync::Arc;
 
     use axum::body::{Body, to_bytes};
+    use axum::http::HeaderValue;
     use dispatch_types::{
-        AUTOMATION_BLOCKED_LABEL_KEY, ClaimWorkItemResponse, CommentView,
+        AUTOMATION_BLOCKED_LABEL_KEY, AgentRunKind, AgentRunPurposeV1, AgentRunStatus,
+        AutomationRunMutability, ClaimWorkItemResponse, CommentView,
         CreateWorkItemRelationshipRequest, DeleteWorkItemRelationshipResponse,
-        FEEDBACK_REQUESTED_LABEL_KEY, HistoryClearResult, ProjectLabelView, ProjectMemoryEventView,
-        ProjectMemoryUpdateView, ProjectMemoryView, UpdateWorkItemRelationshipRequest,
-        WorkItemLabelView, WorkItemRelationshipDirection, WorkItemRelationshipListEntry,
-        WorkItemRelationshipView, WorkItemView,
+        FEEDBACK_REQUESTED_LABEL_KEY, ProjectLabelView, ProjectView,
+        UpdateWorkItemRelationshipRequest, WorkItemLabelView, WorkItemRelationshipDirection,
+        WorkItemRelationshipListEntry, WorkItemRelationshipView, WorkItemView,
     };
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, TransactionTrait};
     use serde::de::DeserializeOwned;
     use tempfile::{TempDir, tempdir};
 
     use super::*;
     use crate::backend::{
+        agent_ids,
+        agent_run_launch::{
+            AgentCapabilitySetV1, AgentLaunchTargetV1, insert_contract_in_tx, mark_spawned_in_tx,
+            mark_terminal_in_tx,
+        },
         automation_controller::AutomationController,
+        entities::agent_run::AgentRunActiveModel,
         process_sessions::ProcessSessionRegistry,
         projects::{CreateProject, create_project},
         storage::{Store, utc_now},
@@ -1373,8 +1346,8 @@ mod tests {
             sessions.clone(),
         );
         let state = AppState {
-            store,
-            sessions,
+            store: store.clone(),
+            sessions: sessions.clone(),
             automation_controller,
             project_deletion,
             codex_status: Arc::new(tokio::sync::RwLock::new(
@@ -1392,9 +1365,85 @@ mod tests {
         (temp, state, item.id)
     }
 
+    async fn ordinary_run_headers(
+        state: &AppState,
+        mutability: AutomationRunMutability,
+        status: AgentRunStatus,
+        resolved: bool,
+    ) -> HeaderMap {
+        let project = projects::find_project_by_name(&state.store, "demo")
+            .await
+            .unwrap();
+        let project_id = project.id;
+        let working_dir = project.path.unwrap();
+        let now = utc_now();
+        let txn = state.store.db().begin().await.unwrap();
+        let run = AgentRunActiveModel {
+            project_id: Set(project_id),
+            run_kind: Set(AgentRunKind::Task.as_storage().to_owned()),
+            purpose: Set(Some(AgentRunPurposeV1::Ordinary.as_storage().to_owned())),
+            tool_name: Set("codex".to_owned()),
+            mutability: Set(mutability.as_storage().to_owned()),
+            status: Set(status.as_storage().to_owned()),
+            command: Set(String::new()),
+            working_dir: Set(working_dir),
+            created_at: Set(now.clone()),
+            updated_at: Set(now.clone()),
+            ..Default::default()
+        }
+        .insert(&txn)
+        .await
+        .unwrap();
+        let target = if resolved {
+            AgentLaunchTargetV1::none()
+        } else {
+            AgentLaunchTargetV1::next_open("open").unwrap()
+        };
+        insert_contract_in_tx(
+            &txn,
+            project_id,
+            run.id,
+            AgentRunPurposeV1::Ordinary,
+            &target,
+            &AgentCapabilitySetV1::ordinary(),
+            &now,
+        )
+        .await
+        .unwrap();
+        if resolved {
+            mark_spawned_in_tx(&txn, project_id, run.id, &now)
+                .await
+                .unwrap();
+            if status != AgentRunStatus::Running {
+                mark_terminal_in_tx(&txn, project_id, run.id, &now)
+                    .await
+                    .unwrap();
+            }
+        }
+        txn.commit().await.unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            crate::backend::request_attribution::AGENT_ID_HEADER,
+            HeaderValue::from_str(&agent_ids::dispatch_run_agent_id(run.id)).unwrap(),
+        );
+        headers.insert(
+            crate::backend::request_attribution::AGENT_RUN_ID_HEADER,
+            HeaderValue::from_str(&run.id.to_string()).unwrap(),
+        );
+        headers
+    }
+
     async fn decode<T: DeserializeOwned>(response: Response<Body>) -> T {
-        assert_that!(&(response.status())).is_equal_to(StatusCode::OK);
+        let status = response.status();
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        if status != StatusCode::OK {
+            eprintln!(
+                "unexpected API response: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        assert_that!(&status).is_equal_to(StatusCode::OK);
         serde_json::from_slice(&body).unwrap()
     }
 
@@ -1402,6 +1451,125 @@ mod tests {
         assert_that!(&(response.status())).is_equal_to(StatusCode::BAD_REQUEST);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice::<ApiError>(&body).unwrap().error
+    }
+
+    #[tokio::test]
+    async fn operator_rule_endpoints_reject_invalid_policy_without_writing() {
+        use dispatch_types::AutomationTriggerView;
+
+        let (_temp, state, _) = test_state().await;
+        let mut input: AutomationRuleInput = serde_json::from_value(serde_json::json!({
+            "name": "Rule policy", "enabled": true, "activation": "work_item",
+            "effect": "consume_work", "schedule": "15s", "produced_work": {},
+        }))
+        .unwrap();
+        let error = decode_error(
+            operator_create_rule(
+                Extension(state.clone()),
+                Path("demo".to_owned()),
+                Json(input.clone()),
+            )
+            .await,
+        )
+        .await;
+        assert_that!(&error).contains("only valid for produce_work");
+        input.produced_work = None;
+        let created: AutomationTriggerView = decode(
+            operator_create_rule(
+                Extension(state.clone()),
+                Path("demo".to_owned()),
+                Json(input.clone()),
+            )
+            .await,
+        )
+        .await;
+        assert_that!(&created.work_item_selector.is_some()).is_true();
+        assert_that!(&created.personality_id.is_some()).is_true();
+
+        input.execution.model = Some("unknown-model".to_owned());
+        let error = decode_error(
+            operator_update_rule(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), created.id)),
+                Json(input.clone()),
+            )
+            .await,
+        )
+        .await;
+        assert_that!(&error).contains("automation model override must be one of");
+        let unchanged: AutomationTriggerView = decode(
+            operator_get_rule(
+                Extension(state.clone()),
+                Path(("demo".to_owned(), created.id.to_string())),
+            )
+            .await,
+        )
+        .await;
+        assert_that!(&serde_json::to_value(unchanged).unwrap())
+            .is_equal_to(serde_json::to_value(&created).unwrap());
+
+        input.execution.model = None;
+        input.name = "Updated rule policy".to_owned();
+        let updated: AutomationTriggerView = decode(
+            operator_update_rule(
+                Extension(state),
+                Path(("demo".to_owned(), created.id)),
+                Json(input),
+            )
+            .await,
+        )
+        .await;
+        assert_that!(&updated.name).is_equal_to("Updated rule policy");
+        assert_that!(&updated.current_revision_id).is_not_equal_to(created.current_revision_id);
+    }
+
+    #[tokio::test]
+    async fn knowledge_queries_read_plain_files_and_retire_signed_routes() {
+        use dispatch_types::knowledge::{KnowledgeQuery, KnowledgeView};
+        let (temp, state, _) = test_state().await;
+        std::fs::create_dir(temp.path().join("knowledge")).unwrap();
+        std::fs::write(
+            temp.path().join("knowledge/README.md"),
+            "---\nid: project\n---\n# Project\n\nPlain Markdown overview.\n",
+        )
+        .unwrap();
+        let headers = ordinary_run_headers(
+            &state,
+            AutomationRunMutability::Mutating,
+            AgentRunStatus::Running,
+            true,
+        )
+        .await;
+        let view: KnowledgeView = decode(
+            query_knowledge(
+                Extension(state.clone()),
+                Path(("demo".into(), "root".into())),
+                headers.clone(),
+                Query(KnowledgeQuery::default()),
+            )
+            .await,
+        )
+        .await;
+        assert_that!(&view.document.unwrap().markdown).contains("Plain Markdown overview");
+        let response = query_knowledge(
+            Extension(state),
+            Path(("demo".into(), "integrity".into())),
+            headers,
+            Query(KnowledgeQuery::default()),
+        )
+        .await;
+        assert_that!(&response.status()).is_equal_to(StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn project_list_endpoint_returns_available_projects() {
+        let (_temp, state, _item_id) = test_state().await;
+
+        let projects: Vec<ProjectView> = decode(list_projects(Extension(state)).await).await;
+
+        assert_that!(&(projects.len())).is_equal_to(1);
+        assert_that!(&(projects[0].name.as_str())).is_equal_to("demo");
+        assert_that!(&(projects[0].display_name.as_str())).is_equal_to("demo");
     }
 
     #[tokio::test]
@@ -1897,85 +2065,5 @@ mod tests {
         )
         .await;
         assert_that!(&(outgoing.is_empty())).is_true();
-    }
-
-    #[tokio::test]
-    async fn memory_endpoints_snapshot_agent_changes_and_clear_history() {
-        let (_temp, state, _item_id) = test_state().await;
-
-        let set: ProjectMemoryUpdateView = decode(
-            set_project_memory(
-                Extension(state.clone()),
-                Path("demo".to_owned()),
-                HeaderMap::new(),
-                Json(UpdateProjectMemoryRequest {
-                    agent_id: "dispatch-run-7".to_owned(),
-                    agent_run_id: None,
-                    body: "Remember the relay CLI.".to_owned(),
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_that!(&(set.project.memory)).is_equal_to("Remember the relay CLI.");
-        assert_that!(&(set.event.operation)).is_equal_to("set");
-        assert_that!(&(set.event.memory)).is_equal_to("Remember the relay CLI.");
-        assert_that!(&(set.event.actor_type.as_deref())).is_equal_to(Some("agent"));
-        assert_that!(&(set.event.actor_id.as_deref())).is_equal_to(Some("dispatch-run-7"));
-        assert_that!(&(set.event.agent_run_id)).is_equal_to(Some(7));
-
-        let appended: ProjectMemoryUpdateView = decode(
-            append_project_memory(
-                Extension(state.clone()),
-                Path("demo".to_owned()),
-                HeaderMap::new(),
-                Json(UpdateProjectMemoryRequest {
-                    agent_id: "dispatch-run-7".to_owned(),
-                    agent_run_id: None,
-                    body: "Use Dispatch memory commands.".to_owned(),
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_that!(&(appended.project.memory))
-            .is_equal_to("Remember the relay CLI.\n\nUse Dispatch memory commands.");
-        assert_that!(&(appended.event.operation)).is_equal_to("append");
-
-        let current: ProjectMemoryView =
-            decode(get_project_memory(Extension(state.clone()), Path("demo".to_owned())).await)
-                .await;
-        assert_that!(&(current.last_event.unwrap().id)).is_equal_to(appended.event.id);
-
-        let events: Vec<ProjectMemoryEventView> = decode(
-            list_project_memory_events(Extension(state.clone()), Path("demo".to_owned())).await,
-        )
-        .await;
-        assert_that!(&(events.len())).is_equal_to(2);
-        assert_that!(&(events[0].id)).is_equal_to(appended.event.id);
-
-        let cleared: HistoryClearResult = decode(
-            clear_project_memory_history(Extension(state.clone()), Path("demo".to_owned())).await,
-        )
-        .await;
-        assert_that!(&(cleared.deleted_events)).is_equal_to(2);
-
-        let events: Vec<ProjectMemoryEventView> = decode(
-            list_project_memory_events(Extension(state.clone()), Path("demo".to_owned())).await,
-        )
-        .await;
-        assert_that!(&(events.is_empty())).is_true();
-
-        let current: ProjectMemoryView =
-            decode(get_project_memory(Extension(state.clone()), Path("demo".to_owned())).await)
-                .await;
-        assert_that!(&(current.memory))
-            .is_equal_to("Remember the relay CLI.\n\nUse Dispatch memory commands.");
-        assert_that!(&(current.last_event.is_none())).is_true();
-
-        let cleared: HistoryClearResult =
-            decode(clear_project_memory_history(Extension(state), Path("demo".to_owned())).await)
-                .await;
-        assert_that!(&(cleared.deleted_events)).is_equal_to(0);
     }
 }

@@ -1,49 +1,58 @@
-use clap::{Args, Parser, Subcommand};
-use dispatch_types::{AgentReasoningEffort, AuthorType};
+mod automation;
+mod comments;
+mod common;
+mod items;
+mod knowledge;
+mod labels;
+mod relationships;
+mod work_groups;
 
-use crate::context::ContextOverrides;
+use clap::{Args, Parser, Subcommand};
+
+use crate::{context::ContextOverrides, output};
+pub(crate) use automation::{
+    AutomationCommand, AutomationRoutingCommand, AutomationTriggersCommand,
+};
+pub(crate) use comments::CommentCommand;
+pub(crate) use common::ItemIdArgs;
+pub(crate) use items::{ItemCommand, ItemCreateArgs};
+pub(crate) use knowledge::{KnowledgeCommand, KnowledgeNodeCommand};
+pub(crate) use labels::LabelCommand;
+pub(crate) use relationships::RelationshipCommand;
+pub(crate) use work_groups::GroupCommand;
 
 #[derive(Debug, Parser)]
 #[command(name = "dispatch")]
 #[command(about = "Dispatch agent-facing API relay")]
 pub(crate) struct Cli {
-    /// Override the Dispatch API URL.
-    #[arg(long)]
-    api_url: Option<String>,
+    #[command(flatten)]
+    context: ContextOverrides,
 
-    /// Override the project context.
-    #[arg(long)]
-    project: Option<String>,
-
-    /// Override the agent id.
-    #[arg(long)]
-    agent: Option<String>,
-
-    /// Override the Dispatch agent-run id used for request attribution.
-    #[arg(long)]
-    agent_run: Option<i64>,
+    /// Print JSON instead of text.
+    #[arg(long, global = true)]
+    json: bool,
 
     #[command(subcommand)]
     command: Command,
 }
 
 impl Cli {
-    pub(crate) fn context_overrides(&self) -> ContextOverrides {
-        ContextOverrides {
-            api_url: self.api_url.clone(),
-            project: self.project.clone(),
-            agent_id: self.agent.clone(),
-            agent_run_id: self.agent_run,
-        }
-    }
-
-    pub(crate) fn into_command(self) -> Command {
-        self.command
+    pub(crate) fn into_parts(self) -> (ContextOverrides, output::Format, Command) {
+        (
+            self.context,
+            output::Format::from_json_flag(self.json),
+            self.command,
+        )
     }
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Inspect projects available from the Dispatch server.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Work with project-scoped items.
     Item {
         #[command(subcommand)]
@@ -69,10 +78,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: GroupCommand,
     },
-    /// Read and update project memory.
-    Memory {
+    /// Read and check project Markdown knowledge.
+    Knowledge {
         #[command(subcommand)]
-        command: MemoryCommand,
+        command: KnowledgeCommand,
     },
     /// Inspect automation runs and logs.
     Automation {
@@ -85,152 +94,9 @@ pub(crate) enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum ItemCommand {
-    /// List project work items.
-    List(ItemListArgs),
-    /// Search project work items with composable filters and cursor pagination.
-    Search(ItemSearchArgs),
-    /// Show one item; defaults to the claimed item.
-    Show(ItemIdArgs),
-    /// Create a new work item.
-    Create(ItemCreateArgs),
-    /// Edit item fields.
-    Update(ItemUpdateArgs),
-    /// Claim the next available item for this agent.
-    Claim(ItemClaimArgs),
-    /// Add an agent progress comment.
-    Progress(ItemProgressArgs),
-    /// Mark an item done with a final report.
-    Finish(ItemFinishArgs),
-    /// Release an item back to the queue.
-    Release(ItemReleaseArgs),
-    /// Ask the user for feedback and pause automation.
-    RequestFeedback(ItemRequestFeedbackArgs),
-    /// Poll an item and print version changes.
-    Watch(ItemWatchArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum CommentCommand {
-    /// Add a comment to an item.
-    Add(CommentAddArgs),
-    /// List comments on an item.
-    List(ItemIdArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum LabelCommand {
-    /// List labels on an item.
-    List(LabelListArgs),
-    /// Add a label to an item.
-    Add(LabelAddArgs),
-    /// Update a label on an item.
-    Update(LabelUpdateArgs),
-    /// Delete a label from an item.
-    Delete(LabelDeleteArgs),
-    /// List labels already used in this project.
-    Suggestions(JsonArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum RelationshipCommand {
-    /// List relationships touching an item.
-    List(RelationshipListArgs),
-    /// Create a relationship from an item to a target item.
-    Add(RelationshipAddArgs),
-    /// Update a relationship kind.
-    Update(RelationshipUpdateArgs),
-    /// Delete a relationship.
-    Delete(RelationshipDeleteArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum GroupCommand {
-    /// List project work-item groups.
-    List(JsonArgs),
-    /// Create an idempotent project work-item group.
-    Create(GroupCreateArgs),
-    /// Assign one or more items to an existing group atomically.
-    Assign(GroupAssignArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct GroupCreateArgs {
-    /// Stable project-scoped group key.
-    #[arg(long)]
-    pub(crate) key: String,
-    /// Human-readable group name.
-    #[arg(long)]
-    pub(crate) name: String,
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct GroupAssignArgs {
-    /// Stable key of the target group.
-    #[arg(long)]
-    pub(crate) key: String,
-    /// Item id to assign; may be repeated.
-    #[arg(long = "item", required = true)]
-    pub(crate) item_ids: Vec<i64>,
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum MemoryCommand {
-    /// Show current project memory.
-    Show(JsonArgs),
-    /// List project memory change events.
-    History(JsonArgs),
-    /// Replace project memory.
-    Set(MemoryWriteArgs),
-    /// Append text to project memory.
-    Append(MemoryWriteArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum AutomationCommand {
-    /// List automation runs.
-    Runs(AutomationRunsArgs),
-    /// Show one automation run log.
-    Log(AutomationRunLogArgs),
-    /// Inspect configured automation triggers.
-    Triggers {
-        #[command(subcommand)]
-        command: AutomationTriggersCommand,
-    },
-    /// Explain current automation routing for an item.
-    Routing {
-        #[command(subcommand)]
-        command: AutomationRoutingCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum AutomationTriggersCommand {
-    /// List automation triggers.
-    List(JsonArgs),
-    /// Show one automation trigger by id or managed key.
-    Show(AutomationTriggerShowArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum AutomationRoutingCommand {
-    /// Explain matching, exclusivity, fairness, and admission blockers.
-    Explain(AutomationRoutingExplainArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct AutomationRoutingExplainArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
+pub(crate) enum ProjectCommand {
+    /// List projects available from the Dispatch server.
+    List,
 }
 
 #[derive(Debug, Args)]
@@ -238,424 +104,6 @@ pub(crate) struct GitArgs {
     /// Git arguments passed by the run-specific Dispatch git shim.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub(crate) args: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemListArgs {
-    /// Filter items by state label value.
-    #[arg(long)]
-    pub(crate) state: Option<String>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemSearchArgs {
-    /// Filter by state; may be repeated.
-    #[arg(long = "state")]
-    pub(crate) states: Vec<String>,
-    /// Filter by label key or key=value; may be repeated.
-    #[arg(long = "label", value_name = "KEY[=VALUE]")]
-    pub(crate) labels: Vec<String>,
-    /// Additional CrudKit Condition selector as JSON.
-    #[arg(long)]
-    pub(crate) selector_json: Option<String>,
-    /// Search title and description.
-    #[arg(long)]
-    pub(crate) text: Option<String>,
-    /// Return only finished items.
-    #[arg(long, conflicts_with = "unfinished")]
-    pub(crate) finished: bool,
-    /// Return only unfinished items.
-    #[arg(long, conflicts_with = "finished")]
-    pub(crate) unfinished: bool,
-    /// Filter items created by an attributed run.
-    #[arg(long)]
-    pub(crate) created_by_run: Option<i64>,
-    /// Filter items produced by an automation trigger.
-    #[arg(long)]
-    pub(crate) produced_by_trigger: Option<i64>,
-    /// Filter items touching a relationship of this kind.
-    #[arg(long)]
-    pub(crate) relationship_kind: Option<String>,
-    /// Filter by an RFC3339 lower bound.
-    #[arg(long)]
-    pub(crate) updated_since: Option<String>,
-    /// Page size, from 1 through 200.
-    #[arg(long)]
-    pub(crate) limit: Option<u64>,
-    /// Opaque cursor from a previous search page.
-    #[arg(long)]
-    pub(crate) cursor: Option<String>,
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct AutomationTriggerShowArgs {
-    /// Automation trigger id, managed object key, or name.
-    pub(crate) id_or_key: String,
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemIdArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemCreateArgs {
-    /// Title for the new item.
-    #[arg(long)]
-    pub(crate) title: String,
-
-    /// Full task description.
-    #[arg(long)]
-    pub(crate) description: String,
-
-    /// Initial label key or key/value pair; may be repeated.
-    #[arg(long = "label", value_name = "KEY[=VALUE]")]
-    pub(crate) labels: Vec<String>,
-
-    /// Initial item state label; defaults to open.
-    #[arg(long)]
-    pub(crate) state: Option<String>,
-
-    /// Agent model override for this item.
-    #[arg(long)]
-    pub(crate) agent_model: Option<String>,
-
-    /// Reasoning effort override for this item.
-    #[arg(long)]
-    pub(crate) agent_reasoning_effort: Option<AgentReasoningEffort>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemUpdateArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Replace the item title.
-    #[arg(long)]
-    pub(crate) title: Option<String>,
-
-    /// Replace the item description.
-    #[arg(long)]
-    pub(crate) description: Option<String>,
-
-    /// Move the item to a new state label.
-    #[arg(long)]
-    pub(crate) state: Option<String>,
-
-    /// Set the item-specific agent model.
-    #[arg(long)]
-    pub(crate) agent_model: Option<String>,
-
-    /// Clear the item-specific agent model.
-    #[arg(long)]
-    pub(crate) clear_agent_model: bool,
-
-    /// Set the item-specific reasoning effort.
-    #[arg(long)]
-    pub(crate) agent_reasoning_effort: Option<AgentReasoningEffort>,
-
-    /// Clear the item-specific reasoning effort.
-    #[arg(long)]
-    pub(crate) clear_agent_reasoning_effort: bool,
-
-    /// Require the current item version.
-    #[arg(long)]
-    pub(crate) expect_version: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemClaimArgs {
-    /// State label to claim from.
-    #[arg(long, default_value = "open")]
-    pub(crate) state: String,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemProgressArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Progress text to record.
-    #[arg(long)]
-    pub(crate) body: String,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemFinishArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Final report text.
-    #[arg(long)]
-    pub(crate) report: String,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemReleaseArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Optional release note.
-    #[arg(long)]
-    pub(crate) comment: Option<String>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemRequestFeedbackArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Feedback request to show the user.
-    #[arg(long)]
-    pub(crate) body: String,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ItemWatchArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Only print versions newer than this value.
-    #[arg(long)]
-    pub(crate) since_version: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct LabelListArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct LabelAddArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Label key.
-    #[arg(long)]
-    pub(crate) key: String,
-
-    /// Optional label value.
-    #[arg(long)]
-    pub(crate) value: Option<String>,
-
-    /// Require the current item version.
-    #[arg(long)]
-    pub(crate) expect_version: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct LabelUpdateArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Label id to update.
-    pub(crate) label_id: i64,
-
-    /// Replacement label key.
-    #[arg(long)]
-    pub(crate) key: Option<String>,
-
-    /// Replacement label value.
-    #[arg(long)]
-    pub(crate) value: Option<String>,
-
-    /// Clear the label value.
-    #[arg(long)]
-    pub(crate) clear_value: bool,
-
-    /// Require the current item version.
-    #[arg(long)]
-    pub(crate) expect_version: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct LabelDeleteArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Label id to delete.
-    pub(crate) label_id: i64,
-
-    /// Require the current item version.
-    #[arg(long)]
-    pub(crate) expect_version: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct RelationshipListArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct RelationshipAddArgs {
-    /// Source item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Target item id.
-    #[arg(long)]
-    pub(crate) target: i64,
-
-    /// Free-form relationship kind.
-    #[arg(long)]
-    pub(crate) kind: String,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct RelationshipUpdateArgs {
-    /// Relationship id to update.
-    pub(crate) relationship_id: i64,
-
-    /// Replacement free-form relationship kind.
-    #[arg(long)]
-    pub(crate) kind: String,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct RelationshipDeleteArgs {
-    /// Relationship id to delete.
-    pub(crate) relationship_id: i64,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct CommentAddArgs {
-    /// Item id; defaults to the claimed item when available.
-    pub(crate) item_id: Option<i64>,
-
-    /// Comment text.
-    #[arg(long)]
-    pub(crate) body: String,
-
-    /// Display name for the author.
-    #[arg(long)]
-    pub(crate) author: Option<String>,
-
-    /// Author type for the comment.
-    #[arg(long, default_value = "user")]
-    pub(crate) author_type: AuthorType,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct AutomationRunsArgs {
-    /// Maximum number of runs to show.
-    #[arg(long)]
-    pub(crate) limit: Option<u64>,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct AutomationRunLogArgs {
-    /// Automation run id.
-    pub(crate) run_id: i64,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct JsonArgs {
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct MemoryWriteArgs {
-    /// Memory text to write.
-    #[arg(long)]
-    pub(crate) body: String,
-
-    /// Print JSON instead of text.
-    #[arg(long)]
-    pub(crate) json: bool,
 }
 
 #[cfg(test)]
@@ -717,6 +165,8 @@ mod tests {
     #[test]
     fn help_describes_command_groups_and_subcommands() {
         let root = help_output(&["dispatch", "--help"]);
+        assert_that!(&(root.contains("Inspect projects available from the Dispatch server")))
+            .is_true();
         assert_that!(&(root.contains("Work with project-scoped items"))).is_true();
         assert_that!(&(root.contains("Read and add item comments"))).is_true();
         assert_that!(&(root.contains("Manage work item labels"))).is_true();
@@ -724,11 +174,15 @@ mod tests {
             .is_true();
         assert_that!(&(root.contains("Group related work items for board and swim-lane display")))
             .is_true();
-        assert_that!(&(root.contains("Read and update project memory"))).is_true();
+        assert_that!(&(root.contains("Read and check project Markdown knowledge"))).is_true();
         assert_that!(&(root.contains("Inspect automation runs and logs"))).is_true();
         assert_that!(&(root.contains("Override the Dispatch API URL"))).is_true();
         assert_that!(&(root.contains("Override the project context"))).is_true();
         assert_that!(&(root.contains("Override the agent id"))).is_true();
+
+        let project = help_output(&["dispatch", "project", "--help"]);
+        assert_that!(&(project.contains("List projects available from the Dispatch server")))
+            .is_true();
 
         let item = help_output(&["dispatch", "item", "--help"]);
         assert_that!(&(item.contains("List project work items"))).is_true();
@@ -768,15 +222,10 @@ mod tests {
         assert_that!(&(group.contains("Assign one or more items to an existing group atomically")))
             .is_true();
 
-        let memory = help_output(&["dispatch", "memory", "--help"]);
-        assert_that!(&(memory.contains("Show current project memory"))).is_true();
-        assert_that!(&(memory.contains("List project memory change events"))).is_true();
-        assert_that!(&(memory.contains("Replace project memory"))).is_true();
-        assert_that!(&(memory.contains("Append text to project memory"))).is_true();
-
-        let automation = help_output(&["dispatch", "automation", "--help"]);
-        assert_that!(&(automation.contains("List automation runs"))).is_true();
-        assert_that!(&(automation.contains("Show one automation run log"))).is_true();
+        let knowledge = help_output(&["dispatch", "knowledge", "--help"]);
+        assert_that!(&knowledge).contains("without launching an agent");
+        assert_that!(&knowledge).contains("Check frontmatter");
+        assert_that!(&knowledge.contains("signed changes")).is_false();
     }
 
     #[test]
@@ -821,8 +270,10 @@ mod tests {
         assert_that!(&(comment.contains("Comment text"))).is_true();
         assert_that!(&(comment.contains("Author type for the comment"))).is_true();
 
-        let memory = help_output(&["dispatch", "memory", "append", "--help"]);
-        assert_that!(&(memory.contains("Memory text to write"))).is_true();
+        let knowledge = help_output(&["dispatch", "knowledge", "node", "show", "--help"]);
+        assert_that!(&(knowledge.contains("Document ID or knowledge-directory-relative path")))
+            .is_true();
+        assert_that!(&(knowledge.contains("--body-offset"))).is_true();
 
         let automation = help_output(&["dispatch", "automation", "log", "--help"]);
         assert_that!(&(automation.contains("Automation run id"))).is_true();
@@ -844,7 +295,8 @@ mod tests {
             "needs-verification",
         ]);
 
-        match cli.into_command() {
+        let (_, _, command) = cli.into_parts();
+        match command {
             Command::Item {
                 command: ItemCommand::Create(args),
             } => {
@@ -854,6 +306,26 @@ mod tests {
                 ]);
             }
             command => panic!("expected item create command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn json_output_is_available_before_or_after_subcommands() {
+        for arguments in [
+            ["dispatch", "--json", "project", "list"],
+            ["dispatch", "project", "list", "--json"],
+        ] {
+            let cli = Cli::parse_from(arguments);
+
+            let (_, format, command) = cli.into_parts();
+            match command {
+                Command::Project {
+                    command: ProjectCommand::List,
+                } => {
+                    assert_that!(&(format)).is_equal_to(output::Format::Json);
+                }
+                command => panic!("expected project list command, got {command:?}"),
+            }
         }
     }
 
@@ -871,7 +343,8 @@ mod tests {
             "42",
         ]);
 
-        match cli.into_command() {
+        let (_, _, command) = cli.into_parts();
+        match command {
             Command::Group {
                 command: GroupCommand::Assign(args),
             } => {

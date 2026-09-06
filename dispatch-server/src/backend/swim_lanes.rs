@@ -9,11 +9,14 @@ use sea_orm::{
 use crate::{
     backend::{
         entities::swim_lane::{self, SwimLane, SwimLaneActiveModel, SwimLaneModel},
-        label_conditions, projects,
+        label_conditions,
         storage::{Store, utc_now},
     },
     shared::view_models::{STATE_LABEL_KEY, SwimLaneItemOrder, SwimLaneView},
 };
+
+#[cfg(test)]
+use crate::backend::projects;
 
 const DEFAULT_SWIM_LANES: [(&str, &str, i64, bool); 4] = [
     ("idea", "Idea", 10, true),
@@ -23,6 +26,7 @@ const DEFAULT_SWIM_LANES: [(&str, &str, i64, bool); 4] = [
 ];
 pub const DEFAULT_SWIM_LANE_ITEM_ORDER: SwimLaneItemOrder = SwimLaneItemOrder::UpdatedDesc;
 
+#[cfg(test)]
 pub async fn list_swim_lanes(store: &Store, project_name: &str) -> Result<Vec<SwimLaneView>> {
     let project_id = projects::project_id(store, project_name).await?;
     list_swim_lanes_for_project_id(store, project_id).await

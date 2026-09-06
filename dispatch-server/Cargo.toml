@@ -5,7 +5,6 @@ edition = "2024"
 
 [package.metadata.leptonic]
 style-dir = "style"
-js-dir = "public/js"
 
 [package.metadata.leptos]
 hash-files = false
@@ -34,11 +33,24 @@ graceful-shutdown-unix-signal = "SIGTERM"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[test]]
+name = "browser_test"
+path = "tests/browser_test.rs"
+required-features = ["browser-tests"]
+
+[[test]]
+name = "browser_test_signals"
+path = "tests/browser_test_signals.rs"
+required-features = ["browser-tests"]
+
 [features]
 default = ["ssr"]
+browser-tests = ["dep:browser-test", "dep:leptos-browser-test"]
 hydrate = [
+    "dep:pulldown-cmark",
     "dep:codee",
     "dep:gloo-net",
+    "dep:gloo-timers",
     "dep:indexmap",
     "dep:leptos-use",
     "dep:serde",
@@ -64,11 +76,14 @@ ssr = [
     "dep:crudkit-rs",
     "dep:crudkit-sea-orm",
     "dep:futures-core",
+    "dep:gloo-timers",
     "dep:git2",
     "dep:htmd",
     "dep:indexmap",
+    "dep:libc",
     "dep:leptos-use",
     "dep:leptos_axum",
+    "dep:metrics",
     "dep:paste",
     "dep:rootcause",
     "dep:pulldown-cmark",
@@ -84,7 +99,9 @@ ssr = [
     "dep:typetag",
     "dep:utoipa",
     "dep:urlencoding",
+    "dep:uuid",
     "dep:yaml_serde",
+    "dep:ignore",
     "leptos/ssr",
     "leptos-use/ssr",
     "leptos_meta/ssr",
@@ -93,10 +110,12 @@ ssr = [
 ]
 
 [dependencies]
+ignore = { version = "=0.4.23", optional = true }
 async-stream = { version = "0.3", optional = true }
 async-trait = { version = "0.1", optional = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
 axum-macros = { version = "0.5", optional = true }
+browser-test = { version = "0.5.0", path = "../../browser-test", optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 codee = { version = "0.3.5", features = ["json_serde"], optional = true }
 codex-app-server-sdk = { version = "0.5.1", optional = true }
@@ -107,12 +126,16 @@ crudkit-sea-orm = { path = "../crudkit/crudkit-sea-orm", optional = true }
 futures-core = { version = "0.3", optional = true }
 git2 = { version = "0.20", optional = true }
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"], optional = true }
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 htmd = { version = "0.5.4", optional = true }
 indexmap = { version = "2", features = ["serde"], optional = true }
+libc = { version = "0.2", optional = true }
 leptonic = { version = "0.5.0", git = "https://github.com/lpotthast/leptonic", branch = "migrate-to-leptos-0.8", features = ["tiptap"] }
+leptos-browser-test = { version = "0.4.0", path = "../../leptos-browser-test", optional = true }
 leptos = "0.8.19"
 leptos-use = { version = "0.18.3", default-features = false, features = ["storage", "use_element_size", "use_media_query", "use_websocket"], optional = true }
 leptos_axum = { version = "=0.8.7", optional = true }
+metrics = { version = "0.24.6", optional = true }
 leptos_meta = "=0.8.5"
 leptos-routes = "0.4.1"
 leptos_router = "=0.8.11"
@@ -141,8 +164,6 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
 assertr = "0.6.0"
-browser-test = { version = "0.4.0" }
-leptos-browser-test = { version = "0.3.0" }
 reqwest = { version = "0.13", features = ["json"] }
 tempfile = "3"
 

@@ -9,15 +9,11 @@ refines:
 Dispatch stores project-scoped work coordination data. The database schema lives in `dispatch-server`; shared API shapes
 live in `dispatch-types`.
 
-Database migrations currently live in the historical monolithic `dispatch-server/src/backend/migrations.rs`, where
-`Migrator::migrations()` freezes their names and order. The file is an explicit recovery exception, not the preferred
-module shape. A future split must replace rather than duplicate the module, preserve exactly one definition for every
-migration and helper, retain names, order, visibility, data transformations, and rollback behavior, compare fresh and
-upgraded schema/data, and pass the full migration and compilation gates before artifact selectors move. Until that
-verified pure-move package, canonical source ownership points to `migrations.rs`. Migration definitions use frozen
-identifiers and prefer typed SeaQuery builders where the pinned library supports the required construct; existing narrow
-raw SQL remains only where already required by SQLite triggers, FTS5, views, partial indexes, or additive foreign-key
-syntax.
+The server owns database migrations. `Migrator::migrations()` freezes their identities and ordering; each migration
+and helper has one definition. Migration changes preserve durable identities, transformations, and rollback semantics,
+and maintain consistent outcomes for fresh and upgraded databases. Definitions prefer typed SeaQuery builders where
+the library supports the required construct; narrow SQL handles SQLite triggers, FTS5, views, partial indexes, and
+additive foreign-key syntax.
 
 ## Projects
 
@@ -72,11 +68,10 @@ Markdown. [Knowledge automation](knowledge-automation.md) owns job fields, statu
 
 All records use the immutable project ID. Knowledge jobs have no required work-item foreign key and cannot enter
 item-claim code. Their source job and purpose remain visible on agent runs. Project deletion cleans up operational state
-under the normal lifecycle while preserving workspace knowledge. The new design does not require store UUIDs or
-signatures as canonical file authority.
+under the normal lifecycle while preserving workspace knowledge. Store UUIDs and signatures do not define canonical file authority.
 
-Legacy storage is replaced through the explicit preservation and migration steps
-in [Knowledge replacement](knowledge-transition.md); the old signed-store and cycle schemas are not target requirements.
+Historical data remains subject to the preservation guarantees in
+[Knowledge integrity](knowledge-integrity.md). Compatibility records do not define a parallel document authority.
 
 ## Work Items
 
@@ -186,7 +181,7 @@ prompt, or UI exposes writable project memory.
 
 ## Agent Tools
 
-Agent tools describe launchable coding-agent integrations. The current implementation targets Codex. Tool records
+Agent tools describe launchable coding-agent integrations. Dispatch launches Codex agents. Tool records
 support discovery and configuration through the admin UI and server services.
 
 Agents launched by Dispatch receive a prepared environment and a CLI on `PATH`; they do not receive database access.
@@ -292,9 +287,9 @@ Migrations create the `personalities` table for existing databases, seed one emp
 and backfill existing automation rules to reference their project default. New project seeding creates the default
 personality before default automation rules so those rules can reference it.
 
-Knowledge jobs have separate schedules and settings and do not use work-producing or work-consuming rules. Legacy
-knowledge-rule cutover follows [Knowledge replacement](knowledge-transition.md); it never enables a second concurrent
-scheduler or silently opts the project into recurring model work.
+Knowledge jobs have separate schedules and settings and do not use work-producing or work-consuming rules.
+[Knowledge integrity](knowledge-integrity.md) owns preservation of historical automation data. There is one knowledge
+scheduler per project, and recurring model work requires an explicit user choice.
 
 ### Automation provenance, revisions, and bundles
 
@@ -321,6 +316,13 @@ project-scoped mutex group, and declare typed semantic postconditions. Postcondi
 assertions over disposition, run-attributed events, label transitions, one or more created-item count/selectors,
 optional shared created-item group membership, and workspace change policy. Existing rules remain non-exclusive, use the
 legacy 12-hour timeout, and have no extra cap/group or semantic postconditions.
+
+Rule policy has the same validation semantics for operator writes, CrudKit writes, bundle imports, and persisted-rule
+reads. Produced-work specifications belong only to producing rules; semantic postconditions belong only to consuming
+rules. Produced state, labels, deduplication keys, and model/effort overrides must be valid before a rule is saved.
+Execution limits are positive and fit signed 64-bit storage, and model overrides are validated even when no reasoning
+effort is specified. Changing a rule's effect also validates any retained policy against that effect. Invalid persisted
+policy produces an error identifying the rule before it reaches scheduling, execution, or a domain view.
 
 Effective model and reasoning effort precedence is work-item override, then consuming-rule override, then project
 default. Produced-work overrides are stored on the created item and participate in the same precedence when later

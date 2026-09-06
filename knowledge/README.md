@@ -24,9 +24,7 @@ HTTP relay to the server; they do not open SQLite or write Dispatch state direct
 - Agents read the project overview and relevant detail, then edit knowledge alongside code in their assigned working
   copy. Knowledge jobs use separate project-scoped workflows and shared agent execution; they never require work-item
   claims.
-- The knowledge subsystem is being replaced. [Knowledge System](knowledge.md) is the target
-  contract; [Transition and acceptance](knowledge-transition.md) explains the current implementation gap and how to work
-  from these files.
+
 
 ## Document Map
 
@@ -38,7 +36,7 @@ HTTP relay to the server; they do not open SQLite or write Dispatch state direct
   run logs.
 - [ui.md](ui.md): Leptos routes, admin surfaces, live workflow visibility, and browser coverage.
 - [branding.md](branding.md): application icon concept, source prompt, assets, and iteration guidance.
-- [knowledge.md](knowledge.md): the replacement knowledge design, routing to documents, authoring, agents, automation,
+- [knowledge.md](knowledge.md): the knowledge design, routing to documents, authoring, agents, automation,
   UI, and acceptance scenarios.
 
 ## Repository Shape
@@ -51,7 +49,6 @@ dispatch-types/        shared request and response DTOs
 dispatch-api-client/   typed HTTP client
 dispatch-cli/          standalone agent-facing CLI binary named dispatch
 dispatch-operator/     standalone operator-facing automation HTTP client
-dispatch-knowledge-core/ legacy knowledge implementation, pending the documented replacement
 crudkit/               local CrudKit submodule dependency
 ```
 

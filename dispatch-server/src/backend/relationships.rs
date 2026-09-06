@@ -32,7 +32,7 @@ pub async fn list_item_relationships(
     work_items::get(store.db().as_ref(), project_id, item_id).await?;
     let relationships =
         work_item_relationships::for_item(store.db().as_ref(), project_id, item_id).await?;
-    let views = relationships_to_views(store, project_id, &relationships).await?;
+    let views = relationships_to_views(store.db().as_ref(), project_id, &relationships).await?;
     Ok(relationships
         .into_iter()
         .zip(views)
@@ -93,13 +93,14 @@ pub(crate) async fn create_relationship_with_attribution(
     let touched = endpoint_items
         .touch_and_record_event(&txn, project_id, mutation.created_event(), attribution)
         .await?;
+    let relationship_view = relationship_to_view(&txn, relationship).await?;
     txn.commit()
         .await
         .context("failed to commit relationship create")?;
     publish_endpoint_changes(project_name, touched);
 
     Ok(WorkItemRelationshipListEntry {
-        relationship: relationship_to_view(store, relationship).await?,
+        relationship: relationship_view,
         direction: endpoints.direction_for_item(source_work_item_id),
     })
 }
@@ -270,12 +271,13 @@ async fn update_relationship_inner(
     let touched = endpoint_items
         .touch_and_record_event(&txn, project_id, mutation.updated_event(), attribution)
         .await?;
+    let relationship_view = relationship_to_view(&txn, updated).await?;
     txn.commit()
         .await
         .context("failed to commit relationship update")?;
     publish_endpoint_changes(project_name, touched);
 
-    relationship_to_view(store, updated).await
+    Ok(relationship_view)
 }
 
 async fn delete_relationship_inner(
@@ -302,11 +304,11 @@ async fn delete_relationship_inner(
     let touched = endpoint_items
         .touch_and_record_event(&txn, project_id, mutation.deleted_event(), attribution)
         .await?;
+    let relationship_view = relationship_to_view(&txn, relationship).await?;
     txn.commit()
         .await
         .context("failed to commit relationship delete")?;
     publish_endpoint_changes(project_name, touched);
-    let relationship_view = relationship_to_view(store, relationship).await?;
 
     Ok(DeleteWorkItemRelationshipResponse {
         deleted: true,
@@ -322,9 +324,19 @@ async fn load_endpoint_items<C>(
 where
     C: ConnectionTrait,
 {
+    let mut items = work_items::get_many(
+        conn,
+        project_id,
+        [endpoints.source_work_item_id, endpoints.target_work_item_id],
+    )
+    .await?;
     Ok(RelationshipEndpointItems {
-        source: work_items::get(conn, project_id, endpoints.source_work_item_id).await?,
-        target: work_items::get(conn, project_id, endpoints.target_work_item_id).await?,
+        source: items
+            .remove(&endpoints.source_work_item_id)
+            .ok_or_else(|| report!("failed to load relationship source item"))?,
+        target: items
+            .remove(&endpoints.target_work_item_id)
+            .ok_or_else(|| report!("failed to load relationship target item"))?,
     })
 }
 
@@ -416,28 +428,33 @@ fn direction_for_item(
     .direction_for_item(item_id)
 }
 
-async fn relationship_to_view(
-    store: &Store,
+async fn relationship_to_view<C>(
+    conn: &C,
     relationship: WorkItemRelationshipModel,
-) -> Result<WorkItemRelationshipView> {
-    relationships_to_views(store, relationship.project_id, &[relationship])
+) -> Result<WorkItemRelationshipView>
+where
+    C: ConnectionTrait,
+{
+    relationships_to_views(conn, relationship.project_id, &[relationship])
         .await?
         .into_iter()
         .next()
         .ok_or_else(|| report!("failed to build relationship view"))
 }
 
-async fn relationships_to_views(
-    store: &Store,
+async fn relationships_to_views<C>(
+    conn: &C,
     project_id: i64,
     relationships: &[WorkItemRelationshipModel],
-) -> Result<Vec<WorkItemRelationshipView>> {
+) -> Result<Vec<WorkItemRelationshipView>>
+where
+    C: ConnectionTrait,
+{
     if relationships.is_empty() {
         return Ok(Vec::new());
     }
 
-    let summaries =
-        relationship_item_summaries(store.db().as_ref(), project_id, relationships).await?;
+    let summaries = relationship_item_summaries(conn, project_id, relationships).await?;
 
     relationships
         .iter()

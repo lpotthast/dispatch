@@ -1,15 +1,13 @@
 use crate::{
     frontend::{
-        components::{
-            ActivePage, TopBar, cached_query, copy_workspace_text, selected_project_signal,
-        },
+        components::{cached_query, copy_workspace_text, selected_project_signal},
         crudkit::AgentToolsPanel,
         live_events::{codex_event_matches, refetch_on_live_event},
-        services::{codex_service, project_cache},
+        services::codex_service,
     },
     shared::view_models::{
-        CodexAppServerStatusView, CodexAuthSetupView, CodexRateLimitView, CodexUsageSummaryView,
-        ProjectView,
+        CodexAppServerStatusView, CodexAuthSetupView, CodexLogPurgeResultView,
+        CodexLogStorageStatusView, CodexRateLimitView, CodexUsageSummaryView, ProjectView,
     },
 };
 use leptos::prelude::*;
@@ -46,40 +44,17 @@ pub fn PageSystem() -> impl IntoView {
         },
     );
     let refresh = result.refresh;
+    let (log_purge_outcome, set_log_purge_outcome) =
+        signal(None::<Result<CodexLogPurgeResultView, String>>);
     let _poll = use_interval_fn(
         move || refresh.run(()),
         CODEX_STATUS_PAGE_REFRESH_INTERVAL_MS,
     );
-    project_cache().track(result.value, |page| &page.projects);
     refetch_on_live_event(result.refresh, codex_event_matches);
-    let active_project_names = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.active_project_names)
-            .unwrap_or_default()
-    });
-    let codex_status = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.codex_status)
-            .unwrap_or_default()
-    });
-    let topbar = view! {
-        <TopBar
-            active_project_names
-            selected_project=selected_project.into()
-            active=ActivePage::System
-            automation=Signal::derive(|| None)
-            codex_status
-        />
-    };
 
     view! {
         <Title text="System"/>
         <div>
-            {topbar}
             <main class="page-shell system-page codex-page">
                 <section class="page-heading">
                     <h1>"System"</h1>
@@ -95,7 +70,14 @@ pub fn PageSystem() -> impl IntoView {
                             selected_project: selected_project.get(),
                             codex_status: CodexAppServerStatusView::default(),
                         });
-                        view! { <CodexStatusContent page on_refreshed=result.refresh/> }
+                        view! {
+                            <CodexStatusContent
+                                page
+                                on_refreshed=result.refresh
+                                log_purge_outcome
+                                set_log_purge_outcome
+                            />
+                        }
                     }}
                     <AgentToolsPanel api_base_url on_refreshed=result.refresh/>
                 </div>
@@ -105,7 +87,12 @@ pub fn PageSystem() -> impl IntoView {
 }
 
 #[component]
-fn CodexStatusContent(page: CodexStatusPage, on_refreshed: Callback<()>) -> impl IntoView {
+fn CodexStatusContent(
+    page: CodexStatusPage,
+    on_refreshed: Callback<()>,
+    log_purge_outcome: ReadSignal<Option<Result<CodexLogPurgeResultView, String>>>,
+    set_log_purge_outcome: WriteSignal<Option<Result<CodexLogPurgeResultView, String>>>,
+) -> impl IntoView {
     let CodexStatusPage {
         projects: _,
         active_project_names: _,
@@ -113,7 +100,159 @@ fn CodexStatusContent(page: CodexStatusPage, on_refreshed: Callback<()>) -> impl
         codex_status,
     } = page;
     let _ = selected_project;
-    view! { <CodexStatusPanel status=codex_status on_refreshed/> }
+    let log_storage = codex_status.log_storage.clone();
+    view! {
+        <CodexStatusPanel status=codex_status on_refreshed/>
+        <CodexLogStorageMaintenance
+            status=log_storage
+            on_refreshed
+            outcome=log_purge_outcome
+            set_outcome=set_log_purge_outcome
+        />
+    }
+}
+
+#[component]
+fn CodexLogStorageMaintenance(
+    status: CodexLogStorageStatusView,
+    on_refreshed: Callback<()>,
+    outcome: ReadSignal<Option<Result<CodexLogPurgeResultView, String>>>,
+    set_outcome: WriteSignal<Option<Result<CodexLogPurgeResultView, String>>>,
+) -> impl IntoView {
+    let has_oversized_databases = !status.oversized_databases.is_empty();
+    let has_scan_errors = !status.scan_errors.is_empty();
+    let has_storage_warning = has_oversized_databases || has_scan_errors;
+    let section_class = if has_scan_errors {
+        "codex-log-storage codex-log-storage-danger"
+    } else if has_oversized_databases {
+        "codex-log-storage codex-log-storage-warning"
+    } else {
+        "codex-log-storage codex-log-storage-success"
+    };
+    let heading = if has_scan_errors {
+        "Codex log storage check failed"
+    } else if has_oversized_databases {
+        "Oversized Codex logs"
+    } else {
+        "Codex log cleanup complete"
+    };
+    let threshold = human_file_size(status.threshold_bytes);
+    let databases = status
+        .oversized_databases
+        .into_iter()
+        .map(|database| {
+            let size = human_file_size(database.size_bytes);
+            view! {
+                <li>
+                    <code>{database.relative_path}</code>
+                    <strong>{size}</strong>
+                </li>
+            }
+        })
+        .collect::<Vec<_>>();
+    let scan_errors = status
+        .scan_errors
+        .into_iter()
+        .map(|error| view! { <li>{error}</li> })
+        .collect::<Vec<_>>();
+    let service = codex_service();
+    let (pending, set_pending) = signal(false);
+    let purge = Callback::new(move |_| {
+        if pending.get_untracked() || has_scan_errors || !has_oversized_databases {
+            return;
+        }
+        set_pending.set(true);
+        set_outcome.set(None);
+        let service = service.clone();
+        leptos::task::spawn_local(async move {
+            let result = service
+                .purge_oversized_logs()
+                .await
+                .map_err(|error| error.to_string());
+            set_outcome.set(Some(result));
+            set_pending.set(false);
+            on_refreshed.run(());
+        });
+    });
+    let outcome_view = move || {
+        outcome.get().map(|outcome| match outcome {
+            Ok(result) => view! {
+                <p class="codex-log-purge-result success">
+                    "Removed " {result.removed_database_count} " log database "
+                    {if result.removed_database_count == 1 { "family" } else { "families" }}
+                    " and reclaimed " {human_file_size(result.reclaimed_bytes)} "."
+                </p>
+            }
+            .into_any(),
+            Err(error) => view! {
+                <p class="codex-log-purge-result error-message">
+                    <strong>"Cleanup failed: "</strong>{error}
+                </p>
+            }
+            .into_any(),
+        })
+    };
+
+    view! {
+        <section
+            class=section_class
+            hidden=move || !has_storage_warning && outcome.get().is_none()
+        >
+            <div class="codex-log-storage-header">
+                <div>
+                    <h2>{heading}</h2>
+                    {has_oversized_databases.then(|| view! {
+                        <p>
+                            "Each listed managed Codex log database exceeds the "
+                            {threshold.clone()} " cleanup threshold. This warning does not block automation."
+                        </p>
+                    })}
+                    {has_scan_errors.then(|| view! {
+                        <p>
+                            "Dispatch could not safely inspect every managed Codex log location. Cleanup is disabled, but automation remains available."
+                        </p>
+                    })}
+                </div>
+                {has_storage_warning.then(move || view! {
+                    <button
+                        type="button"
+                        class="danger"
+                        disabled=move || pending.get() || has_scan_errors || !has_oversized_databases
+                        on:click=move |event| purge.run(event)
+                    >
+                        {move || if pending.get() {
+                            "Purging oversized Codex logs..."
+                        } else {
+                            "Purge oversized Codex logs"
+                        }}
+                    </button>
+                })}
+            </div>
+            {(!databases.is_empty()).then(|| view! {
+                <ul class="codex-log-databases">{databases}</ul>
+            })}
+            {(!scan_errors.is_empty()).then(|| view! {
+                <ul class="codex-log-scan-errors">{scan_errors}</ul>
+            })}
+            {outcome_view}
+        </section>
+    }
+}
+
+fn human_file_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.2} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 #[component]

@@ -7,6 +7,9 @@ use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::Statement;
 use sha2::{Digest, Sha256};
 
+mod knowledge_continuity;
+mod retire_legacy_knowledge;
+
 pub(crate) const REMOVED_REFINEMENT_CONCURRENCY_COLUMN: &str =
     "allow_refinement_agents_during_editing";
 pub(crate) const AGENT_RUN_BOARD_PREVIEW_INDEX: &str = "idx_agent_runs_project_item_created_id";
@@ -378,6 +381,20 @@ impl MigratorTrait for Migrator {
             Box::new(AddWorkItemGroups),
             Box::new(AddAgentRunBoardPreviewIndex),
             Box::new(AddLabelKeys),
+            Box::new(AddKnowledgeSystemOperationalState),
+            Box::new(AddProjectKnowledgeDirectory),
+            Box::new(knowledge_continuity::MigrateProjectsToNewestGptModel),
+            Box::new(knowledge_continuity::AddKnowledgeOperationalFoundations),
+            Box::new(knowledge_continuity::GeneralizeKnowledgeSourceViews),
+            Box::new(knowledge_continuity::AddKnowledgeCycleLifecycle),
+            Box::new(knowledge_continuity::AddKnowledgeExecutionFencing),
+            Box::new(knowledge_continuity::SupportKnowledgeAgentRuns),
+            Box::new(knowledge_continuity::AddKnowledgeInventoryImpact),
+            Box::new(knowledge_continuity::AddKnowledgeEvidenceProposals),
+            Box::new(AddKnowledgeMutationOperations),
+            Box::new(AddKnowledgeMutationBinding),
+            Box::new(HardenKnowledgeMutationOperations),
+            Box::new(retire_legacy_knowledge::Migration),
         ]
     }
 }
@@ -3078,6 +3095,654 @@ impl MigrationTrait for AddLabelKeys {
             .drop_table(Table::drop().table(LabelKeys::Table).if_exists().to_owned())
             .await
     }
+}
+
+struct AddKnowledgeSystemOperationalState;
+
+impl MigrationName for AddKnowledgeSystemOperationalState {
+    fn name(&self) -> &str {
+        "m20260802_000042_add_knowledge_system_operational_state"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddKnowledgeSystemOperationalState {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        add_column_if_missing(
+            manager,
+            "projects",
+            "legacy_memory_migrated",
+            "BOOLEAN NOT NULL DEFAULT 0",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "agent_runs",
+            "run_kind",
+            "TEXT NOT NULL DEFAULT 'task'",
+        )
+        .await?;
+        add_column_if_missing(manager, "agent_runs", "knowledge_revision", "TEXT").await?;
+        add_column_if_missing(manager, "agent_runs", "source_baseline_id", "BIGINT").await?;
+        drop_read_view(manager, "agent_runs_read_view").await?;
+        create_read_view(manager, "agent_runs", "agent_runs_read_view").await?;
+
+        for statement in knowledge_operational_table_statements() {
+            manager
+                .get_connection()
+                .execute(Statement::from_string(
+                    manager.get_database_backend(),
+                    statement.to_owned(),
+                ))
+                .await?;
+        }
+        for key in ["dispatch:knowledge-maintenance", "dispatch:knowledge-drift"] {
+            manager
+                .get_connection()
+                .execute(Statement::from_string(
+                    manager.get_database_backend(),
+                    format!(
+                        r#"
+                        INSERT INTO label_keys (
+                            project_id, label_key, accent_color, persistent, built_in,
+                            created_at, updated_at
+                        )
+                        SELECT id, '{key}', NULL, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        FROM projects
+                        WHERE TRUE
+                        ON CONFLICT(project_id, label_key) DO UPDATE SET
+                            persistent = 1,
+                            built_in = 1,
+                            updated_at = CURRENT_TIMESTAMP;
+                        "#
+                    ),
+                ))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "agent_runs_read_view").await?;
+        for table in [
+            "knowledge_fts",
+            "knowledge_query_telemetry",
+            "knowledge_review_receipts",
+            "knowledge_impact_receipts",
+            "knowledge_navigation_receipts",
+            "knowledge_source_baselines",
+            "knowledge_proposals",
+            "knowledge_answer_events",
+            "knowledge_answer_jobs",
+            "knowledge_answer_settings",
+            "knowledge_legacy_memory_migrations",
+            "knowledge_store_trust",
+        ] {
+            manager
+                .get_connection()
+                .execute(Statement::from_string(
+                    manager.get_database_backend(),
+                    format!(r#"DROP TABLE IF EXISTS "{table}";"#),
+                ))
+                .await?;
+        }
+        drop_column_if_present(manager, "agent_runs", "source_baseline_id").await?;
+        drop_column_if_present(manager, "agent_runs", "knowledge_revision").await?;
+        drop_column_if_present(manager, "agent_runs", "run_kind").await?;
+        create_read_view(manager, "agent_runs", "agent_runs_read_view").await?;
+        drop_column_if_present(manager, "projects", "legacy_memory_migrated").await
+    }
+}
+
+struct AddProjectKnowledgeDirectory;
+
+impl MigrationName for AddProjectKnowledgeDirectory {
+    fn name(&self) -> &str {
+        "m20260904_000043_add_project_knowledge_directory"
+    }
+}
+
+struct AddKnowledgeMutationOperations;
+
+impl MigrationName for AddKnowledgeMutationOperations {
+    fn name(&self) -> &str {
+        "m20260905_000052_add_knowledge_mutation_operations"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddKnowledgeMutationOperations {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                r#"
+                CREATE TABLE IF NOT EXISTS knowledge_mutation_operations (
+                    operation_id TEXT PRIMARY KEY NOT NULL,
+                    project_id BIGINT NOT NULL,
+                    kind TEXT NOT NULL,
+                    request_sha256 TEXT NOT NULL,
+                    actor_id TEXT,
+                    agent_run_id BIGINT,
+                    transaction_id TEXT NOT NULL UNIQUE,
+                    source_knowledge_directory TEXT NOT NULL,
+                    target_knowledge_directory TEXT,
+                    initialized_store_uuid TEXT,
+                    canonical_timestamp TEXT NOT NULL,
+                    commit_state TEXT NOT NULL DEFAULT 'pending',
+                    receipt_store_uuid TEXT,
+                    receipt_transaction_sha256 TEXT,
+                    receipt_base_revision TEXT,
+                    receipt_resulting_revision TEXT,
+                    receipt_file_changes_json TEXT,
+                    finalization_state TEXT NOT NULL DEFAULT 'pending',
+                    projection_state TEXT NOT NULL DEFAULT 'pending',
+                    warning_stage TEXT,
+                    warning_code TEXT,
+                    warning_message TEXT,
+                    proposal_id BIGINT,
+                    legacy_memory_imported BOOLEAN NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    FOREIGN KEY (agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL,
+                    FOREIGN KEY (proposal_id) REFERENCES knowledge_proposals(id) ON DELETE SET NULL,
+                    CHECK (operation_id = transaction_id),
+                    CHECK (kind IN ('initialization', 'change', 'reconciliation', 'relocation', 'proposal')),
+                    CHECK (commit_state IN ('pending', 'not_committed', 'committed')),
+                    CHECK (finalization_state IN ('pending', 'complete', 'failed')),
+                    CHECK (projection_state IN ('pending', 'complete', 'failed'))
+                );
+                "#
+                .to_owned(),
+            ))
+            .await?;
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_mutation_operations_project_created ON knowledge_mutation_operations(project_id, created_at DESC, operation_id);".to_owned(),
+            ))
+            .await?;
+        harden_knowledge_mutation_operations(manager).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        refuse_knowledge_mutation_rollback_if_rows(manager).await?;
+        drop_knowledge_mutation_hardening_triggers(manager).await?;
+        manager
+            .get_connection()
+            .execute(Statement::from_string(
+                manager.get_database_backend(),
+                "DROP TABLE IF EXISTS knowledge_mutation_operations;".to_owned(),
+            ))
+            .await
+            .map(|_| ())
+    }
+}
+
+struct AddKnowledgeMutationBinding;
+
+impl MigrationName for AddKnowledgeMutationBinding {
+    fn name(&self) -> &str {
+        "m20260905_000053_add_knowledge_mutation_binding"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddKnowledgeMutationBinding {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        add_column_if_missing(
+            manager,
+            "knowledge_mutation_operations",
+            "expected_change_summary",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        .await?;
+        add_column_if_missing(
+            manager,
+            "knowledge_mutation_operations",
+            "expected_compression_note",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        refuse_knowledge_mutation_rollback_if_rows(manager).await?;
+        drop_column_if_present(
+            manager,
+            "knowledge_mutation_operations",
+            "expected_compression_note",
+        )
+        .await?;
+        drop_column_if_present(
+            manager,
+            "knowledge_mutation_operations",
+            "expected_change_summary",
+        )
+        .await
+    }
+}
+
+struct HardenKnowledgeMutationOperations;
+
+impl MigrationName for HardenKnowledgeMutationOperations {
+    fn name(&self) -> &str {
+        "m20260905_000054_harden_knowledge_mutation_operations"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for HardenKnowledgeMutationOperations {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        harden_knowledge_mutation_operations(manager).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        refuse_knowledge_mutation_rollback_if_rows(manager).await?;
+        drop_knowledge_mutation_hardening_triggers(manager).await
+    }
+}
+
+async fn refuse_knowledge_mutation_rollback_if_rows(
+    manager: &SchemaManager<'_>,
+) -> Result<(), DbErr> {
+    if !table_exists(manager, "knowledge_mutation_operations").await? {
+        return Ok(());
+    }
+    let row = manager
+        .get_connection()
+        .query_one(Statement::from_string(
+            manager.get_database_backend(),
+            "SELECT EXISTS (SELECT 1 FROM knowledge_mutation_operations) AS has_rows".to_owned(),
+        ))
+        .await?
+        .ok_or_else(|| DbErr::Migration("failed to inspect knowledge mutation rows".to_owned()))?;
+    if row.try_get::<i64>("", "has_rows")? != 0 {
+        return Err(DbErr::Migration(
+            "knowledge mutation operations contain durable rows; refusing destructive rollback"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn harden_knowledge_mutation_operations(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    if !table_exists(manager, "knowledge_mutation_operations").await? {
+        return Err(DbErr::Migration(
+            "knowledge mutation operation table is missing".to_owned(),
+        ));
+    }
+
+    for (description, predicate) in [
+        (
+            "agent run reference belongs to another project",
+            "operation.agent_run_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM agent_runs run WHERE run.id = operation.agent_run_id AND run.project_id = operation.project_id)",
+        ),
+        (
+            "proposal reference belongs to another project",
+            "operation.proposal_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM knowledge_proposals proposal WHERE proposal.id = operation.proposal_id AND proposal.project_id = operation.project_id)",
+        ),
+        (
+            "committed receipt envelope is invalid",
+            INVALID_KNOWLEDGE_MUTATION_RECEIPT_PREDICATE,
+        ),
+    ] {
+        let row = manager
+            .get_connection()
+            .query_one(Statement::from_string(
+                manager.get_database_backend(),
+                format!(
+                    "SELECT EXISTS (SELECT 1 FROM knowledge_mutation_operations operation WHERE {predicate}) AS invalid"
+                ),
+            ))
+            .await?
+            .ok_or_else(|| DbErr::Migration("failed to validate knowledge mutation rows".to_owned()))?;
+        if row.try_get::<i64>("", "invalid")? != 0 {
+            return Err(DbErr::Migration(format!(
+                "cannot harden knowledge mutation operations: {description}"
+            )));
+        }
+    }
+
+    for sql in knowledge_mutation_hardening_trigger_sql() {
+        manager.get_connection().execute_unprepared(sql).await?;
+    }
+    Ok(())
+}
+
+const INVALID_KNOWLEDGE_MUTATION_RECEIPT_PREDICATE: &str = r#"
+    NOT (
+        (operation.commit_state = 'committed'
+            AND operation.receipt_store_uuid IS NOT NULL
+            AND length(operation.receipt_store_uuid) = 36
+            AND operation.receipt_store_uuid = lower(operation.receipt_store_uuid)
+            AND operation.receipt_transaction_sha256 IS NOT NULL
+            AND length(operation.receipt_transaction_sha256) = 64
+            AND operation.receipt_transaction_sha256 = lower(operation.receipt_transaction_sha256)
+            AND (operation.receipt_base_revision IS NULL OR (
+                length(operation.receipt_base_revision) = 64
+                AND operation.receipt_base_revision = lower(operation.receipt_base_revision)
+            ))
+            AND operation.receipt_resulting_revision IS NOT NULL
+            AND length(operation.receipt_resulting_revision) = 64
+            AND operation.receipt_resulting_revision = lower(operation.receipt_resulting_revision)
+            AND operation.receipt_file_changes_json IS NOT NULL
+            AND json_valid(operation.receipt_file_changes_json)
+            AND json_type(operation.receipt_file_changes_json) = 'array')
+        OR
+        (operation.commit_state != 'committed'
+            AND operation.receipt_store_uuid IS NULL
+            AND operation.receipt_transaction_sha256 IS NULL
+            AND operation.receipt_base_revision IS NULL
+            AND operation.receipt_resulting_revision IS NULL
+            AND operation.receipt_file_changes_json IS NULL)
+    )
+"#;
+
+fn knowledge_mutation_hardening_trigger_sql() -> [&'static str; 6] {
+    [
+        r#"CREATE TRIGGER IF NOT EXISTS trg_knowledge_mutation_operation_refs_insert
+           BEFORE INSERT ON knowledge_mutation_operations
+           WHEN (NEW.agent_run_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM agent_runs run
+                    WHERE run.id = NEW.agent_run_id AND run.project_id = NEW.project_id
+                ))
+             OR (NEW.proposal_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM knowledge_proposals proposal
+                    WHERE proposal.id = NEW.proposal_id AND proposal.project_id = NEW.project_id
+                ))
+           BEGIN SELECT RAISE(ABORT, 'knowledge mutation references must belong to the same project'); END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS trg_knowledge_mutation_operation_refs_update
+           BEFORE UPDATE OF project_id, agent_run_id, proposal_id ON knowledge_mutation_operations
+           WHEN (NEW.agent_run_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM agent_runs run
+                    WHERE run.id = NEW.agent_run_id AND run.project_id = NEW.project_id
+                ))
+             OR (NEW.proposal_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM knowledge_proposals proposal
+                    WHERE proposal.id = NEW.proposal_id AND proposal.project_id = NEW.project_id
+                ))
+           BEGIN SELECT RAISE(ABORT, 'knowledge mutation references must belong to the same project'); END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS trg_knowledge_mutation_receipt_insert
+           BEFORE INSERT ON knowledge_mutation_operations
+           WHEN NOT (
+             (NEW.commit_state = 'committed'
+               AND NEW.receipt_store_uuid IS NOT NULL AND length(NEW.receipt_store_uuid) = 36 AND NEW.receipt_store_uuid = lower(NEW.receipt_store_uuid)
+               AND NEW.receipt_transaction_sha256 IS NOT NULL AND length(NEW.receipt_transaction_sha256) = 64 AND NEW.receipt_transaction_sha256 = lower(NEW.receipt_transaction_sha256)
+               AND (NEW.receipt_base_revision IS NULL OR (length(NEW.receipt_base_revision) = 64 AND NEW.receipt_base_revision = lower(NEW.receipt_base_revision)))
+               AND NEW.receipt_resulting_revision IS NOT NULL AND length(NEW.receipt_resulting_revision) = 64 AND NEW.receipt_resulting_revision = lower(NEW.receipt_resulting_revision)
+               AND NEW.receipt_file_changes_json IS NOT NULL AND json_valid(NEW.receipt_file_changes_json) AND json_type(NEW.receipt_file_changes_json) = 'array')
+             OR
+             (NEW.commit_state != 'committed'
+               AND NEW.receipt_store_uuid IS NULL AND NEW.receipt_transaction_sha256 IS NULL
+               AND NEW.receipt_base_revision IS NULL AND NEW.receipt_resulting_revision IS NULL
+               AND NEW.receipt_file_changes_json IS NULL)
+           )
+           BEGIN SELECT RAISE(ABORT, 'invalid committed knowledge mutation receipt'); END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS trg_knowledge_mutation_receipt_update
+           BEFORE UPDATE OF commit_state, receipt_store_uuid, receipt_transaction_sha256, receipt_base_revision, receipt_resulting_revision, receipt_file_changes_json ON knowledge_mutation_operations
+           WHEN NOT (
+             (NEW.commit_state = 'committed'
+               AND NEW.receipt_store_uuid IS NOT NULL AND length(NEW.receipt_store_uuid) = 36 AND NEW.receipt_store_uuid = lower(NEW.receipt_store_uuid)
+               AND NEW.receipt_transaction_sha256 IS NOT NULL AND length(NEW.receipt_transaction_sha256) = 64 AND NEW.receipt_transaction_sha256 = lower(NEW.receipt_transaction_sha256)
+               AND (NEW.receipt_base_revision IS NULL OR (length(NEW.receipt_base_revision) = 64 AND NEW.receipt_base_revision = lower(NEW.receipt_base_revision)))
+               AND NEW.receipt_resulting_revision IS NOT NULL AND length(NEW.receipt_resulting_revision) = 64 AND NEW.receipt_resulting_revision = lower(NEW.receipt_resulting_revision)
+               AND NEW.receipt_file_changes_json IS NOT NULL AND json_valid(NEW.receipt_file_changes_json) AND json_type(NEW.receipt_file_changes_json) = 'array')
+             OR
+             (NEW.commit_state != 'committed'
+               AND NEW.receipt_store_uuid IS NULL AND NEW.receipt_transaction_sha256 IS NULL
+               AND NEW.receipt_base_revision IS NULL AND NEW.receipt_resulting_revision IS NULL
+               AND NEW.receipt_file_changes_json IS NULL)
+           )
+           BEGIN SELECT RAISE(ABORT, 'invalid committed knowledge mutation receipt'); END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS trg_agent_runs_preserve_knowledge_mutation_project
+           BEFORE UPDATE OF project_id ON agent_runs
+           WHEN EXISTS (
+             SELECT 1 FROM knowledge_mutation_operations operation
+             WHERE operation.agent_run_id = OLD.id AND operation.project_id != NEW.project_id
+           )
+           BEGIN SELECT RAISE(ABORT, 'agent run project is bound by a knowledge mutation'); END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS trg_knowledge_proposals_preserve_mutation_project
+           BEFORE UPDATE OF project_id ON knowledge_proposals
+           WHEN EXISTS (
+             SELECT 1 FROM knowledge_mutation_operations operation
+             WHERE operation.proposal_id = OLD.id AND operation.project_id != NEW.project_id
+           )
+           BEGIN SELECT RAISE(ABORT, 'proposal project is bound by a knowledge mutation'); END"#,
+    ]
+}
+
+async fn drop_knowledge_mutation_hardening_triggers(
+    manager: &SchemaManager<'_>,
+) -> Result<(), DbErr> {
+    for name in [
+        "trg_knowledge_mutation_operation_refs_insert",
+        "trg_knowledge_mutation_operation_refs_update",
+        "trg_knowledge_mutation_receipt_insert",
+        "trg_knowledge_mutation_receipt_update",
+        "trg_agent_runs_preserve_knowledge_mutation_project",
+        "trg_knowledge_proposals_preserve_mutation_project",
+    ] {
+        manager
+            .get_connection()
+            .execute_unprepared(&format!("DROP TRIGGER IF EXISTS {name}"))
+            .await?;
+    }
+    Ok(())
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddProjectKnowledgeDirectory {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        let existed = column_exists(manager, "projects", "knowledge_directory").await?;
+        add_column_if_missing(
+            manager,
+            "projects",
+            "knowledge_directory",
+            "TEXT NOT NULL DEFAULT 'knowledge'",
+        )
+        .await?;
+        if !existed {
+            manager
+                .get_connection()
+                .execute(Statement::from_string(
+                    manager.get_database_backend(),
+                    r#"UPDATE "projects" SET "knowledge_directory" = 'design';"#.to_owned(),
+                ))
+                .await?;
+        }
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        drop_read_view(manager, "projects_read_view").await?;
+        drop_column_if_present(manager, "projects", "knowledge_directory").await?;
+        create_read_view(manager, "projects", "projects_read_view").await
+    }
+}
+
+fn knowledge_operational_table_statements() -> &'static [&'static str] {
+    &[
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_store_trust (
+            store_uuid TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            public_key TEXT NOT NULL,
+            trusted_at TEXT NOT NULL,
+            PRIMARY KEY (store_uuid, fingerprint)
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_legacy_memory_migrations (
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            store_uuid TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            actor_id TEXT,
+            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+            migrated_at TEXT NOT NULL
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_answer_settings (
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            tool_name TEXT NOT NULL,
+            model TEXT,
+            reasoning_effort TEXT,
+            timeout_seconds INTEGER NOT NULL DEFAULT 600,
+            max_concurrent_agents INTEGER NOT NULL DEFAULT 2,
+            max_graph_calls INTEGER NOT NULL DEFAULT 32,
+            cache_enabled BOOLEAN NOT NULL DEFAULT 1,
+            cache_lifetime_seconds INTEGER NOT NULL DEFAULT 86400,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_answer_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            store_uuid TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            question TEXT NOT NULL,
+            normalized_question TEXT NOT NULL,
+            settings_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            answer TEXT,
+            citations_json TEXT NOT NULL DEFAULT '[]',
+            retrieved_citations_json TEXT NOT NULL DEFAULT '[]',
+            cache_hit BOOLEAN NOT NULL DEFAULT 0,
+            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+            error TEXT,
+            cancel_requested BOOLEAN NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT
+        );
+        "#,
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_knowledge_answer_cache
+        ON knowledge_answer_jobs (
+            project_id, revision, normalized_question, settings_hash, status, finished_at
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_answer_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            answer_id INTEGER NOT NULL REFERENCES knowledge_answer_jobs(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(answer_id, sequence)
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            state TEXT NOT NULL,
+            base_revision TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            change_set_json TEXT NOT NULL,
+            actor_id TEXT,
+            agent_run_id INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+            applied_transaction_id TEXT,
+            rejection_reason TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_source_baselines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            run_id INTEGER NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+            knowledge_revision TEXT NOT NULL,
+            baseline_kind TEXT NOT NULL,
+            baseline_json TEXT NOT NULL,
+            baseline_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_navigation_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            revision TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            node_id TEXT,
+            routing_decision TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_knowledge_navigation_run
+        ON knowledge_navigation_receipts (run_id, operation, id);
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_impact_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            knowledge_revision TEXT NOT NULL,
+            source_baseline_hash TEXT NOT NULL,
+            source_state_hash TEXT NOT NULL,
+            changed_paths_json TEXT NOT NULL,
+            changed_symbols_json TEXT NOT NULL,
+            affected_nodes_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_review_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            impact_receipt_id INTEGER NOT NULL REFERENCES knowledge_impact_receipts(id) ON DELETE CASCADE,
+            disposition TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            transaction_id TEXT,
+            proposal_id INTEGER REFERENCES knowledge_proposals(id) ON DELETE SET NULL,
+            source_state_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_query_telemetry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            store_uuid TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            query_text TEXT NOT NULL,
+            path_filter TEXT,
+            symbol_filter TEXT,
+            matched_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        "#,
+        r#"
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+            project_id UNINDEXED,
+            store_uuid UNINDEXED,
+            revision UNINDEXED,
+            node_id UNINDEXED,
+            title,
+            routing_summary,
+            ownership,
+            read_when,
+            routing_terms,
+            aliases,
+            markdown,
+            path,
+            symbols,
+            tokenize = 'porter unicode61'
+        );
+        "#,
+    ]
 }
 
 #[async_trait::async_trait]

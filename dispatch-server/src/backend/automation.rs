@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fmt, fs,
     future::Future,
     io::{ErrorKind, SeekFrom},
@@ -18,7 +18,7 @@ use crudkit_core::condition::Condition;
 use rootcause::{Result, prelude::*};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
-    QueryOrder, QuerySelect, Statement,
+    QueryOrder, QuerySelect, Statement, TransactionTrait,
 };
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -29,16 +29,22 @@ use tokio::{
 
 use crate::{
     backend::{
-        agent_ids, agent_tools, automation_admission,
+        agent_ids,
+        agent_run_launch::{
+            AgentCapabilitySetV1, AgentLaunchTargetV1, AgentRunLaunchRepository,
+            PersistedLaunchContract, insert_contract_in_tx, mark_spawned_in_tx,
+            mark_terminal_in_tx,
+        },
+        agent_tools, automation_admission,
         automation_cli::dispatch_cli_path,
         automation_commit::{
             CommitBaseline, CommitOutcomeEvaluation, capture_commit_baseline,
             evaluate_commit_outcome_for_run,
         },
         automation_output::{
-            OutputPieceDraft, new_output_piece, push_codex_output_piece, read_run_output,
-            read_run_token_usage, thread_event_output_piece, update_response_candidates,
-            write_run_output_log,
+            OutputPieceDraft, append_output_piece, new_output_piece, push_codex_output_piece,
+            read_run_output, read_run_token_usage, thread_event_output_piece,
+            update_response_candidates, write_run_output_log,
         },
         automation_postconditions,
         automation_prompt::{AutomationPrompt, PromptContext, build_prompt},
@@ -47,6 +53,7 @@ use crate::{
         codex_app_server,
         entities::{
             agent_run::{self, AgentRun, AgentRunActiveModel, AgentRunModel},
+            project::{self, Project},
             work_item::{self, WorkItem},
             work_item_event,
             work_item_origin::{self, WorkItemOrigin},
@@ -59,11 +66,11 @@ use crate::{
         storage::{Store, utc_now},
     },
     shared::view_models::{
-        AgentCommitOutcome, AgentReasoningEffort, AgentRunCleanupStatus, AgentRunOutputKind,
-        AgentRunOutputPiece, AgentRunStatus, AgentRunTokenUsageView, AgentRunView,
-        AgentSandboxMode, AgentToolName, AutomationExecutionPolicy, AutomationPostconditions,
-        AutomationRunMutability, AutomationStatusView, DEFAULT_STATE_LABEL,
-        PostconditionFailureView, ProjectMemoryEventRefView, ProjectSettingsView, ProjectView,
+        AgentCommitOutcome, AgentReasoningEffort, AgentRunCleanupStatus, AgentRunKind,
+        AgentRunOutputKind, AgentRunOutputPiece, AgentRunPurposeV1, AgentRunSourceAuthority,
+        AgentRunStatus, AgentRunTokenUsageView, AgentRunView, AgentSandboxMode, AgentToolName,
+        AutomationExecutionPolicy, AutomationPostconditions, AutomationRunMutability,
+        AutomationStatusView, PostconditionFailureView, ProjectSettingsView, ProjectView,
         RecoveredClaimView, RunLogView, SemanticPostconditionStatus, WorkItemSummaryView,
         WorkItemView, WorkspaceMode, WorktreeCleanupPolicy,
     },
@@ -83,7 +90,9 @@ task is complete.";
 #[derive(Clone, Debug)]
 pub struct StartAutomation {
     pub tool: Option<AgentToolName>,
-    pub work_item_id: Option<i64>,
+    /// Immutable persisted authority for item selection. There is deliberately no implicit
+    /// meaning attached to a missing compatibility `agent_runs.work_item_id`.
+    pub launch_target: AgentLaunchTargetV1,
     pub work_item_selector: Option<Condition>,
     pub extra_prompt: Option<String>,
     pub mutability: Option<AutomationRunMutability>,
@@ -121,7 +130,6 @@ struct LaunchDetails {
     developer_instructions_path: Option<String>,
     user_prompt_path: Option<String>,
     log_path: Option<String>,
-    memory_event_id: Option<i64>,
     agent_model: Option<String>,
     agent_reasoning_effort: Option<AgentReasoningEffort>,
     commit_required: bool,
@@ -222,6 +230,7 @@ struct AgentProcessStart {
     agent_extra_writable_roots: Vec<String>,
     mutability: AutomationRunMutability,
     timeout: Duration,
+    environment: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug)]
@@ -496,7 +505,7 @@ pub async fn start_one_automation_run_in_background(
     codex_status: Option<codex_app_server::SharedCodexStatus>,
 ) -> Result<AgentRunView> {
     let started = begin_automation_run(&store, &project_name, start).await?;
-    let initial_run = model_to_view(started.run.clone())?;
+    let initial_run = model_to_view(&store, started.run.clone()).await?;
     let run_id = started.run.id;
     let cancellation = register_pending_session(&started, sessions.as_ref(), None);
     let project_for_task = started.project_name.clone();
@@ -604,10 +613,12 @@ async fn begin_automation_run(
             personality_revision_id,
             effective_timeout_seconds: timeout_seconds,
             effective_concurrency_group: start.execution.concurrency_group.as_deref(),
+            run_kind: AgentRunKind::Task,
+            purpose: AgentRunPurposeV1::Ordinary,
+            launch_target: &start.launch_target,
         },
     )
     .await?;
-
     Ok(StartedAutomationRun {
         project_name: project_name.to_owned(),
         project,
@@ -707,96 +718,36 @@ async fn complete_started_automation_run(
         }
     };
 
-    let claimed_item = {
-        let claimed = if let Some(work_item_id) = start.work_item_id {
-            let claim_result = if let Some(condition) = start.work_item_selector.as_ref() {
-                item_claims::claim_specific_item_matching_condition(
-                    store,
-                    &project_name,
-                    work_item_id,
-                    &agent_id,
-                    condition,
-                )
-                .await
-            } else {
-                item_claims::claim_specific_item(store, &project_name, work_item_id, &agent_id)
-                    .await
-            };
-            match claim_result {
-                Ok(claimed) => claimed,
-                Err(err) => {
-                    return fail_run(
-                        store,
-                        run,
-                        format!("Failed to claim work item {work_item_id}: {err:#}"),
-                    )
-                    .await;
-                }
-            }
-        } else if let Some(condition) = start.work_item_selector.as_ref() {
-            match item_claims::claim_item_matching_condition(
-                store,
-                &project_name,
-                &agent_id,
-                condition,
-            )
-            .await
-            {
-                Ok(claimed) => claimed,
-                Err(err) => {
-                    return fail_run(
-                        store,
-                        run,
-                        format!("Failed to claim work item matching automation selector: {err:#}"),
-                    )
-                    .await;
-                }
-            }
-        } else {
-            match item_claims::claim_item(store, &project_name, &agent_id, DEFAULT_STATE_LABEL)
-                .await
-            {
-                Ok(claimed) => claimed,
-                Err(err) => {
-                    return fail_run(
-                        store,
-                        run,
-                        format!("Failed to claim open work item: {err:#}"),
-                    )
-                    .await;
-                }
-            }
-        };
-        if claimed.is_none() {
-            run = finish_run(
+    let claimed_item = match item_claims::resolve_agent_run_target(
+        store,
+        &project_name,
+        run.id,
+        &agent_id,
+        &start.launch_target,
+        start.work_item_selector.as_ref(),
+    )
+    .await
+    {
+        Ok(claimed) => claimed,
+        Err(err) => {
+            return fail_run(
                 store,
                 run,
-                AgentRunStatus::Completed,
-                None,
-                "No matching work item was available".to_owned(),
+                format!("Failed to resolve persisted automation launch target: {err:#}"),
             )
-            .await?;
-            return model_to_view(run);
+            .await;
         }
-        claimed
     };
-
-    if let Some(item) = &claimed_item {
-        let run_before_item_update = run.clone();
-        run = match update_run_work_item_id(store, run, item.id).await {
-            Ok(run) => run,
-            Err(err) => {
-                return fail_run_after_claim(
-                    store,
-                    &project_name,
-                    run_before_item_update,
-                    claimed_item.as_ref(),
-                    &agent_id,
-                    format!("Failed to attach claimed item to automation run: {err:#}"),
-                )
-                .await;
-            }
-        };
+    if claimed_item.is_none() && !matches!(start.launch_target, AgentLaunchTargetV1::None { .. }) {
+        run = finish_run(
+            store,
+            run,
+            AgentRunStatus::Completed,
+            None,
+            "No matching work item was available".to_owned(),
+        )
+        .await?;
+        return model_to_view(store, run).await;
     }
 
     if cancellation_requested(&cancellation) {
@@ -922,15 +873,17 @@ async fn complete_started_automation_run(
                     .join("; ");
                 result_summary =
                     format!("{result_summary}; semantic postconditions failed: {detail}");
-                output.output.push(new_output_piece(
-                    output.output.len() as u64 + 1,
-                    AgentRunOutputKind::Error,
-                    claimed_item.as_ref().map(|item| item.id.to_string()),
-                    "semantic postconditions failed",
-                    detail,
-                    serde_json::to_value(&semantic.failures)
-                        .unwrap_or_else(|_| serde_json::json!([])),
-                ));
+                append_output_piece(
+                    &mut output.output,
+                    OutputPieceDraft {
+                        kind: AgentRunOutputKind::Error,
+                        item_id: claimed_item.as_ref().map(|item| item.id.to_string()),
+                        title: "semantic postconditions failed".to_owned(),
+                        body: detail,
+                        metadata: serde_json::to_value(&semantic.failures)
+                            .unwrap_or_else(|_| serde_json::json!([])),
+                    },
+                );
                 write_run_output_log(&log_path, &output.output).context_with(|| {
                     format!(
                         "failed to append semantic failure to {}",
@@ -954,6 +907,7 @@ async fn complete_started_automation_run(
                     }
                 }
             }
+
             item_claims::finalize_automation_claim(
                 store,
                 item_claims::AutomationClaimFinalization {
@@ -986,7 +940,7 @@ async fn complete_started_automation_run(
             if success && settings.worktree_cleanup_policy == WorktreeCleanupPolicy::AfterSuccess {
                 run = cleanup_worktree_for_run(store, run, &project_path).await?;
             }
-            model_to_view(run)
+            model_to_view(store, run).await
         }
         Err(err) => {
             let cancelled = is_automation_cancelled(&err);
@@ -1045,7 +999,7 @@ async fn complete_started_automation_run(
                 message,
             )
             .await?;
-            model_to_view(run)
+            model_to_view(store, run).await
         }
     }
 }
@@ -1069,13 +1023,14 @@ async fn prepare_automation_launch(
         run_mutability,
     } = input;
 
-    let workspace = match automation_workspace::prepare_workspace_for_run(
+    let workspace_result = automation_workspace::prepare_workspace_for_run(
         run.id,
         project_name,
         project_path,
         settings.workspace_mode,
         run_mutability,
-    ) {
+    );
+    let workspace = match workspace_result {
         Ok(workspace) => workspace,
         Err(err) => {
             return Err(LaunchPreparationFailure::new(
@@ -1157,18 +1112,9 @@ async fn prepare_automation_launch(
             ));
         }
     };
-    let memory_event_id = match projects::latest_memory_event_id(store, project.id).await {
-        Ok(memory_event_id) => memory_event_id,
-        Err(err) => {
-            return Err(LaunchPreparationFailure::new(
-                run,
-                format!("Failed to resolve project memory event: {err:#}"),
-            ));
-        }
-    };
     let system_prompt_event_id =
         match projects::latest_system_prompt_event_id(store, project.id).await {
-            Ok(system_prompt_event_id) => system_prompt_event_id,
+            Ok(event_id) => event_id,
             Err(err) => {
                 return Err(LaunchPreparationFailure::new(
                     run,
@@ -1193,11 +1139,9 @@ async fn prepare_automation_launch(
     };
     let prompt_git_policy =
         automation_runtime::git_runtime_policy_for_run(settings, run_mutability);
-    let prompt = match build_prompt(PromptContext {
+    let prompt_result = build_prompt(PromptContext {
         project_name,
         system_prompt: &project.system_prompt,
-        memory: &project.memory,
-        memory_event_id,
         item: claimed_item,
         agent_id,
         personality_description: personality_description.as_deref(),
@@ -1210,7 +1154,8 @@ async fn prepare_automation_launch(
         create_pr: settings.create_pr,
         git_command_policy: prompt_git_policy.policy,
         git_policy_workspace_mode: prompt_git_policy.workspace_mode,
-    }) {
+    });
+    let mut prompt = match prompt_result {
         Ok(prompt) => prompt,
         Err(err) => {
             return Err(LaunchPreparationFailure::new(
@@ -1219,6 +1164,16 @@ async fn prepare_automation_launch(
             ));
         }
     };
+    let knowledge_context = crate::backend::knowledge::launch_context(
+        project.id,
+        workspace.working_dir.to_string_lossy().into_owned(),
+        settings.knowledge_directory.clone(),
+    )
+    .await;
+    prompt
+        .developer_instructions
+        .push_str("\n\n## Project Knowledge\n\n");
+    prompt.developer_instructions.push_str(&knowledge_context);
     let effective_input_sha256 = effective_input_sha256(&prompt);
     if let Err(err) = fs::write(&developer_instructions_path, &prompt.developer_instructions)
         .context_with(|| {
@@ -1258,7 +1213,6 @@ async fn prepare_automation_launch(
             ),
             user_prompt_path: Some(user_prompt_path.to_string_lossy().into_owned()),
             log_path: Some(log_path.to_string_lossy().into_owned()),
-            memory_event_id,
             agent_model: agent_model.clone(),
             agent_reasoning_effort,
             commit_required,
@@ -1309,6 +1263,7 @@ async fn prepare_automation_launch(
                 .timeout_seconds
                 .unwrap_or(AGENT_PROCESS_TIMEOUT.as_secs()),
         ),
+        environment: None,
     };
 
     Ok(PreparedAutomationLaunch {
@@ -1325,7 +1280,7 @@ async fn fail_run(
     result_summary: String,
 ) -> Result<AgentRunView> {
     let run = finish_run(store, run, AgentRunStatus::Failed, None, result_summary).await?;
-    model_to_view(run)
+    model_to_view(store, run).await
 }
 
 async fn cancel_run(
@@ -1334,7 +1289,7 @@ async fn cancel_run(
     result_summary: String,
 ) -> Result<AgentRunView> {
     let run = finish_run(store, run, AgentRunStatus::Cancelled, None, result_summary).await?;
-    model_to_view(run)
+    model_to_view(store, run).await
 }
 
 async fn fail_run_after_claim(
@@ -1417,16 +1372,28 @@ pub async fn stop_automation(
         .await?;
         let updated =
             finish_run(store, run, AgentRunStatus::Cancelled, None, result_summary).await?;
-        cancelled.push(model_to_view(updated)?);
+        cancelled.push(model_to_view(store, updated).await?);
     }
     Ok(cancelled)
 }
 
+#[cfg(test)]
 pub async fn automation_status(store: &Store, project_name: &str) -> Result<AutomationStatusView> {
-    let settings = projects::get_settings(store, project_name).await?;
-    let running_counts = automation_admission::running_counts(store, project_name).await?;
-    let recent_runs = list_runs(store, project_name, Some(10)).await?;
-    let tools = agent_tools::list_tools(store).await?;
+    let project_id = projects::project_id(store, project_name).await?;
+    automation_status_for_project_id(store, project_name, project_id).await
+}
+
+pub(crate) async fn automation_status_for_project_id(
+    store: &Store,
+    project_name: &str,
+    project_id: i64,
+) -> Result<AutomationStatusView> {
+    let (settings, running_counts, recent_runs, tools) = tokio::try_join!(
+        projects::get_settings_by_id(store, project_id),
+        automation_admission::running_counts_for_project_id(store, project_id),
+        list_runs_for_project_id(store, project_id, Some(10)),
+        agent_tools::list_tools(store),
+    )?;
 
     Ok(AutomationStatusView {
         project: project_name.to_owned(),
@@ -1441,18 +1408,29 @@ pub async fn automation_status(store: &Store, project_name: &str) -> Result<Auto
 }
 
 pub async fn active_project_names(store: &Store) -> Result<Vec<String>> {
-    let projects = projects::list_projects(store).await?;
-    let mut active = Vec::new();
-    for project in projects {
-        if automation_admission::running_counts(store, &project.name)
-            .await?
-            .total()
-            > 0
-        {
-            active.push(project.name);
-        }
+    let project_ids = AgentRun::find()
+        .select_only()
+        .column(agent_run::Column::ProjectId)
+        .filter(agent_run::Column::Status.eq(AgentRunStatus::Running.as_storage()))
+        .into_tuple::<i64>()
+        .all(store.db().as_ref())
+        .await
+        .context("failed to load projects with running agent runs")?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if project_ids.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(active)
+
+    Ok(Project::find()
+        .select_only()
+        .column(project::Column::Name)
+        .filter(project::Column::Id.is_in(project_ids))
+        .order_by_asc(project::Column::Name)
+        .into_tuple::<String>()
+        .all(store.db().as_ref())
+        .await
+        .context("failed to load active project names")?)
 }
 
 pub async fn list_runs(
@@ -1461,23 +1439,21 @@ pub async fn list_runs(
     limit: Option<u64>,
 ) -> Result<Vec<AgentRunView>> {
     let project_id = projects::project_id(store, project_name).await?;
-    let mut query = AgentRun::find()
-        .filter(agent_run::Column::ProjectId.eq(project_id))
-        .order_by_desc(agent_run::Column::CreatedAt)
-        .order_by_desc(agent_run::Column::Id);
-    if let Some(limit) = limit {
-        query = query.limit(limit);
-    }
+    list_runs_for_project_id(store, project_id, limit).await
+}
 
-    let runs = query
-        .all(store.db().as_ref())
-        .await
-        .context("failed to list agent runs")?;
-    let mut views = Vec::with_capacity(runs.len());
-    for run in runs {
-        views.push(model_to_view_with_log_usage(run).await?);
-    }
-    Ok(views)
+pub(crate) async fn list_runs_for_project_id(
+    store: &Store,
+    project_id: i64,
+    limit: Option<u64>,
+) -> Result<Vec<AgentRunView>> {
+    list_run_views(
+        store,
+        AgentRun::find().filter(agent_run::Column::ProjectId.eq(project_id)),
+        limit,
+        "failed to list agent runs",
+    )
+    .await
 }
 
 pub async fn list_runs_for_item(
@@ -1487,51 +1463,52 @@ pub async fn list_runs_for_item(
     limit: Option<u64>,
 ) -> Result<Vec<AgentRunView>> {
     let project_id = projects::project_id(store, project_name).await?;
-    let mut query = AgentRun::find()
-        .filter(agent_run::Column::ProjectId.eq(project_id))
-        .filter(agent_run::Column::WorkItemId.eq(item_id))
-        .order_by_desc(agent_run::Column::CreatedAt)
-        .order_by_desc(agent_run::Column::Id);
-    if let Some(limit) = limit {
-        query = query.limit(limit);
-    }
-
-    let runs = query
-        .all(store.db().as_ref())
-        .await
-        .context("failed to list item agent runs")?;
-    let mut views = Vec::with_capacity(runs.len());
-    for run in runs {
-        views.push(model_to_view_with_log_usage(run).await?);
-    }
-    Ok(views)
+    list_run_views(
+        store,
+        AgentRun::find()
+            .filter(agent_run::Column::ProjectId.eq(project_id))
+            .filter(agent_run::Column::WorkItemId.eq(item_id)),
+        limit,
+        "failed to list item agent runs",
+    )
+    .await
 }
 
+#[cfg(test)]
 pub(crate) async fn list_item_run_previews(
     store: &Store,
     project_name: &str,
+    item_ids: &[i64],
+) -> Result<HashMap<i64, ItemRunPreviews>> {
+    let project_id = projects::project_id(store, project_name).await?;
+    list_item_run_previews_for_project_id(store, project_id, item_ids).await
+}
+
+pub(crate) async fn list_item_run_previews_for_project_id(
+    store: &Store,
+    project_id: i64,
     item_ids: &[i64],
 ) -> Result<HashMap<i64, ItemRunPreviews>> {
     if item_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let project_id = projects::project_id(store, project_name).await?;
-    let item_placeholders = (0..item_ids.len())
-        .map(|index| format!("?{}", index + 2))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let preview_limit_parameter = item_ids.len() + 2;
-    let mut values = Vec::<sea_orm::Value>::with_capacity(item_ids.len() + 2);
-    values.push(project_id.into());
-    values.extend(item_ids.iter().copied().map(Into::into));
-    values.push(ITEM_RUN_PREVIEW_LIMIT.into());
-    let rows = store
-        .db()
-        .query_all(Statement::from_sql_and_values(
-            sea_orm::DbBackend::Sqlite,
-            format!(
-                r#"
+    crate::backend::metrics::time_repository("agent_runs.board_previews", async {
+        let item_placeholders = (0..item_ids.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let preview_limit_parameter = item_ids.len() + 2;
+        let mut values = Vec::<sea_orm::Value>::with_capacity(item_ids.len() + 2);
+        values.push(project_id.into());
+        values.extend(item_ids.iter().copied().map(Into::into));
+        values.push(ITEM_RUN_PREVIEW_LIMIT.into());
+        let rows = store
+            .db()
+            .query_all(Statement::from_sql_and_values(
+                sea_orm::DbBackend::Sqlite,
+                format!(
+                    r#"
                 WITH run_counts AS (
                     SELECT work_item_id, COUNT(*) AS total
                     FROM agent_runs
@@ -1567,40 +1544,42 @@ pub(crate) async fn list_item_run_previews(
                 WHERE ranked_runs.preview_rank <= ?{preview_limit_parameter}
                 ORDER BY ranked_runs.work_item_id, ranked_runs.preview_rank
                 "#
-            ),
-            values,
-        ))
-        .await
-        .context("failed to list Board item agent runs")?;
+                ),
+                values,
+            ))
+            .await
+            .context("failed to list Board item agent runs")?;
 
-    let mut previews = HashMap::<i64, ItemRunPreviews>::new();
-    for row in rows {
-        let item_id = row
-            .try_get::<i64>("", "work_item_id")
-            .context("failed to read Board run preview work item id")?;
-        let total = row
-            .try_get::<i64>("", "total")
-            .context("failed to read Board item run count")?;
-        let total = usize::try_from(total).context("invalid Board item run count")?;
-        let item = previews.entry(item_id).or_default();
-        item.total = total;
-        item.latest.push(ItemRunPreview {
-            id: row
-                .try_get::<i64>("", "id")
-                .context("failed to read Board run preview id")?,
-            status: AgentRunStatus::from_str(
-                &row.try_get::<String>("", "status")
-                    .context("failed to read Board run preview status")?,
-            )?,
-            result_summary: row
-                .try_get::<String>("", "result_summary")
-                .context("failed to read Board run preview summary")?,
-            created_at: row
-                .try_get::<String>("", "created_at")
-                .context("failed to read Board run preview creation time")?,
-        });
-    }
-    Ok(previews)
+        let mut previews = HashMap::<i64, ItemRunPreviews>::new();
+        for row in rows {
+            let item_id = row
+                .try_get::<i64>("", "work_item_id")
+                .context("failed to read Board run preview work item id")?;
+            let total = row
+                .try_get::<i64>("", "total")
+                .context("failed to read Board item run count")?;
+            let total = usize::try_from(total).context("invalid Board item run count")?;
+            let item = previews.entry(item_id).or_default();
+            item.total = total;
+            item.latest.push(ItemRunPreview {
+                id: row
+                    .try_get::<i64>("", "id")
+                    .context("failed to read Board run preview id")?,
+                status: AgentRunStatus::from_str(
+                    &row.try_get::<String>("", "status")
+                        .context("failed to read Board run preview status")?,
+                )?,
+                result_summary: row
+                    .try_get::<String>("", "result_summary")
+                    .context("failed to read Board run preview summary")?,
+                created_at: row
+                    .try_get::<String>("", "created_at")
+                    .context("failed to read Board run preview creation time")?,
+            });
+        }
+        Ok(previews)
+    })
+    .await
 }
 
 pub async fn list_runs_for_trigger(
@@ -1610,9 +1589,24 @@ pub async fn list_runs_for_trigger(
     limit: Option<u64>,
 ) -> Result<Vec<AgentRunView>> {
     let project_id = projects::project_id(store, project_name).await?;
-    let mut query = AgentRun::find()
-        .filter(agent_run::Column::ProjectId.eq(project_id))
-        .filter(agent_run::Column::TriggerId.eq(trigger_id))
+    list_run_views(
+        store,
+        AgentRun::find()
+            .filter(agent_run::Column::ProjectId.eq(project_id))
+            .filter(agent_run::Column::TriggerId.eq(trigger_id)),
+        limit,
+        "failed to list trigger agent runs",
+    )
+    .await
+}
+
+async fn list_run_views(
+    store: &Store,
+    mut query: sea_orm::Select<AgentRun>,
+    limit: Option<u64>,
+    error_context: &'static str,
+) -> Result<Vec<AgentRunView>> {
+    query = query
         .order_by_desc(agent_run::Column::CreatedAt)
         .order_by_desc(agent_run::Column::Id);
     if let Some(limit) = limit {
@@ -1622,48 +1616,41 @@ pub async fn list_runs_for_trigger(
     let runs = query
         .all(store.db().as_ref())
         .await
-        .context("failed to list trigger agent runs")?;
+        .context(error_context)?;
     let mut views = Vec::with_capacity(runs.len());
     for run in runs {
-        views.push(model_to_view_with_log_usage(run).await?);
+        views.push(model_to_view_with_log_usage(store, run).await?);
     }
     Ok(views)
 }
 
 pub async fn get_run(store: &Store, project_name: &str, run_id: i64) -> Result<AgentRunView> {
+    let run = find_run_model(store, project_name, run_id).await?;
+    model_to_view_with_log_usage(store, run).await
+}
+
+async fn find_run_model(store: &Store, project_name: &str, run_id: i64) -> Result<AgentRunModel> {
     let project_id = projects::project_id(store, project_name).await?;
-    let run = AgentRun::find_by_id(run_id)
+    AgentRun::find_by_id(run_id)
         .filter(agent_run::Column::ProjectId.eq(project_id))
         .one(store.db().as_ref())
         .await
         .context("failed to load agent run")?
-        .ok_or_else(|| report!("agent run {run_id} does not exist in this project"))?;
-    model_to_view_with_log_usage(run).await
+        .ok_or_else(|| report!("agent run {run_id} does not exist in this project"))
 }
 
 pub async fn read_run_log(store: &Store, project_name: &str, run_id: i64) -> Result<RunLogView> {
-    let run = get_run(store, project_name, run_id).await?;
+    let run_model = find_run_model(store, project_name, run_id).await?;
+    let run = model_to_view_with_log_usage(store, run_model).await?;
     let developer_instructions =
         read_optional_text(run.developer_instructions_path.as_deref()).await?;
     let user_prompt = read_optional_text(run.user_prompt_path.as_deref()).await?;
     let output = read_run_output(run.log_path.as_deref()).await?;
-    let memory_event = match run.memory_event_id {
-        Some(event_id) => {
-            let created_at = projects::memory_event_exists(store, run.project_id, event_id).await?;
-            Some(ProjectMemoryEventRefView {
-                event_id,
-                available: created_at.is_some(),
-                created_at,
-            })
-        }
-        None => None,
-    };
     let created_items = run_item_summaries(store, run.id, true).await?;
     let modified_items = run_item_summaries(store, run.id, false).await?;
     Ok(RunLogView {
         run,
         active: false,
-        memory_event,
         developer_instructions,
         user_prompt,
         output,
@@ -1780,6 +1767,7 @@ pub async fn cleanup_worktrees(
     for run in runs {
         cleaned.push(
             model_to_view_with_log_usage(
+                store,
                 cleanup_worktree_for_run(store, run, &project_path).await?,
             )
             .await?,
@@ -1805,7 +1793,7 @@ pub async fn recover_stale_claims_for_project(
 }
 
 pub async fn recover_configured_stale_claims(store: &Store) -> Result<Vec<RecoveredClaimView>> {
-    let projects = projects::list_projects(store).await?;
+    let projects = projects::list_project_summaries(store).await?;
     let mut recovered = Vec::new();
     for project in projects {
         let settings = projects::get_settings(store, &project.name).await?;
@@ -1830,6 +1818,9 @@ struct CreateRunConfig<'a> {
     personality_revision_id: Option<i64>,
     effective_timeout_seconds: u64,
     effective_concurrency_group: Option<&'a str>,
+    run_kind: AgentRunKind,
+    purpose: AgentRunPurposeV1,
+    launch_target: &'a AgentLaunchTargetV1,
 }
 
 async fn create_run(
@@ -1838,9 +1829,24 @@ async fn create_run(
     config: CreateRunConfig<'_>,
 ) -> Result<AgentRunModel> {
     let now = utc_now();
+    let transaction = store
+        .db()
+        .begin()
+        .await
+        .context("failed to allocate agent run")?;
     let run = AgentRunActiveModel {
         project_id: Set(project_id),
         work_item_id: Set(None),
+        run_kind: Set(config.run_kind.as_storage().to_owned()),
+        purpose: Set(Some(config.purpose.as_storage().to_owned())),
+        knowledge_revision: Set(None),
+        source_baseline_id: Set(None),
+        source_snapshot_id: Set(None),
+        knowledge_view_sha256: Set(None),
+        input_overlay_sha256: Set(None),
+        source_authority_kind: Set(None),
+        source_ref_name: Set(None),
+        source_raw_head: Set(None),
         memory_event_id: Set(None),
         trigger_id: Set(config.trigger.map(|trigger| trigger.trigger_id)),
         trigger_name: Set(config.trigger.map(|trigger| trigger.trigger_name.clone())),
@@ -1884,12 +1890,26 @@ async fn create_run(
         started_at: Set(Some(now.clone())),
         finished_at: Set(None),
         created_at: Set(now.clone()),
-        updated_at: Set(now),
+        updated_at: Set(now.clone()),
         ..Default::default()
     }
-    .insert(store.db().as_ref())
+    .insert(&transaction)
     .await
     .context("failed to create agent run")?;
+    insert_contract_in_tx(
+        &transaction,
+        project_id,
+        run.id,
+        config.purpose,
+        config.launch_target,
+        &AgentCapabilitySetV1::ordinary(),
+        &now,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .context("failed to commit agent run allocation")?;
     publish_run_model_event(store, &run).await;
     Ok(run)
 }
@@ -1901,7 +1921,7 @@ async fn update_run_launch_details(
 ) -> Result<AgentRunModel> {
     let mut active: AgentRunActiveModel = run.into();
     active.work_item_id = Set(details.work_item_id);
-    active.memory_event_id = Set(details.memory_event_id);
+    active.memory_event_id = Set(None);
     active.command = Set(details.command);
     active.working_dir = Set(details.workspace.working_dir.to_string_lossy().into_owned());
     let has_worktree = details.workspace.worktree_path.is_some();
@@ -1928,26 +1948,20 @@ async fn update_run_launch_details(
         AgentRunCleanupStatus::NotApplicable.as_storage().to_owned()
     });
     active.updated_at = Set(utc_now());
+    let database = store.db();
+    let transaction = database
+        .begin()
+        .await
+        .context("failed to begin agent run launch update")?;
     let updated = active
-        .update(store.db().as_ref())
+        .update(&transaction)
         .await
         .context("failed to update agent run launch details")?;
-    publish_run_model_event(store, &updated).await;
-    Ok(updated)
-}
-
-async fn update_run_work_item_id(
-    store: &Store,
-    run: AgentRunModel,
-    work_item_id: i64,
-) -> Result<AgentRunModel> {
-    let mut active: AgentRunActiveModel = run.into();
-    active.work_item_id = Set(Some(work_item_id));
-    active.updated_at = Set(utc_now());
-    let updated = active
-        .update(store.db().as_ref())
+    mark_spawned_in_tx(&transaction, updated.project_id, updated.id, &utc_now()).await?;
+    transaction
+        .commit()
         .await
-        .context("failed to update agent run work item")?;
+        .context("failed to commit agent run launch update")?;
     publish_run_model_event(store, &updated).await;
     Ok(updated)
 }
@@ -1966,10 +1980,20 @@ async fn finish_run(
     active.result_summary = Set(result_summary);
     active.finished_at = Set(Some(now.clone()));
     active.updated_at = Set(now);
+    let database = store.db();
+    let transaction = database
+        .begin()
+        .await
+        .context("failed to begin agent run terminal update")?;
     let updated = active
-        .update(store.db().as_ref())
+        .update(&transaction)
         .await
         .context("failed to finish agent run")?;
+    mark_terminal_in_tx(&transaction, updated.project_id, updated.id, &utc_now()).await?;
+    transaction
+        .commit()
+        .await
+        .context("failed to commit agent run terminal update")?;
     publish_run_model_event(store, &updated).await;
     Ok(updated)
 }
@@ -2045,6 +2069,23 @@ async fn update_run_semantic_postconditions(
 }
 
 async fn publish_run_model_event(store: &Store, run: &AgentRunModel) {
+    if run.purpose.is_some()
+        && let Err(err) = AgentRunLaunchRepository::new(store)
+            .load(run.project_id, run.id)
+            .await
+            .and_then(|contract| {
+                contract
+                    .ok_or_else(|| report!("post-049 run is missing its launch contract"))
+                    .map(|_| ())
+            })
+    {
+        tracing::error!(
+            run_id = run.id,
+            error = %format_args!("{err:#}"),
+            "refusing to publish a corrupt agent-run event"
+        );
+        return;
+    }
     match projects::project_name_by_id(store, run.project_id).await {
         Ok(project_name) => {
             events::publish_agent_run_changed(&project_name, run.id, run.work_item_id);
@@ -2244,15 +2285,17 @@ async fn run_codex_app_server_turn(
     )
     .await;
 
-    let env = automation_runtime::agent_environment(
-        &start.dispatch_binary,
-        &start.git_runtime,
-        &start.real_git_path,
-        &start.project_name,
-        &start.agent_id,
-        start.claimed_item_id,
-        SERVER_API_URL.get().map(String::as_str),
-    );
+    let env = start.environment.clone().unwrap_or_else(|| {
+        automation_runtime::agent_environment(
+            &start.dispatch_binary,
+            &start.git_runtime,
+            &start.real_git_path,
+            &start.project_name,
+            &start.agent_id,
+            start.claimed_item_id,
+            SERVER_API_URL.get().map(String::as_str),
+        )
+    });
     let mut thread_options = ThreadOptions::builder()
         .working_directory(working_dir)
         .sandbox_mode(automation_runtime::agent_sandbox_mode_for_run(
@@ -2547,6 +2590,7 @@ async fn recover_codex_streamed_turn(
             .context("Codex app-server stream failed before a resumable thread id was available")
             .into_dynamic());
     };
+
     if *recovery_attempts >= CODEX_STREAM_RECOVERY_MAX_ATTEMPTS {
         bail!(
             "Codex app-server stream failed after {} recovery attempt(s): {err}",
@@ -2851,21 +2895,56 @@ async fn read_optional_text(path: Option<&str>) -> Result<Option<String>> {
     Ok(Some(body))
 }
 
-async fn model_to_view_with_log_usage(run: AgentRunModel) -> Result<AgentRunView> {
+async fn model_to_view_with_log_usage(store: &Store, run: AgentRunModel) -> Result<AgentRunView> {
     let log_path = run.log_path.clone();
-    let mut view = model_to_view(run)?;
+    let mut view = model_to_view(store, run).await?;
     if view.token_usage.is_none() {
         view.token_usage = read_run_token_usage(log_path.as_deref()).await;
     }
     Ok(view)
 }
 
-fn model_to_view(run: AgentRunModel) -> Result<AgentRunView> {
+async fn model_to_view(store: &Store, run: AgentRunModel) -> Result<AgentRunView> {
+    let contract = AgentRunLaunchRepository::new(store)
+        .load(run.project_id, run.id)
+        .await?;
+    if run.purpose.is_some() && contract.is_none() {
+        bail!(
+            "post-049 agent run {} is missing its launch contract",
+            run.id
+        );
+    }
+    model_to_view_with_contract(run, contract.as_ref())
+}
+
+fn model_to_view_with_contract(
+    run: AgentRunModel,
+    contract: Option<&PersistedLaunchContract>,
+) -> Result<AgentRunView> {
     Ok(AgentRunView {
         id: run.id,
         project_id: run.project_id,
         work_item_id: run.work_item_id,
-        memory_event_id: run.memory_event_id,
+        run_kind: AgentRunKind::from_str(&run.run_kind)?,
+        purpose: run
+            .purpose
+            .as_deref()
+            .map(AgentRunPurposeV1::from_str)
+            .transpose()?,
+        launch_target: contract.map(|contract| contract.target.view()),
+        launch_resolution: contract.map(|contract| contract.resolution.view()),
+        knowledge_revision: run.knowledge_revision,
+        source_baseline_id: run.source_baseline_id,
+        source_snapshot_id: run.source_snapshot_id,
+        knowledge_view_sha256: run.knowledge_view_sha256,
+        input_overlay_sha256: run.input_overlay_sha256,
+        source_authority_kind: run
+            .source_authority_kind
+            .as_deref()
+            .map(AgentRunSourceAuthority::from_str)
+            .transpose()?,
+        source_ref_name: run.source_ref_name,
+        source_raw_head: run.source_raw_head,
         trigger_id: run.trigger_id,
         trigger_name: projects::normalize_optional(run.trigger_name),
         trigger_revision_id: run.trigger_revision_id,
@@ -2953,7 +3032,6 @@ mod tests {
     use super::*;
     use crate::backend::{
         agent_ids,
-        item_claims::claim_item,
         items::{CreateWorkItem, create_item, get_item},
         projects::{
             CreateProject, UpdateProjectSettings, create_project, get_project, get_settings,
@@ -3059,7 +3137,7 @@ mod tests {
             "demo",
             StartAutomation {
                 tool: Some(AgentToolName::Codex),
-                work_item_id: None,
+                launch_target: AgentLaunchTargetV1::none(),
                 work_item_selector: None,
                 extra_prompt: None,
                 mutability: Some(AutomationRunMutability::Mutating),
@@ -3100,7 +3178,7 @@ mod tests {
             CreateWorkItem {
                 title: "Replacement work".to_owned(),
                 description: "Must not be claimed by the deleted project run".to_owned(),
-                state: DEFAULT_STATE_LABEL.to_owned(),
+                state: crate::shared::view_models::DEFAULT_STATE_LABEL.to_owned(),
                 agent_model_override: None,
                 agent_reasoning_effort_override: None,
                 initial_labels: Vec::new(),
@@ -3181,6 +3259,9 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
                 effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
             },
         )
         .await
@@ -3356,6 +3437,9 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
                 effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
             },
         )
         .await
@@ -3393,7 +3477,6 @@ mod tests {
                 ),
                 user_prompt_path: Some(user_prompt_path.to_string_lossy().into_owned()),
                 log_path: Some(log_path.to_string_lossy().into_owned()),
-                memory_event_id: None,
                 agent_model: None,
                 agent_reasoning_effort: None,
                 commit_required: false,
@@ -3455,6 +3538,9 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
                 effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
             },
         )
         .await
@@ -3469,15 +3555,26 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
                 effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
             },
         )
         .await
         .unwrap();
 
-        assert_that!(&(model_to_view(mutating).unwrap().mutability))
-            .is_equal_to(AutomationRunMutability::Mutating);
-        assert_that!(&(model_to_view(read_only).unwrap().mutability))
-            .is_equal_to(AutomationRunMutability::ReadOnly);
+        assert_that!(
+            &(model_to_view_with_contract(mutating, None)
+                .unwrap()
+                .mutability)
+        )
+        .is_equal_to(AutomationRunMutability::Mutating);
+        assert_that!(
+            &(model_to_view_with_contract(read_only, None)
+                .unwrap()
+                .mutability)
+        )
+        .is_equal_to(AutomationRunMutability::ReadOnly);
         assert_that!(
             &(!automation_admission::can_start_run(
                 &store,
@@ -3527,6 +3624,9 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
                 effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
             },
         )
         .await
@@ -3541,6 +3641,44 @@ mod tests {
             .unwrap())
         )
         .is_true();
+    }
+
+    #[tokio::test]
+    async fn active_project_names_follow_running_runs() {
+        let (_temp, store) = test_store().await;
+        let demo = get_project(&store, "demo").await.unwrap();
+        let run = create_run(
+            &store,
+            demo.id,
+            CreateRunConfig {
+                tool: AgentToolName::Codex,
+                mutability: AutomationRunMutability::ReadOnly,
+                trigger: None,
+                personality_revision_id: None,
+                effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
+                effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_that!(&(active_project_names(&store).await.unwrap()))
+            .is_equal_to(vec!["demo".to_owned()]);
+
+        finish_run(
+            &store,
+            run,
+            AgentRunStatus::Completed,
+            Some(0),
+            "Done".to_owned(),
+        )
+        .await
+        .unwrap();
+
+        assert_that!(&(active_project_names(&store).await.unwrap())).is_empty();
     }
 
     #[tokio::test]
@@ -3598,6 +3736,9 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: 90,
                 effective_concurrency_group: Some("shared-validation"),
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
             },
         )
         .await
@@ -3913,15 +4054,25 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
                 effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::next_open("ready").unwrap(),
             },
         )
         .await
         .unwrap();
         let agent_id = agent_ids::dispatch_run_agent_id(run.id);
-        claim_item(&store, "demo", &agent_id, "ready")
-            .await
-            .unwrap()
-            .unwrap();
+        item_claims::resolve_agent_run_target(
+            &store,
+            "demo",
+            run.id,
+            &agent_id,
+            &AgentLaunchTargetV1::next_open("ready").unwrap(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         update_run_launch_details(
             &store,
             run,
@@ -3936,7 +4087,6 @@ mod tests {
                 developer_instructions_path: None,
                 user_prompt_path: None,
                 log_path: None,
-                memory_event_id: None,
                 agent_model: None,
                 agent_reasoning_effort: None,
                 commit_required: false,
@@ -3998,6 +4148,9 @@ mod tests {
                 personality_revision_id: None,
                 effective_timeout_seconds: AGENT_PROCESS_TIMEOUT.as_secs(),
                 effective_concurrency_group: None,
+                run_kind: AgentRunKind::Task,
+                purpose: AgentRunPurposeV1::Ordinary,
+                launch_target: &AgentLaunchTargetV1::none(),
             },
         )
         .await

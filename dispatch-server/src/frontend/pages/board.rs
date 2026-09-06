@@ -1,37 +1,34 @@
+mod view;
+
+use view::BoardView;
+
 use crate::{
     frontend::{
         components::{
-            ActivePage, TopBar, TopBarAutomation, WorkItemStatesContext, cached_query,
-            claim_elapsed_timer, claim_source_label, encode_path, format_label, preview,
-            provide_work_item_states_context, run_status_class, selected_project_signal,
-            workspace_dock_height,
+            cached_query, encode_path, provide_work_item_states_signal, seeded_cached_query,
+            selected_project_signal,
         },
         crudkit::work_items_crudkit_config_for_view,
         live_events::{
             board_items_event_matches, item_event_matches, refetch_on_live_event,
             run_log_event_matches,
         },
-        pages::{ItemDetailContent, ItemPage, RunLogContent, RunLogPage, infer_dispatch_run_id},
-        services::{board_service, item_service, project_cache, run_service},
+        pages::{ItemDetailContent, ItemPage, RunLogContent, RunLogPage},
+        services::{board_service, item_service, run_service},
         work_item_creation::{
             CreateItemOpenRequest, CreateItemStateOption, default_state_identifier,
-            state_identifier_from_lane_filter, state_options_for_open_request,
-            state_options_from_project_states,
+            state_options_for_open_request, state_options_from_project_states,
         },
     },
     shared::view_models::{
-        AUTOMATION_BLOCKED_LABEL_KEY, AgentRunStatus, AutomationStatusView,
-        CodexAppServerStatusView, FEEDBACK_REQUESTED_LABEL_KEY, ProjectLabelView, ProjectView,
-        SwimLaneItemOrder, SwimLaneView, UiEvent, WorkItemStateView, WorkItemView, WorkspaceMode,
+        AgentRunStatus, AutomationStatusView, BoardWorkItemView, CodexAppServerStatusView,
+        ProjectLabelView, ProjectView, SwimLaneView, UiEvent, WorkItemStateView,
     },
 };
 use crudkit_leptos::{
     crud_instance::CrudInstanceContext,
     crud_instance_config::{CrudActionsPlacement, CrudBuiltinViewControls},
     crud_instance_mgr::CrudInstanceMgr,
-    crudkit_core::condition::{
-        Condition, ConditionClause, ConditionClauseValue, ConditionElement, Operator,
-    },
     crudkit_web::view::CrudView,
     prelude::*,
 };
@@ -49,7 +46,7 @@ use leptos_router::{
 };
 use leptos_use::{use_interval_fn, use_media_query};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 #[cfg(not(feature = "ssr"))]
 use time::OffsetDateTime;
 #[cfg(not(feature = "ssr"))]
@@ -59,7 +56,6 @@ const BOARD_ITEMS_REFRESH_INTERVAL_MS: u64 = 30_000;
 const BOARD_DRAWER_DEFAULT_WIDTH_PERCENT: f64 = 46.0;
 const BOARD_DRAWER_MIN_WIDTH_PERCENT: f64 = 30.0;
 const BOARD_DRAWER_MAX_WIDTH_PERCENT: f64 = 70.0;
-const BOARD_LANE_GAP_PX: f64 = 8.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BoardDrawerSelection {
@@ -315,7 +311,7 @@ pub struct BoardItemsSection {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BoardItemView {
-    pub item: WorkItemView,
+    pub item: BoardWorkItemView,
     pub run_count: usize,
     pub recent_runs: Vec<BoardRunPreview>,
 }
@@ -330,7 +326,6 @@ pub struct BoardRunPreview {
 
 #[component]
 pub fn PageBoard() -> impl IntoView {
-    let dock_height = workspace_dock_height();
     let selected_project = selected_project_signal();
     let service = board_service();
     let initial = service.cached_page_untracked(&selected_project.get_untracked());
@@ -346,110 +341,11 @@ pub fn PageBoard() -> impl IntoView {
             async move { service.load_page(selected_project).await }
         },
     );
-    let cache = project_cache();
-    cache.track(result.value, |page| &page.projects);
-    let initial_auto_commit = result
-        .value
-        .get_untracked()
-        .and_then(|page| {
-            page.selected_project_view
-                .map(|project| project.auto_commit)
-        })
-        .or_else(|| {
-            let selected = selected_project.get_untracked();
-            cache.projects().with_untracked(|projects| {
-                selected
-                    .as_ref()
-                    .and_then(|selected| projects.iter().find(|project| project.name == *selected))
-                    .map(|project| project.auto_commit)
-            })
-        })
-        .unwrap_or(false);
-    let (auto_commit, set_auto_commit) = signal(initial_auto_commit);
-    Effect::new(move |_| {
-        let page_setting = result.value.get().and_then(|page| {
-            page.selected_project_view
-                .map(|project| project.auto_commit)
-        });
-        let cached_setting = cache.projects().with(|projects| {
-            let selected = selected_project.get();
-            selected
-                .as_ref()
-                .and_then(|selected| projects.iter().find(|project| project.name == *selected))
-                .map(|project| project.auto_commit)
-        });
-        if let Some(auto_commit) = page_setting.or(cached_setting) {
-            set_auto_commit.set(auto_commit);
-        }
-    });
-    let active_project_names = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.active_project_names)
-            .unwrap_or_default()
-    });
-    let automation = Signal::derive(move || {
-        let page = result.value.get();
-        let project = page
-            .as_ref()
-            .and_then(|page| page.selected_project.clone())
-            .or_else(|| selected_project.get())?;
-        let cached_project = cache
-            .projects()
-            .get()
-            .into_iter()
-            .find(|candidate| candidate.name == project);
-        let workspace_mode = page
-            .as_ref()
-            .and_then(|page| page.selected_project_view.as_ref())
-            .map(|project| project.workspace_mode)
-            .or_else(|| cached_project.map(|project| project.workspace_mode))
-            .unwrap_or(WorkspaceMode::CurrentBranch);
-        let running = page
-            .as_ref()
-            .map(|page| {
-                page.automation_running
-                    || page
-                        .automation_status
-                        .as_ref()
-                        .is_some_and(|status| status.running_runs > 0)
-            })
-            .unwrap_or(false);
-        Some(TopBarAutomation {
-            project,
-            running,
-            workspace_mode,
-            auto_commit,
-            set_auto_commit,
-        })
-    });
-    let codex_status = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.codex_status)
-            .unwrap_or_default()
-    });
-    let topbar = view! {
-        <TopBar
-            active_project_names
-            selected_project=selected_project.into()
-            active=ActivePage::Board
-            automation
-            codex_status
-        />
-    };
     view! {
         <Title text="Dispatch"/>
         <div
             class="board-page"
-            style=move || dock_height
-                .get()
-                .map(|height| format!("--workspace-dock-height: {height}px;"))
-                .unwrap_or_default()
         >
-            {topbar}
             <main class="page-shell">
                 <For
                     each=move || result.value.get()
@@ -482,9 +378,41 @@ fn BoardContent(page: BoardPage) -> impl IntoView {
 
     if let (Some(project), Some(project_view)) = (selected_project.clone(), selected_project_view) {
         let (show_create_item_modal, set_show_create_item_modal) = signal(false);
+        let service = board_service();
+        let initial_section = BoardItemsSection {
+            items,
+            swim_lanes,
+            work_item_states,
+            label_accent_colors,
+            misconfigured_item_count,
+        };
+        let initial_section = service
+            .cached_items_untracked(&project)
+            .unwrap_or(initial_section);
+        let project_for_loader = project.clone();
+        let service_for_cache = service.clone();
+        let service_for_load = service.clone();
+        let section = seeded_cached_query(
+            Some(initial_section),
+            move || project_for_loader.clone(),
+            move |project| service_for_cache.cached_items(project),
+            move |project| {
+                let service = service_for_load.clone();
+                let project = project.clone();
+                async move { service.load_items(project).await }
+            },
+        );
+        let work_item_states = Memo::new(move |_| {
+            section.value.with(|section| {
+                section
+                    .as_ref()
+                    .map(|section| section.work_item_states.clone())
+                    .unwrap_or_default()
+            })
+        });
+        let work_item_states_context = provide_work_item_states_signal(work_item_states.into());
         let initial_create_item_state_options =
-            state_options_from_project_states(&work_item_states);
-        let work_item_states_context = provide_work_item_states_context(work_item_states);
+            state_options_from_project_states(&work_item_states_context.states.get_untracked());
         let initial_create_item_state =
             default_state_identifier(&initial_create_item_state_options);
         let (create_item_state, set_create_item_state) = signal(initial_create_item_state);
@@ -504,10 +432,8 @@ fn BoardContent(page: BoardPage) -> impl IntoView {
         let board = view! {
             <LiveBoardItems
                 project=project.clone()
-                initial_items=items
-                initial_swim_lanes=swim_lanes
-                initial_label_accent_colors=label_accent_colors
-                initial_misconfigured_item_count=misconfigured_item_count
+                section=section.value
+                refresh=section.refresh
                 open_create_item=open_create_item
             />
         };
@@ -546,53 +472,14 @@ fn BoardContent(page: BoardPage) -> impl IntoView {
 #[component]
 fn LiveBoardItems(
     project: String,
-    initial_items: Vec<BoardItemView>,
-    initial_swim_lanes: Vec<SwimLaneView>,
-    initial_label_accent_colors: BTreeMap<String, String>,
-    initial_misconfigured_item_count: i64,
+    section: ReadSignal<Option<BoardItemsSection>>,
+    refresh: Callback<()>,
     open_create_item: Callback<CreateItemOpenRequest>,
 ) -> impl IntoView + 'static {
-    let service = board_service();
-    let (items, set_items) = signal(initial_items);
-    let (swim_lanes, set_swim_lanes) = signal(initial_swim_lanes);
-    let (label_accent_colors, set_label_accent_colors) = signal(initial_label_accent_colors);
-    let work_item_states_context = use_context::<WorkItemStatesContext>()
-        .expect("work item states context should be provided before rendering board items");
-    let work_item_states = work_item_states_context.states;
-    let set_work_item_states = work_item_states_context.set_states;
-    let (misconfigured_item_count, set_misconfigured_item_count) =
-        signal(initial_misconfigured_item_count);
-    let initial = service.cached_items_untracked(&project);
-    let project_for_loader = project.clone();
-    let service_for_cache = service.clone();
-    let service_for_load = service.clone();
-    let section = cached_query(
-        initial,
-        move || project_for_loader.clone(),
-        move |project| service_for_cache.cached_items(project),
-        move |project| {
-            let service = service_for_load.clone();
-            let project = project.clone();
-            async move { service.load_items(project).await }
-        },
-    );
-    let refresh = section.refresh;
     let _poll = use_interval_fn(move || refresh.run(()), BOARD_ITEMS_REFRESH_INTERVAL_MS);
     let project_for_events = project.clone();
-    refetch_on_live_event(section.refresh, move |event| {
+    refetch_on_live_event(refresh, move |event| {
         board_items_event_matches(event, project_for_events.as_str())
-    });
-
-    Effect::new(move |_| {
-        if let Some(section) = section.value.get() {
-            set_items.set(section.items);
-            let updated_swim_lanes = section.swim_lanes;
-            let updated_work_item_states = section.work_item_states;
-            set_label_accent_colors.set(section.label_accent_colors);
-            set_swim_lanes.set(updated_swim_lanes);
-            set_work_item_states.set(updated_work_item_states);
-            set_misconfigured_item_count.set(section.misconfigured_item_count);
-        }
     });
 
     let query = use_query_map();
@@ -775,20 +662,12 @@ fn LiveBoardItems(
             )
         >
             <div class="board-inspector-board">
-                {move || {
-                    view! {
-                        <BoardView
-                            project=project.clone()
-                            items=items.get()
-                            swim_lanes=swim_lanes.get()
-                            work_item_states=work_item_states.get()
-                            label_accent_colors=label_accent_colors.get()
-                            misconfigured_item_count=misconfigured_item_count.get()
-                            open_create_item
-                            open_drawer
-                        />
-                    }
-                }}
+                <BoardView
+                    project=project.clone()
+                    section
+                    open_create_item
+                    open_drawer
+                />
             </div>
             <div class="board-inspector-slot">
                 <BoardInspectorDrawer
@@ -1275,436 +1154,6 @@ fn CreateItemModal(
                 <CrudActionsOutlet context=context action_slot=CrudActionSlot::CreatePrimary />
             </ModalFooter>
         </Modal>
-    }
-}
-
-#[component]
-fn BoardView(
-    project: String,
-    items: Vec<BoardItemView>,
-    swim_lanes: Vec<SwimLaneView>,
-    work_item_states: Vec<WorkItemStateView>,
-    label_accent_colors: BTreeMap<String, String>,
-    misconfigured_item_count: i64,
-    open_create_item: Callback<CreateItemOpenRequest>,
-    open_drawer: Callback<BoardDrawerSelection>,
-) -> impl IntoView + 'static {
-    let _ = work_item_states;
-    let lane_count = swim_lanes.len().max(1) as f64;
-    let lane_width = format!(
-        "--board-lane-width: calc({:.6}cqw - {:.3}px);",
-        100.0 / lane_count,
-        BOARD_LANE_GAP_PX * (lane_count - 1.0) / lane_count,
-    );
-    let lanes = swim_lanes
-        .into_iter()
-        .map(|lane| {
-            let label = lane.name.clone();
-            let mut lane_items = items
-                .iter()
-                .filter(|item| item_matches_condition(&item.item, &lane.filter))
-                .cloned()
-                .collect::<Vec<_>>();
-            sort_lane_items(&mut lane_items, lane.item_order);
-            let count = lane_items.len();
-            let cards = lane_cards(
-                project.clone(),
-                lane_items,
-                label_accent_colors.clone(),
-                open_drawer,
-            );
-            let create_state = state_identifier_from_lane_filter(&lane.filter);
-            let add_button = if lane.can_create_items {
-                create_state
-                    .map(|create_state| {
-                        view! {
-                            <button
-                                type="button"
-                                class="lane-add"
-                                on:click=move |_| {
-                                    open_create_item.run(CreateItemOpenRequest::SingleState(create_state.clone()))
-                                }
-                            >
-                                "+ Add"
-                            </button>
-                        }
-                        .into_any()
-                    })
-                    .unwrap_or_else(|| ().into_any())
-            } else {
-                ().into_any()
-            };
-            let edit_href = lane_edit_href(&project, lane.id);
-            let edit_label = format!("Edit {}", label);
-            view! {
-                <section class="lane">
-                    <header class="lane-header">
-                        <div class="lane-heading">
-                            <h2>{label}</h2>
-                            <span class="lane-count">{count}</span>
-                        </div>
-                        <div class="lane-actions">
-                            {add_button}
-                            <a
-                                class="lane-edit"
-                                href=edit_href
-                                title=edit_label.clone()
-                                aria-label=edit_label
-                            >
-                                "⚙"
-                            </a>
-                        </div>
-                    </header>
-                    <div class="lane-cards">{cards}</div>
-                </section>
-            }
-        })
-        .collect::<Vec<_>>();
-    let warning = if misconfigured_item_count > 0 {
-        let item_word = if misconfigured_item_count == 1 {
-            "item"
-        } else {
-            "items"
-        };
-        let verb = if misconfigured_item_count == 1 {
-            "has"
-        } else {
-            "have"
-        };
-        let message =
-            format!("{misconfigured_item_count} {item_word} {verb} an unknown or missing state.");
-
-        view! {
-            <section class="board-state-warning" role="status">
-                <strong>"State warning"</strong>
-                <span>{message}</span>
-                <a href="#work-items-admin">"Review work items"</a>
-            </section>
-        }
-        .into_any()
-    } else {
-        ().into_any()
-    };
-    view! {
-        <div class="board-stack">
-            <section class="board" style=lane_width>{lanes}</section>
-            {warning}
-        </div>
-    }
-}
-
-fn lane_cards(
-    project: String,
-    items: Vec<BoardItemView>,
-    label_accent_colors: BTreeMap<String, String>,
-    open_drawer: Callback<BoardDrawerSelection>,
-) -> Vec<AnyView> {
-    let mut rendered_groups = BTreeSet::new();
-    let mut cards = Vec::new();
-    for item in &items {
-        let Some(group) = item.item.work_group.clone() else {
-            cards.push(
-                view! {
-                    <ItemCard
-                        project=project.clone()
-                        board_item=item.clone()
-                        label_accent_colors=label_accent_colors.clone()
-                        open_drawer
-                    />
-                }
-                .into_any(),
-            );
-            continue;
-        };
-        if !rendered_groups.insert(group.id) {
-            continue;
-        }
-        let grouped_items = items
-            .iter()
-            .filter(|candidate| {
-                candidate.item.work_group.as_ref().map(|group| group.id) == Some(group.id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let group_count = grouped_items.len();
-        let group_cards = grouped_items
-            .into_iter()
-            .map(|item| {
-                view! {
-                    <ItemCard
-                        project=project.clone()
-                        board_item=item
-                        label_accent_colors=label_accent_colors.clone()
-                        open_drawer
-                    />
-                }
-            })
-            .collect::<Vec<_>>();
-        cards.push(
-            view! {
-                <section class="work-item-card-group" data-work-group-key=group.key.clone()>
-                    <header>
-                        <div>
-                            <strong>{group.name}</strong>
-                            <code>{group.key.clone()}</code>
-                        </div>
-                        <span>{format!("{group_count} in this lane")}</span>
-                    </header>
-                    <div class="work-item-card-group-items">{group_cards}</div>
-                </section>
-            }
-            .into_any(),
-        );
-    }
-    cards
-}
-
-fn lane_edit_href(project: &str, lane_id: i64) -> String {
-    format!(
-        "/project?project={}&edit_swim_lane={}#swim-lanes",
-        encode_path(project),
-        lane_id
-    )
-}
-
-fn item_matches_condition(item: &WorkItemView, condition: &Condition) -> bool {
-    match condition {
-        Condition::All(elements) => elements
-            .iter()
-            .all(|element| item_matches_condition_element(item, element)),
-        Condition::Any(elements) => elements
-            .iter()
-            .any(|element| item_matches_condition_element(item, element)),
-    }
-}
-
-fn item_matches_condition_element(item: &WorkItemView, element: &ConditionElement) -> bool {
-    match element {
-        ConditionElement::Clause(clause) => item_matches_clause(item, clause),
-        ConditionElement::Condition(condition) => item_matches_condition(item, condition),
-    }
-}
-
-fn item_matches_clause(item: &WorkItemView, clause: &ConditionClause) -> bool {
-    let key = clause.column_name.trim();
-    let label = item.labels.iter().find(|label| label.key == key);
-    let label_value = label.and_then(|label| label.value.as_deref());
-
-    match (&clause.operator, &clause.value) {
-        (Operator::Equal, ConditionClauseValue::Bool(expected)) => label.is_some() == *expected,
-        (Operator::NotEqual, ConditionClauseValue::Bool(expected)) => label.is_some() != *expected,
-        (Operator::Equal, ConditionClauseValue::String(expected)) => {
-            label_value == Some(expected.as_str())
-        }
-        (Operator::NotEqual, ConditionClauseValue::String(expected)) => {
-            label_value != Some(expected.as_str())
-        }
-        (Operator::Equal, ConditionClauseValue::Json(serde_json::Value::Null)) => {
-            label.is_some() && label_value.is_none()
-        }
-        (Operator::NotEqual, ConditionClauseValue::Json(serde_json::Value::Null)) => {
-            label.is_none() || label_value.is_some()
-        }
-        (Operator::IsIn, ConditionClauseValue::Json(serde_json::Value::Array(values))) => {
-            let Some(label_value) = label_value else {
-                return false;
-            };
-            values
-                .iter()
-                .filter_map(|value| value.as_str())
-                .any(|expected| expected == label_value)
-        }
-        _ => false,
-    }
-}
-
-fn sort_lane_items(items: &mut [BoardItemView], item_order: SwimLaneItemOrder) {
-    match item_order {
-        SwimLaneItemOrder::UpdatedAsc => items.sort_by(|left, right| {
-            left.item
-                .updated_at
-                .cmp(&right.item.updated_at)
-                .then_with(|| left.item.id.cmp(&right.item.id))
-        }),
-        SwimLaneItemOrder::CreatedDesc => items.sort_by(|left, right| {
-            right
-                .item
-                .created_at
-                .cmp(&left.item.created_at)
-                .then_with(|| right.item.id.cmp(&left.item.id))
-        }),
-        SwimLaneItemOrder::CreatedAsc => items.sort_by(|left, right| {
-            left.item
-                .created_at
-                .cmp(&right.item.created_at)
-                .then_with(|| left.item.id.cmp(&right.item.id))
-        }),
-        SwimLaneItemOrder::IdDesc => items.sort_by_key(|item| std::cmp::Reverse(item.item.id)),
-        SwimLaneItemOrder::IdAsc => items.sort_by_key(|item| item.item.id),
-        SwimLaneItemOrder::TitleAsc => items.sort_by(|left, right| {
-            left.item
-                .title
-                .to_lowercase()
-                .cmp(&right.item.title.to_lowercase())
-                .then_with(|| left.item.id.cmp(&right.item.id))
-        }),
-        SwimLaneItemOrder::TitleDesc => items.sort_by(|left, right| {
-            right
-                .item
-                .title
-                .to_lowercase()
-                .cmp(&left.item.title.to_lowercase())
-                .then_with(|| right.item.id.cmp(&left.item.id))
-        }),
-        SwimLaneItemOrder::UpdatedDesc => items.sort_by(|left, right| {
-            right
-                .item
-                .updated_at
-                .cmp(&left.item.updated_at)
-                .then_with(|| right.item.id.cmp(&left.item.id))
-        }),
-    }
-}
-
-#[component]
-fn ItemCard(
-    project: String,
-    board_item: BoardItemView,
-    label_accent_colors: BTreeMap<String, String>,
-    open_drawer: Callback<BoardDrawerSelection>,
-) -> impl IntoView + 'static {
-    let BoardItemView {
-        item,
-        run_count,
-        recent_runs,
-    } = board_item;
-    let item_id = item.id;
-    let href = format!("/projects/{}/items/{}", encode_path(&project), item.id);
-    let description = preview(&item.description);
-    let claimed = item.claimed_by.is_some();
-    let active_claim_run_id = item
-        .claim_source
-        .as_ref()
-        .map(|source| source.run_id)
-        .or_else(|| item.claimed_by.as_deref().and_then(infer_dispatch_run_id));
-    let active_claim_source = claim_source_label(item.claim_source.as_ref());
-    let active_claimed_at = item.claimed_at.clone();
-    let label_chips = item
-        .labels
-        .iter()
-        .map(|label| {
-            let label_key = label.key.clone();
-            let blocked = label.key == AUTOMATION_BLOCKED_LABEL_KEY;
-            let feedback_requested = label.key == FEEDBACK_REQUESTED_LABEL_KEY;
-            let accent_color = label_accent_colors.get(&label.key).cloned();
-            let accented = accent_color.is_some();
-            let accent_style =
-                accent_color.map(|accent_color| format!("--label-accent: {accent_color};"));
-            let label = format_label(&label.key, label.value.as_deref());
-            view! {
-                <span
-                    class="label-chip"
-                    class:blocked=blocked
-                    class:feedback=feedback_requested
-                    class:accented=accented
-                    data-label-key=label_key
-                    style=accent_style
-                >
-                    {label}
-                </span>
-            }
-        })
-        .collect::<Vec<_>>();
-    let run_links = recent_runs
-        .into_iter()
-        .map(|run| {
-            let run_id = run.id;
-            let href = format!(
-                "/projects/{}/automation/runs/{run_id}/log",
-                encode_path(&project)
-            );
-            let status = run.status.to_string();
-            let status_class = run_status_class(run.status);
-            let summary = (!run.result_summary.trim().is_empty()).then_some(run.result_summary);
-            let claim_context = (active_claim_run_id == Some(run_id)
-                && (active_claim_source.is_some() || active_claimed_at.is_some()))
-            .then(|| {
-                let source = active_claim_source.clone();
-                let elapsed = claim_elapsed_timer(active_claimed_at.clone());
-                view! {
-                    <span class="card-run-context" title="Active claim">
-                        {source.map(|source| view! {
-                            <span class="card-run-source" title="Automation source">{source}</span>
-                        })}
-                        {elapsed}
-                    </span>
-                }
-            });
-            view! {
-                <a
-                    class=format!("card-run-preview {status_class}")
-                    href=href
-                    on:click=move |event| {
-                        if intercepts_board_drawer_click(&event) {
-                            event.prevent_default();
-                            open_drawer.run(BoardDrawerSelection {
-                                item_id,
-                                run_id: Some(run_id),
-                            });
-                        }
-                    }
-                >
-                    <strong>"#" {run_id}</strong>
-                    <span class="card-run-status">{status}</span>
-                    {summary.map(|summary| view! {
-                        <span class="card-run-summary">{summary}</span>
-                    })}
-                    {claim_context}
-                </a>
-            }
-        })
-        .collect::<Vec<_>>();
-    let runs = (run_count > 0).then(|| {
-        let label = if run_count == 1 {
-            "Run 1".to_owned()
-        } else {
-            format!("Runs {run_count}")
-        };
-        view! {
-            <section class="card-runs" aria-label=label.clone()>
-                <div class="card-run-count">{label.clone()}</div>
-                <div class="card-run-previews">{run_links}</div>
-            </section>
-        }
-    });
-
-    view! {
-        <article class="card" class:claimed=claimed>
-            <a
-                class="card-main-link"
-                href=href
-                data-board-item-id=item_id
-                on:click=move |event| {
-                    if intercepts_board_drawer_click(&event) {
-                        event.prevent_default();
-                        open_drawer.run(BoardDrawerSelection {
-                            item_id,
-                            run_id: None,
-                        });
-                    }
-                }
-            >
-                <h3>{item.title}</h3>
-                <p>{description}</p>
-                <div class="card-labels">{label_chips}</div>
-            </a>
-            {runs}
-            <footer>
-                <span class="card-item-id">"#" {item_id}</span>
-                <span>{item.comment_count} " comments"</span>
-                <span>{item.updated_at}</span>
-            </footer>
-        </article>
     }
 }
 

@@ -19,8 +19,7 @@ workflow state, automation launch, and the HTTP API. The standalone CLI is an AP
 - Knowledge parsing, ignore handling, graph derivation, lexical retrieval, and structural checks are deterministic
   mechanics. They remain independent of model execution and transport.
 - `dispatch-server` owns knowledge jobs separately from work items and item automation, reusing shared agent execution,
-  logs, cancellation, and resource accounting. [Knowledge System](knowledge.md) defines the replacement contract;
-  current legacy components are subject to [the transition plan](knowledge-transition.md).
+  logs, cancellation, and resource accounting. [Knowledge System](knowledge.md) owns the knowledge contract.
 - Launched agents never receive a database path and never use a database-opening CLI.
 
 ## Crate Responsibilities
@@ -70,9 +69,15 @@ input/destination freshness and scope, and applies or presents the resulting dif
 settings. [Knowledge automation](knowledge-automation.md) owns scheduling, publication, and recovery. Git is optional
 and background knowledge jobs do not stage, commit, reset, or push.
 
-The current `dispatch-knowledge-core` crate contains the legacy signed-store implementation. The replacement may reuse a
-small deterministic library, but retaining its existing signing, persistence, record codecs, or crate decomposition is
-not a requirement.
+Deterministic knowledge operations live in `dispatch-server/src/backend/knowledge/`: `discovery` owns filesystem
+participation, `documents` parses Markdown/frontmatter and derives relationships, and the parent module binds queries to
+registered working copies. There is one production consumer, the server, so a separate `dispatch-knowledge-core` crate
+adds no useful boundary. These modules have no model execution dependency. Extract a library only
+when a real second consumer needs the same behavior; do not introduce a family of speculative knowledge crates.
+
+`dispatch-types` owns the transport DTOs, and `dispatch-api-client` and `dispatch-cli` relay them. Knowledge jobs
+belong to a separate server service using the shared agent runtime. Deterministic file operations have no dependency on
+agent execution.
 
 Cross-route browser caches are focused services provided through Leptos context and contain typed backend DTOs, not
 rendered views, complete page response objects, or serialized payloads. Persistence through browser local storage is a
@@ -102,11 +107,10 @@ writes and manages bundles, revisions, scheduling, routing diagnostics, and anal
 
 ## Storage
 
-Dispatch currently persists operational state in SQLite through server-owned repository and service boundaries that
+Dispatch persists operational state in SQLite through server-owned repository and service boundaries that
 remain database-engine-neutral. The default database path is under the user's Dispatch data directory, while repository
-development recipes pass `.dispatch/dispatch.sqlite3` explicitly. A later PostgreSQL cutover must migrate and verify
-durable state, including identities, counts, history, relationships, and provenance; it never reconstructs or discards
-that state from the workspace.
+development recipes pass `.dispatch/dispatch.sqlite3` explicitly. Storage-engine changes preserve durable state, including identities, counts, history,
+relationships, and provenance; they never reconstruct or discard that state from the workspace.
 
 Database writes must flow through server services. This keeps workflow checks in one process and prevents launched
 agents from bypassing ownership, state, project, or version rules.
@@ -121,6 +125,12 @@ SeaORM and CrudKit persistence records mirror the current operational database a
 configuration as text. These records are storage types, not workflow-domain types. Server services decode and validate
 them at the persistence boundary before applying policy, starting automation, rendering UI data, or returning API views.
 Invalid persisted values produce contextual service errors rather than panics or implicit fallback behavior.
+
+Automation rule policy is owned by `backend/automation_triggers/policy.rs`. Operator requests and bundle imports share
+its typed validation, while CrudKit writes and persisted-rule reads share its storage decoder and the same validation.
+Postcondition structure is validated by the postcondition domain. Bundle handling owns portable manifest structure and
+references; ordinary automation validation has no dependency on bundle validation or database lookups. Project-scoped
+personality resolution remains a service operation.
 
 Codex runtime state is Dispatch-owned local state under the user's Dispatch data directory. The shared managed Codex
 home stores login/status state. Each project gets a project Codex home under that shared tree for generated

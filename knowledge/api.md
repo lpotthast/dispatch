@@ -32,9 +32,8 @@ GET  /api/projects/{project}/settings
 `GET /api/projects` is server-scoped and returns all available projects as a name-sorted `Vec<ProjectView>`.
 
 Knowledge transport is project-scoped under `/api/projects/{project}/knowledge/...` and implements the
-replacement [agent interface](knowledge-agents.md), [job behavior](knowledge-automation.md),
-and [user actions](knowledge-ui.md). The current binary's old signed endpoints are a transition concern, not an
-additional target contract.
+[agent interface](knowledge-agents.md), [job behavior](knowledge-automation.md),
+and [user actions](knowledge-ui.md).
 
 Immediate resources expose the root, documents, graph neighborhoods, lexical search, impact mapping, and structural
 checks. They never start an agent. Document reads bind to a registered working copy; edits, moves, and deletion use
@@ -52,9 +51,10 @@ metadata, excluded content, stale input/destination, denied operation, unavailab
 preserve an actionable human explanation. A local document error must not turn unrelated reads into a global store
 failure. The service reports the actual publication outcome even if a later index refresh or notification fails.
 
-Shared request and response types remain in `dispatch-types`. Exact endpoint DTO fields are chosen during implementation
-of these behaviors; no signer-trust, transaction-history, typed canonical mutation, or per-query receipt API is
-required.
+Shared request and response types live in `dispatch-types`. Immediate knowledge reads expose `root`, `node`,
+`documents`, `graph`, `search`, and `check` resources. Graph responses contain bounded summaries and typed relationships,
+without document bodies. UI saves submit a path, original content fingerprint, and complete Markdown; a stale
+fingerprint rejects the write and preserves the draft. File content is the sole document authority.
 
 Work item endpoints:
 
@@ -150,6 +150,11 @@ revision list/restore/analytics, evaluation history, routing explanation, and bu
 validate/diff/apply/export/list/remove. This prefix defines supported authority separation and does not add
 authentication in the local-first release.
 
+Rule create and update endpoints enforce the same policy constraints as bundle imports and CrudKit writes. They reject
+incompatible effect-specific fields, invalid produced-item configuration, invalid model/effort overrides, invalid
+execution limits, and malformed postconditions before changing the rule or recording a revision. The
+[data model](data-model.md) owns these shared policy constraints.
+
 Bundle apply reconciles only objects managed by the same project and bundle key, rejects unmanaged name conflicts,
 deletes rules before personalities, and commits the complete diff transactionally against an expected current hash.
 Installed-bundle list returns only bundle keys whose latest history entry is `applied`, with managed object counts and
@@ -195,7 +200,7 @@ item-change notifications for both item detail views.
 
 The former project-memory routes are not public API. Any retained legacy memory is considered only during an explicit
 migration; it does not silently become accepted knowledge. Historical data handling
-follows [Knowledge replacement](knowledge-transition.md).
+follows [Knowledge integrity](knowledge-integrity.md).
 
 ## CrudKit Endpoints
 

@@ -104,9 +104,7 @@ impl fmt::Display for ProjectHookError {
 impl std::error::Error for ProjectHookError {}
 
 #[derive(Debug, Default)]
-pub struct ProjectHookData {
-    previous_memory: Option<String>,
-}
+pub struct ProjectHookData;
 
 #[derive(Debug)]
 pub enum ProjectCrudRepositoryError {
@@ -370,17 +368,6 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
         .await
         .map_err(|err| ProjectHookError(err.to_string()))
         .map_err(HookError::Internal)?;
-        if !model.memory.trim().is_empty() {
-            projects::snapshot_current_memory_event(
-                &context.store,
-                &model.name,
-                "initial",
-                projects::ProjectChangeSource::User,
-            )
-            .await
-            .map_err(|err| ProjectHookError(err.to_string()))
-            .map_err(HookError::Internal)?;
-        }
         events::publish_project_list_changed();
         events::publish_project_changed(&model.name);
         Ok(data)
@@ -392,12 +379,16 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
         _update_request: &UpdateRequest,
         _context: &ProjectResourceContext,
         _request: RequestContext<NoAuth>,
-        mut data: ProjectHookData,
+        data: ProjectHookData,
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
-        data.previous_memory = Some(existing.memory.clone());
         if update_model.path.is_some() {
             update_model.path = Some(normalize_crud_project_path(update_model.path.take())?);
         }
+        update_model.knowledge_directory = projects::validate_knowledge_directory_update(
+            existing,
+            &update_model.knowledge_directory,
+        )
+        .map_err(|err| project_unprocessable_error(err.to_string()))?;
         update_model.default_agent_model =
             projects::normalize_optional(update_model.default_agent_model.take());
         projects::validate_agent_model(update_model.default_agent_model.as_deref())
@@ -479,21 +470,6 @@ impl CrudLifetime<CrudProjectResource> for ProjectLifetime {
         data: ProjectHookData,
     ) -> Result<ProjectHookData, HookError<Self::Error>> {
         refresh_crud_project_path_status(context, model).await?;
-        if data
-            .previous_memory
-            .as_deref()
-            .is_some_and(|previous| previous != model.memory)
-        {
-            projects::snapshot_current_memory_event(
-                &context.store,
-                &model.name,
-                "set",
-                projects::ProjectChangeSource::User,
-            )
-            .await
-            .map_err(|err| ProjectHookError(err.to_string()))
-            .map_err(HookError::Internal)?;
-        }
         events::publish_project_list_changed();
         events::publish_project_changed(&model.name);
         Ok(data)
@@ -1631,7 +1607,7 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
             normalize_required_schedule(std::mem::take(&mut create_model.schedule))?;
         let activation = parse_activation(&create_model.activation)?;
         let effect = parse_effect(&create_model.effect)?;
-        automation_triggers::validate_extended_trigger_configuration(
+        automation_triggers::decode_trigger_policy(
             effect,
             create_model.produced_work_spec_json.as_deref(),
             create_model.postconditions_json.as_deref(),
@@ -1713,7 +1689,7 @@ impl CrudLifetime<CrudAutomationTriggerResource> for AutomationTriggerLifetime {
         let previous_activation = parse_activation(&existing.activation)?;
         let activation = parse_activation(&update_model.activation)?;
         let effect = parse_effect(&update_model.effect)?;
-        automation_triggers::validate_extended_trigger_configuration(
+        automation_triggers::decode_trigger_policy(
             effect,
             update_model.produced_work_spec_json.as_deref(),
             update_model.postconditions_json.as_deref(),
@@ -2865,6 +2841,52 @@ mod tests {
         .unwrap();
         let project_id = project_id(&store, "demo").await.unwrap();
         (temp, store, project_id)
+    }
+
+    #[tokio::test]
+    async fn automation_crud_hooks_reject_incompatible_policy_on_create_and_update() {
+        let (_temp, store, project_id) = test_store().await;
+        let existing = automation_trigger::Entity::find()
+            .filter(automation_trigger::Column::ProjectId.eq(project_id))
+            .one(store.db().as_ref())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut fields = serde_json::to_value(&existing).unwrap();
+        fields["produced_work_spec_json"] = serde_json::Value::String("{}".to_owned());
+        let context = AutomationTriggerResourceContext { store };
+        let mut create = serde_json::from_value(fields.clone()).unwrap();
+        let error = AutomationTriggerLifetime::before_create(
+            &mut create,
+            &context,
+            RequestContext::unauthenticated(),
+            AutomationTriggerHookData::default(),
+        )
+        .await
+        .unwrap_err();
+        match error {
+            HookError::UnprocessableEntity { reason } => {
+                assert_that!(&reason).contains("only valid for produce_work");
+            }
+            other => panic!("expected invalid automation policy, got {other:?}"),
+        }
+        let mut update = serde_json::from_value(fields).unwrap();
+        let error = AutomationTriggerLifetime::before_update(
+            &existing,
+            &mut update,
+            &UpdateRequest { condition: None },
+            &context,
+            RequestContext::unauthenticated(),
+            AutomationTriggerHookData::default(),
+        )
+        .await
+        .unwrap_err();
+        match error {
+            HookError::UnprocessableEntity { reason } => {
+                assert_that!(&reason).contains("only valid for produce_work");
+            }
+            other => panic!("expected invalid automation policy, got {other:?}"),
+        }
     }
 
     #[test]

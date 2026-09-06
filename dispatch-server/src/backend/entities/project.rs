@@ -42,6 +42,13 @@ pub struct Model {
     pub path: Option<String>,
 
     #[ck_create_model(exclude)]
+    pub knowledge_directory: String,
+
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub knowledge_source_lineage_id: Option<String>,
+
+    #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]
     pub path_exists: bool,
 
@@ -53,6 +60,8 @@ pub struct Model {
     #[ck_update_model(exclude)]
     pub system_prompt: String,
 
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
     pub memory: String,
 
     #[ck_create_model(exclude)]

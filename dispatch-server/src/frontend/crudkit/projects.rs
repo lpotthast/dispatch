@@ -71,6 +71,13 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
                 },
             ),
             Header::showing(
+                ReadProjectField::KnowledgeDirectory,
+                HeaderOptions {
+                    display_name: "Knowledge".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
                 ReadProjectField::PathExists,
                 HeaderOptions {
                     display_name: "Path status".into(),
@@ -145,13 +152,6 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
                         ..Default::default()
                     },
                 ),
-                Elem::create_field(
-                    CreateProjectField::Memory,
-                    FieldOptions {
-                        label: Some(Label::new("Memory")),
-                        ..Default::default()
-                    },
-                ),
             ],
         }))]),
         elements: vec![Elem::Enclosing(Enclosing::None(Group {
@@ -180,9 +180,9 @@ fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
                     },
                 ),
                 Elem::field(
-                    ProjectField::Memory,
+                    ProjectField::KnowledgeDirectory,
                     FieldOptions {
-                        label: Some(Label::new("Memory")),
+                        label: Some(Label::new("Knowledge directory")),
                         ..Default::default()
                     },
                 ),

@@ -1,4 +1,5 @@
 set dotenv-load := true
+set positional-arguments
 
 database := env_var_or_default("DISPATCH_DATABASE", env_var_or_default("HOME", ".") / ".dispatch/dispatch.sqlite3")
 bind := env_var_or_default("DISPATCH_BIND", "127.0.0.1:4000")
@@ -13,7 +14,7 @@ default:
     @just --list
 
 icons *args:
-    ./scripts/derive-icons.sh {{args}}
+    ./scripts/derive-icons.sh "$@"
 
 fmt:
     cargo fmt --manifest-path "{{server_manifest}}"
@@ -54,13 +55,16 @@ test:
     cargo test --manifest-path "{{types_manifest}}" --doc
 
 browser-test:
-    cargo test --manifest-path "{{server_manifest}}" --test browser_test -- --nocapture
+    cargo test --manifest-path "{{server_manifest}}" --features browser-tests --test browser_test -- --nocapture
+
+browser-test-signals:
+    cargo test --manifest-path "{{server_manifest}}" --features browser-tests --test browser_test_signals -- --nocapture --test-threads=1
 
 browser-test-visible:
-    BROWSER_TEST_VISIBLE=1 cargo test --manifest-path "{{server_manifest}}" --test browser_test -- --nocapture
+    BROWSER_TEST_VISIBLE=1 cargo test --manifest-path "{{server_manifest}}" --features browser-tests --test browser_test -- --nocapture
 
 browser-test-pause:
-    BROWSER_TEST_VISIBLE=1 BROWSER_TEST_PAUSE=1 cargo test --manifest-path "{{server_manifest}}" --test browser_test -- --nocapture
+    BROWSER_TEST_VISIBLE=1 BROWSER_TEST_PAUSE=1 cargo test --manifest-path "{{server_manifest}}" --features browser-tests --test browser_test -- --nocapture
 
 clippy:
     cargo clippy --manifest-path "{{server_manifest}}" --all-targets -- -D warnings
@@ -74,13 +78,15 @@ verify: fmt test clippy
 verify-browser: verify browser-test
 
 run *args:
-    DISPATCH_DEVELOPMENT=1 cargo run --manifest-path "{{server_manifest}}" -- {{args}}
+    DISPATCH_DEVELOPMENT=1 cargo run --manifest-path "{{server_manifest}}" -- "$@"
 
 cli *args:
-    cargo run -q --manifest-path "{{cli_manifest}}" -- {{args}}
+    cargo run -q --manifest-path "{{cli_manifest}}" -- "$@"
+
+alias dispatch := cli
 
 operator *args:
-    cargo run -q --manifest-path "{{operator_manifest}}" -- {{args}}
+    cargo run -q --manifest-path "{{operator_manifest}}" -- "$@"
 
 serve:
     DISPATCH_DEVELOPMENT=1 cargo leptos --manifest-path "{{server_manifest}}" serve -- --database "{{database}}" --bind "{{bind}}"

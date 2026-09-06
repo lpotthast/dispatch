@@ -1,11 +1,13 @@
 # Dispatch Agent Instructions
 
-`dispatch` is available on `PATH` and is the source of truth for work state, labels, comments, and project memory. Dispatch prepares `DISPATCH_API_URL`, `DISPATCH_PROJECT`, `DISPATCH_AGENT_ID`, and, for work-consuming runs, `DISPATCH_CLAIMED_ITEM_ID`.
+`dispatch` is available on `PATH` and is the source of truth for work state, labels, comments, and run state. Knowledge is ordinary Markdown in the assigned working copy. Dispatch prepares `DISPATCH_API_URL`, `DISPATCH_PROJECT`, `DISPATCH_AGENT_ID`, `DISPATCH_AGENT_RUN_ID`, and, for work-consuming runs, `DISPATCH_CLAIMED_ITEM_ID`.
 
 ## Live Work Contract
 
 - Treat the claimed item as the current work contract.
 - At the start of claimed-item work, run `dispatch item show --json` and `dispatch comment list --json` before making decisions. The prompt contains a launch-time snapshot, but users may edit the item or add comments while the run is starting.
+- Read the injected project overview and immediate child summaries, then navigate relevant or uncertain branches with `dispatch knowledge node show` and lexical `search`. If no root is available, inspect visible documents and source and report the gap.
+- Reuse reading within the task. Refresh affected context after edits and extend discovery when source evidence expands the relevant scope. A handoff can describe what was read and what remains uncertain without a receipt.
 - Commands taking an optional `[item-id]` default to `DISPATCH_CLAIMED_ITEM_ID`. Omit the item id for normal claimed-item work. Use an explicit id only when intentionally addressing another item.
 - `item list`, `item create`, and `item claim` never use the claimed-item default.
 - Use `--project`, `--agent`, or `--api-url` only when deliberately overriding the prepared context.
@@ -22,8 +24,10 @@ dispatch item request-feedback [item-id] --body "..." [--json]
 dispatch item update [item-id] [--title "..."] [--description "..."] [--state <state-label>] [--expect-version N] [--json]
 dispatch label list [item-id] [--json]
 dispatch label add [item-id] --key "..." [--value "..."] [--expect-version N] [--json]
-dispatch memory show [--json]
-dispatch memory append --body "..." [--json]
+dispatch knowledge root [--json]
+dispatch knowledge node show <id-or-path> [--json]
+dispatch knowledge search --text "..." [--json]
+dispatch knowledge check [<id-or-path>] [--json]
 ```
 
 Use `dispatch --help` or `dispatch <command> --help` for less common operations instead of guessing command syntax.
@@ -48,5 +52,8 @@ Dispatch may put a run-specific `git` shim first on `PATH`. Use ordinary `git ..
 
 - You may add, update, or delete work-item labels when that clarifies routing, status, priority, environment, or follow-up needs.
 - Move an item between swim-lanes with `dispatch item update --state <state-label>`; do not manipulate the reserved `state` label through generic label commands.
-- Project memory is Dispatch-owned, not Codex memory. Use `dispatch memory append` for durable discoveries and `dispatch memory set` only for intentional full rewrites. Memory changes create attributed events.
+- Knowledge describes accepted system behavior in present tense, including accepted design that code does not yet satisfy. Never change a requirement merely to match a bug. Keep implementation gaps, progress, TODOs, rollout steps, and work-item references in task reports or planning files outside knowledge. This applies to every knowledge document, including migration and acceptance documents; no transition-note exception exists.
+- Authorized mutating runs edit Markdown and frontmatter directly alongside code, API comments, and README examples. Read-only runs report findings or propose patches in their output; they do not edit project files.
+- Update the lowest affected explanation, then check its broader parents and relevant dependents. Leave summaries unchanged when they remain correct. Before finishing, review documentation impact and report any gaps.
+- Navigation, lexical search, and structural checks are immediate and do not start a model. Ignore controls govern knowledge participation. Do not edit legacy `.dispatch/` metadata or derived indexes.
 - Keep progress and terminal reports concise, concrete, and explicit about verification that was not run.

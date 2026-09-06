@@ -11,7 +11,7 @@ use clap::Parser;
 use rootcause::Result;
 
 use crate::backend::{
-    server,
+    metrics, server,
     storage::{Store, default_database_path},
 };
 
@@ -37,6 +37,7 @@ fn default_bind_addr() -> SocketAddr {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_init::init();
+    metrics::install()?;
 
     let args = ServerArgs::parse();
     let database = args.database.unwrap_or_else(default_database_path);

@@ -252,6 +252,7 @@ mod tests {
         ProjectSettingsView {
             id: 1,
             project_id: 1,
+            knowledge_directory: "knowledge".to_owned(),
             workspace_mode: WorkspaceMode::GitWorktree,
             max_code_edit_agents: 2,
             max_read_only_agents: 2,
@@ -297,6 +298,8 @@ mod tests {
         assert_that!(&(env.get("DISPATCH_PROJECT").map(String::as_str))).is_equal_to(Some("demo"));
         assert_that!(&(env.get("DISPATCH_AGENT_ID").map(String::as_str)))
             .is_equal_to(Some("dispatch-run-1"));
+        assert_that!(&(env.get("DISPATCH_AGENT_RUN_ID").map(String::as_str)))
+            .is_equal_to(Some("1"));
         assert_that!(&(env.get("DISPATCH_CLAIMED_ITEM_ID").map(String::as_str)))
             .is_equal_to(Some("42"));
         assert_that!(&(env.get("DISPATCH_API_URL").map(String::as_str)))

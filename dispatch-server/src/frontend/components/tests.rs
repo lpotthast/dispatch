@@ -230,11 +230,11 @@ fn command_presentation_unwraps_shell_and_recognizes_conservative_file_reads() {
         .is_equal_to(Some("dispatch-server/src/file with spaces.rs"));
 
     assert_that!(
-        &(command_presentation("cat -- design/ui.md")
+        &(command_presentation("cat -- knowledge/ui.md")
             .exploring_file
             .as_deref())
     )
-    .is_equal_to(Some("design/ui.md"));
+    .is_equal_to(Some("knowledge/ui.md"));
     assert_that!(
         &(command_presentation("head -n 20 dispatch-server/src/lib.rs")
             .exploring_file

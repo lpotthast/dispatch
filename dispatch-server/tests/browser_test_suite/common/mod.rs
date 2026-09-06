@@ -6,7 +6,7 @@ mod modals;
 mod requests;
 mod run_fixtures;
 
-pub(crate) use app::DispatchTestApp;
+pub(crate) use app::{DispatchTestApp, DispatchTestAppStartError, write_signal_probe};
 pub(crate) use browser::*;
 pub(crate) use fixtures::*;
 pub(crate) use layout::*;

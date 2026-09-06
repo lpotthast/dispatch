@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     backend::{
-        automation_admission,
         automation_revisions::{self, RevisionActor},
         automation_triggers,
         entities::{
@@ -20,9 +19,8 @@ use crate::{
             automation_trigger::{self, AutomationTrigger, AutomationTriggerActiveModel},
             personality::{self, Personality, PersonalityActiveModel},
         },
-        events, item_labels, personalities, projects, prompt_text,
+        events, personalities, projects, prompt_text,
         storage::{Store, utc_now},
-        work_item_creation::{CreateWorkItem, CreateWorkItemPlan},
     },
     shared::view_models::{
         AutomationActivation, AutomationBundleApplyView, AutomationBundleDiffView,
@@ -87,21 +85,8 @@ pub(crate) fn validate_yaml(yaml: &str) -> Result<ValidatedBundle> {
             bail!("duplicate automation name '{}'", rule.name);
         }
         rule.prompt_markdown = canonicalize_markdown(&rule.prompt_markdown)?;
-        automation_triggers::validate_trigger_configuration(
-            &rule.name,
-            rule.activation,
-            rule.effect,
-            &rule.schedule,
-            rule.selector.as_ref(),
-            &rule.prompt_markdown,
-        )?;
-        automation_admission::validate_execution_policy(&rule.execution)?;
-        projects::validate_agent_model_reasoning_effort(
-            "automation model override",
-            rule.execution.model.as_deref(),
-            "automation reasoning-effort override",
-            rule.execution.reasoning_effort,
-        )?;
+        automation_triggers::validate_rule_input(rule)
+            .context_with(|| format!("invalid automations[{index}] configuration"))?;
         if rule.effect == AutomationEffect::ConsumeWork {
             let personality = rule.personality.as_deref().ok_or_else(|| {
                 report!("automations[{index}].personality is required for consume_work")
@@ -109,28 +94,9 @@ pub(crate) fn validate_yaml(yaml: &str) -> Result<ValidatedBundle> {
             if !personality_keys.contains(personality) {
                 bail!("automations[{index}].personality references unknown key '{personality}'");
             }
-            if rule.produced_work.is_some() {
-                bail!("automations[{index}].produced_work is only valid for produce_work");
-            }
-        } else {
-            if rule.personality.is_some()
-                || rule.selector.is_some()
-                || rule.postconditions.is_some()
-            {
-                bail!("automations[{index}] has consume-work fields on a produce_work automation");
-            }
-            if let Some(spec) = &rule.produced_work {
-                CreateWorkItemPlan::new(CreateWorkItem {
-                    title: spec.title.clone().unwrap_or_else(|| rule.name.clone()),
-                    description: rule.prompt_markdown.clone(),
-                    state: spec.state.clone(),
-                    agent_model_override: spec.agent_model_override.clone(),
-                    agent_reasoning_effort_override: spec.agent_reasoning_effort_override,
-                    initial_labels: spec.initial_labels.clone(),
-                })?;
-            }
+        } else if rule.personality.is_some() || rule.selector.is_some() {
+            bail!("automations[{index}] has consume-work fields on a produce_work automation");
         }
-        validate_postconditions(rule, index)?;
     }
     manifest
         .personalities
@@ -148,64 +114,6 @@ pub(crate) fn validate_yaml(yaml: &str) -> Result<ValidatedBundle> {
         manifest,
         manifest_hash,
     })
-}
-
-fn validate_postconditions(rule: &AutomationRuleInput, index: usize) -> Result<()> {
-    let Some(postconditions) = &rule.postconditions else {
-        return Ok(());
-    };
-    validate_postcondition_configuration(
-        postconditions,
-        &format!("automations[{index}].postconditions"),
-    )
-}
-
-pub(crate) fn validate_postcondition_configuration(
-    postconditions: &crate::shared::view_models::AutomationPostconditions,
-    path: &str,
-) -> Result<()> {
-    if postconditions.any_of.is_empty() {
-        bail!("{path}.any_of cannot be empty");
-    }
-    for (outcome_index, outcome) in postconditions.any_of.iter().enumerate() {
-        for label in &outcome.labels {
-            item_labels::normalize_key(label.key.clone())
-                .context_with(|| format!("{path}.any_of[{outcome_index}] has invalid label"))?;
-        }
-        if let Some(created) = &outcome.created_items {
-            validate_created_item_assertion(
-                created,
-                &format!("{path}.any_of[{outcome_index}].created_items"),
-            )?;
-        }
-        for (assertion_index, created) in outcome.created_item_assertions.iter().enumerate() {
-            validate_created_item_assertion(
-                created,
-                &format!(
-                    "{path}.any_of[{outcome_index}].created_item_assertions[{assertion_index}]"
-                ),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_created_item_assertion(
-    created: &crate::shared::view_models::CreatedItemAssertion,
-    path: &str,
-) -> Result<()> {
-    if created.count.is_some() && (created.at_least.is_some() || created.at_most.is_some()) {
-        bail!("{path}.count cannot be combined with at_least or at_most");
-    }
-    if let (Some(minimum), Some(maximum)) = (created.at_least, created.at_most)
-        && minimum > maximum
-    {
-        bail!("{path} has at_least greater than at_most");
-    }
-    if let Some(selector) = &created.selector {
-        crate::backend::label_conditions::validate_condition(selector)?;
-    }
-    Ok(())
 }
 
 pub(crate) async fn diff_yaml(

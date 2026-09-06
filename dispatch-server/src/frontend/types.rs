@@ -277,7 +277,7 @@ pub mod project {
         pub id: i64,
         pub display_name: String,
         pub path: String,
-        pub memory: String,
+        pub knowledge_directory: String,
         pub workspace_mode: String,
         pub max_code_edit_agents: i64,
         pub max_read_only_agents: i64,
@@ -303,7 +303,6 @@ pub mod project {
         pub path: String,
         pub default_agent_model: Option<String>,
         pub default_agent_reasoning_effort: Option<String>,
-        pub memory: String,
     }
 
     impl Default for CreateProject {
@@ -316,7 +315,6 @@ pub mod project {
                 default_agent_reasoning_effort: Some(
                     AgentReasoningEffort::highest().as_storage().to_owned(),
                 ),
-                memory: String::new(),
             }
         }
     }
@@ -328,10 +326,10 @@ pub mod project {
         pub name: String,
         pub display_name: String,
         pub path: Option<String>,
+        pub knowledge_directory: String,
         pub path_exists: bool,
         pub path_checked_at: Option<String>,
         pub system_prompt: String,
-        pub memory: String,
         pub workspace_mode: String,
         pub max_code_edit_agents: i64,
         pub max_read_only_agents: i64,
@@ -357,7 +355,7 @@ pub mod project {
                 id: read.id,
                 display_name: read.display_name,
                 path: read.path.unwrap_or_default(),
-                memory: read.memory,
+                knowledge_directory: read.knowledge_directory,
                 workspace_mode: read.workspace_mode,
                 max_code_edit_agents: read.max_code_edit_agents,
                 max_read_only_agents: read.max_read_only_agents,

@@ -14,6 +14,7 @@ use rootcause::{Result, prelude::*};
 
 use crate::{
     backend::{
+        agent_run_launch::AgentLaunchTargetV1,
         agent_tools, api,
         app_state::AppState,
         automation::{self, StartAutomation},
@@ -108,12 +109,6 @@ pub(crate) fn router(
         .route(
             "/projects/{project}/system-prompt/events/clear",
             post(clear_system_prompt_history),
-        )
-        .route("/projects/{project}/memory", post(update_memory))
-        .route("/projects/{project}/memory/append", post(append_memory))
-        .route(
-            "/projects/{project}/memory/events/clear",
-            post(clear_memory_history),
         )
         .route("/projects/{project}/settings", post(update_settings))
         .route(
@@ -311,7 +306,6 @@ struct CreateProjectForm {
     default_agent_model: Option<String>,
     default_agent_reasoning_effort: Option<String>,
     system_prompt: Option<String>,
-    memory: Option<String>,
 }
 
 async fn create_project(
@@ -321,7 +315,6 @@ async fn create_project(
     let display_name = form.display_name.filter(|value| !value.trim().is_empty());
     let path = PathBuf::from(form.path);
     let system_prompt = form.system_prompt.filter(|value| !value.trim().is_empty());
-    let memory = form.memory.filter(|value| !value.trim().is_empty());
     let default_agent_reasoning_effort =
         match parse_optional_reasoning_effort(form.default_agent_reasoning_effort) {
             Ok(value) => value,
@@ -336,7 +329,7 @@ async fn create_project(
             default_agent_model: form.default_agent_model,
             default_agent_reasoning_effort,
             system_prompt,
-            memory,
+            memory: None,
         },
     )
     .await
@@ -423,66 +416,9 @@ async fn clear_system_prompt_history(
     }
 }
 
-async fn update_memory(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-    Form(form): Form<ProjectTextForm>,
-) -> Response {
-    match projects::update_memory_with_source(
-        &state.store,
-        &project,
-        form.body,
-        projects::ProjectChangeSource::User,
-    )
-    .await
-    {
-        Ok(_) => Redirect::to(&format!(
-            "/project?project={}",
-            urlencoding::encode(&project)
-        ))
-        .into_response(),
-        Err(err) => error_response(err).await,
-    }
-}
-
-async fn append_memory(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-    Form(form): Form<ProjectTextForm>,
-) -> Response {
-    match projects::append_memory_with_source(
-        &state.store,
-        &project,
-        form.body,
-        projects::ProjectChangeSource::User,
-    )
-    .await
-    {
-        Ok(_) => Redirect::to(&format!(
-            "/project?project={}",
-            urlencoding::encode(&project)
-        ))
-        .into_response(),
-        Err(err) => error_response(err).await,
-    }
-}
-
-async fn clear_memory_history(
-    Extension(state): Extension<AppState>,
-    Path(project): Path<String>,
-) -> Response {
-    match projects::clear_memory_history(&state.store, &project).await {
-        Ok(_) => Redirect::to(&format!(
-            "/project?project={}",
-            urlencoding::encode(&project)
-        ))
-        .into_response(),
-        Err(err) => error_response(err).await,
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct UpdateSettingsForm {
+    knowledge_directory: Option<String>,
     workspace_mode: String,
     max_code_edit_agents: i64,
     max_read_only_agents: Option<i64>,
@@ -550,6 +486,7 @@ async fn update_settings(
         &state.store,
         &project,
         UpdateProjectSettings {
+            knowledge_directory: form.knowledge_directory,
             workspace_mode: Some(workspace_mode),
             max_code_edit_agents: Some(form.max_code_edit_agents),
             max_read_only_agents: form.max_read_only_agents,
@@ -832,12 +769,22 @@ async fn start_automation(
     };
 
     let result = if is_one_shot {
+        let launch_target = match form.item_id {
+            Some(item_id) => match items::get_item(&state.store, &project, item_id).await {
+                Ok(item) => match AgentLaunchTargetV1::specific(item.id, item.version) {
+                    Ok(target) => target,
+                    Err(err) => return error_response(err).await,
+                },
+                Err(err) => return error_response(err).await,
+            },
+            None => AgentLaunchTargetV1::none(),
+        };
         automation::start_one_automation_run_in_background(
             state.store.clone(),
             project.clone(),
             StartAutomation {
                 tool,
-                work_item_id: form.item_id,
+                launch_target,
                 work_item_selector: None,
                 extra_prompt: form.prompt.filter(|value| !value.trim().is_empty()),
                 mutability,

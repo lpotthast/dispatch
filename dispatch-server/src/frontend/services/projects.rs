@@ -37,8 +37,6 @@ pub(crate) struct ProjectService {
     update_auto_commit: ServiceRequest<(String, bool), ()>,
     update_system_prompt: ServiceRequest<(String, String), ()>,
     clear_system_prompt_history: ServiceRequest<String, HistoryClearResult>,
-    update_memory: ServiceRequest<(String, String), ()>,
-    clear_memory_history: ServiceRequest<String, HistoryClearResult>,
     update_commit_policy: ServiceRequest<(String, CommitPolicyUpdate), ()>,
     open_workspace: ServiceRequest<(String, String), ()>,
     cleanup_worktrees: ServiceRequest<String, ()>,
@@ -57,8 +55,6 @@ struct ProjectRequests {
     update_auto_commit: ServiceRequest<(String, bool), ()>,
     update_system_prompt: ServiceRequest<(String, String), ()>,
     clear_system_prompt_history: ServiceRequest<String, HistoryClearResult>,
-    update_memory: ServiceRequest<(String, String), ()>,
-    clear_memory_history: ServiceRequest<String, HistoryClearResult>,
     update_commit_policy: ServiceRequest<(String, CommitPolicyUpdate), ()>,
     open_workspace: ServiceRequest<(String, String), ()>,
     cleanup_worktrees: ServiceRequest<String, ()>,
@@ -75,8 +71,6 @@ impl ProjectService {
             update_auto_commit: requests.update_auto_commit,
             update_system_prompt: requests.update_system_prompt,
             clear_system_prompt_history: requests.clear_system_prompt_history,
-            update_memory: requests.update_memory,
-            clear_memory_history: requests.clear_memory_history,
             update_commit_policy: requests.update_commit_policy,
             open_workspace: requests.open_workspace,
             cleanup_worktrees: requests.cleanup_worktrees,
@@ -114,12 +108,6 @@ impl ProjectService {
                 }),
                 clear_system_prompt_history: ServiceRequest::new(|project| {
                     Box::pin(clear_system_prompt_history(project))
-                }),
-                update_memory: ServiceRequest::new(|(project, body)| {
-                    Box::pin(update_memory(project, body))
-                }),
-                clear_memory_history: ServiceRequest::new(|project| {
-                    Box::pin(clear_memory_history(project))
                 }),
                 update_commit_policy: ServiceRequest::new(|(project, update)| {
                     Box::pin(update_commit_policy(project, update))
@@ -263,21 +251,6 @@ impl ProjectService {
         self.clear_system_prompt_history.execute(project).await
     }
 
-    pub(crate) async fn update_memory(
-        &self,
-        project: String,
-        body: String,
-    ) -> Result<(), ServerFnError> {
-        self.update_memory.execute((project, body)).await
-    }
-
-    pub(crate) async fn clear_memory_history(
-        &self,
-        project: String,
-    ) -> Result<HistoryClearResult, ServerFnError> {
-        self.clear_memory_history.execute(project).await
-    }
-
     pub(crate) async fn update_commit_policy(
         &self,
         project: String,
@@ -401,28 +374,6 @@ async fn clear_system_prompt_history(project: String) -> Result<HistoryClearResu
 }
 
 #[server(prefix = "/leptos")]
-async fn update_memory(project: String, body: String) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    projects::update_memory_with_source(
-        &state.store,
-        &project,
-        body,
-        projects::ProjectChangeSource::User,
-    )
-    .await
-    .map(|_| ())
-    .map_err(|err| ServerFnError::new(err.to_string()))
-}
-
-#[server(prefix = "/leptos")]
-async fn clear_memory_history(project: String) -> Result<HistoryClearResult, ServerFnError> {
-    let state = app_state::app_state();
-    projects::clear_memory_history(&state.store, &project)
-        .await
-        .map_err(|err| ServerFnError::new(err.to_string()))
-}
-
-#[server(prefix = "/leptos")]
 async fn update_commit_policy(
     project: String,
     update: CommitPolicyUpdate,
@@ -464,7 +415,7 @@ async fn cleanup_worktrees(project: String) -> Result<(), ServerFnError> {
     automation::cleanup_worktrees(&state.store, &project, None)
         .await
         .map(|_| ())
-        .map_err(|err| ServerFnError::new(err.to_string()))
+        .map_err(|error| ServerFnError::new(error.to_string()))
 }
 
 pub(crate) fn provide_project_cache() {
@@ -489,12 +440,14 @@ impl ProjectCache {
         value: ReadSignal<Option<T>>,
         projects: impl for<'a> Fn(&'a T) -> &'a [ProjectView] + Copy + 'static,
     ) where
-        T: Clone + Send + Sync + 'static,
+        T: Send + Sync + 'static,
     {
         Effect::new(move |_| {
-            if let Some(value) = value.get() {
-                self.store(projects(&value));
-            }
+            value.with(|value| {
+                if let Some(value) = value {
+                    self.store(projects(value));
+                }
+            });
         });
     }
 
@@ -576,11 +529,11 @@ mod tests {
             name: name.to_owned(),
             display_name: name.to_owned(),
             path: None,
+            knowledge_directory: "knowledge".to_owned(),
             path_exists: false,
             path_checked_at: None,
             git_status: None,
             system_prompt: String::new(),
-            memory: String::new(),
             workspace_mode: WorkspaceMode::CurrentBranch,
             max_code_edit_agents: 1,
             max_read_only_agents: 1,

@@ -1,14 +1,11 @@
 use crate::{
     frontend::{
-        components::{
-            ActivePage, TopBar, TriggerRunsPanel, cached_query, encode_path,
-            selected_project_signal,
-        },
+        components::{TriggerRunsPanel, cached_query, encode_path, selected_project_signal},
         crudkit::{
             AutomationTableKind, AutomationTriggersCrudkitInstance, PersonalitiesPanel,
             selected_trigger_id_from_context,
         },
-        services::{CommitPolicyUpdate, automation_service, project_cache, project_service},
+        services::{CommitPolicyUpdate, automation_service, project_service},
     },
     shared::view_models::{
         AgentGitCommandPolicy, AutomationEvaluationView, AutomationRevisionView,
@@ -59,50 +56,28 @@ pub fn PageTriggers() -> impl IntoView {
             async move { service.load_page(selected_project).await }
         },
     );
-    project_cache().track(result.value, |page| &page.projects);
     let initial_auto_commit = result
         .value
-        .get_untracked()
-        .and_then(|page| page.settings.map(|settings| settings.auto_commit))
+        .with_untracked(|page| {
+            page.as_ref()
+                .and_then(|page| page.settings.as_ref())
+                .map(|settings| settings.auto_commit)
+        })
         .unwrap_or(false);
     let (auto_commit, set_auto_commit) = signal(initial_auto_commit);
     Effect::new(move |_| {
-        if let Some(value) = result
-            .value
-            .get()
-            .and_then(|page| page.settings.map(|settings| settings.auto_commit))
-        {
+        if let Some(value) = result.value.with(|page| {
+            page.as_ref()
+                .and_then(|page| page.settings.as_ref())
+                .map(|settings| settings.auto_commit)
+        }) {
             set_auto_commit.set(value);
         }
     });
-    let active_project_names = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.active_project_names)
-            .unwrap_or_default()
-    });
-    let codex_status = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.codex_status)
-            .unwrap_or_default()
-    });
-    let topbar = view! {
-        <TopBar
-            active_project_names
-            selected_project=selected_project.into()
-            active=ActivePage::Triggers
-            automation=Signal::derive(|| None)
-            codex_status
-        />
-    };
 
     view! {
         <Title text="Automation"/>
         <div>
-            {topbar}
             <main class="page-shell triggers-page">
                 <section class="page-heading">
                     <h1>"Automation"</h1>

@@ -23,6 +23,7 @@ use leptos_use::{
 #[derive(Clone, Copy)]
 struct LiveEventContext {
     latest_event: ReadSignal<Option<UiEvent>>,
+    sequence: ReadSignal<u64>,
 }
 
 #[cfg(any(not(feature = "ssr"), test))]
@@ -35,9 +36,13 @@ enum ProjectDeletionSelectionAction {
 #[component]
 pub(crate) fn LiveEventsProvider() -> impl IntoView {
     let (latest_event, set_latest_event) = signal(None::<UiEvent>);
-    provide_context(LiveEventContext { latest_event });
+    let (sequence, set_sequence) = signal(0_u64);
+    provide_context(LiveEventContext {
+        latest_event,
+        sequence,
+    });
     #[cfg(feature = "ssr")]
-    let _ = set_latest_event;
+    let _ = (set_latest_event, set_sequence);
 
     #[cfg(not(feature = "ssr"))]
     {
@@ -67,6 +72,7 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
                 && let Ok(event) = serde_json::from_str::<UiEvent>(&raw)
             {
                 set_latest_event.set(Some(event));
+                set_sequence.update(|sequence| *sequence = sequence.wrapping_add(1));
             }
         });
         Effect::new(move |_| {
@@ -96,8 +102,8 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
                 ProjectDeletionSelectionAction::Resolve => {
                     let project_service = project_service.clone();
                     let navigate = navigate.clone();
-                    let query = query.clone();
-                    let params = params.clone();
+                    let query = query;
+                    let params = params;
                     leptos::task::spawn_local(async move {
                         let Ok(current_project_id) =
                             project_service.current_project_id(project.clone()).await
@@ -124,14 +130,14 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
                 }
             }
         });
-        return view! {
+        view! {
             <span
                 hidden
                 aria-hidden="true"
                 data-live-events-state=move || ready_state.get().to_string().to_ascii_lowercase()
             />
         }
-        .into_any();
+        .into_any()
     }
 
     #[cfg(feature = "ssr")]
@@ -162,12 +168,22 @@ pub(crate) fn refetch_on_live_event(
     should_refetch: impl Fn(&UiEvent) -> bool + 'static,
 ) {
     if let Some(context) = use_context::<LiveEventContext>() {
+        let mut seen = context.sequence.get_untracked();
         Effect::new(move |_| {
-            if let Some(event) = context.latest_event.get()
-                && should_refetch(&event)
-            {
-                refresh.run(());
+            let sequence = context.sequence.get();
+            if sequence == seen {
+                return;
             }
+            seen = sequence;
+            // Route changes must not replay a retained event or subscribe this effect to
+            // every signal read by the event predicate.
+            untrack(|| {
+                if let Some(event) = context.latest_event.get_untracked()
+                    && should_refetch(&event)
+                {
+                    refresh.run(());
+                }
+            });
         });
     }
 }
@@ -208,14 +224,14 @@ pub(crate) fn codex_event_matches(event: &UiEvent) -> bool {
     )
 }
 
-pub(crate) fn projects_page_event_matches(event: &UiEvent) -> bool {
+pub(crate) fn top_bar_event_matches(event: &UiEvent) -> bool {
     matches!(
         event,
         UiEvent::ProjectListChanged { .. }
             | UiEvent::ProjectChanged { .. }
             | UiEvent::ProjectDeleted { .. }
             | UiEvent::AutomationChanged { .. }
-            | UiEvent::CodexStatusChanged { .. }
+            | UiEvent::AgentRunChanged { .. }
     )
 }
 
@@ -227,7 +243,6 @@ pub(crate) fn project_page_event_matches(event: &UiEvent, project: Option<&str>)
                 | UiEvent::ProjectChanged { .. }
                 | UiEvent::ProjectDeleted { .. }
                 | UiEvent::SystemPromptChanged { .. }
-                | UiEvent::MemoryChanged { .. }
         )
 }
 
@@ -237,17 +252,6 @@ pub(crate) fn api_docs_event_matches(event: &UiEvent) -> bool {
         UiEvent::ProjectListChanged { .. }
             | UiEvent::ProjectChanged { .. }
             | UiEvent::ProjectDeleted { .. }
-            | UiEvent::CodexStatusChanged { .. }
-    )
-}
-
-pub(crate) fn runs_page_event_matches(event: &UiEvent) -> bool {
-    matches!(
-        event,
-        UiEvent::ProjectListChanged { .. }
-            | UiEvent::ProjectChanged { .. }
-            | UiEvent::ProjectDeleted { .. }
-            | UiEvent::CodexStatusChanged { .. }
     )
 }
 
@@ -264,7 +268,6 @@ pub(crate) fn item_event_matches(
         | UiEvent::ProjectChanged { .. }
         | UiEvent::ProjectDeleted { .. }
         | UiEvent::AutomationChanged { .. }
-        | UiEvent::CodexStatusChanged { .. }
         | UiEvent::AgentToolChanged { .. } => true,
         UiEvent::WorkItemChanged {
             item_id: changed_item_id,
@@ -285,13 +288,41 @@ pub(crate) fn item_event_matches(
         UiEvent::AgentRunChanged { item_id: None, .. }
         | UiEvent::AgentOutputChanged { item_id: None, .. }
         | UiEvent::SystemPromptChanged { .. }
-        | UiEvent::MemoryChanged { .. }
+        | UiEvent::CodexStatusChanged { .. }
         | UiEvent::SwimLaneChanged { .. } => false,
         UiEvent::WorkItemStateChanged { .. } | UiEvent::LabelKeyChanged { .. } => true,
     }
 }
 
 pub(crate) fn run_log_event_matches(
+    event: &UiEvent,
+    project: Option<&str>,
+    run_id: Option<i64>,
+) -> bool {
+    if run_detail_event_matches(event, project, run_id) {
+        return true;
+    }
+    if !event_scopes_named_project(event, project) {
+        return false;
+    }
+    match event {
+        UiEvent::ProjectListChanged { .. }
+        | UiEvent::ProjectChanged { .. }
+        | UiEvent::ProjectDeleted { .. }
+        | UiEvent::AutomationChanged { .. }
+        | UiEvent::AgentToolChanged { .. } => true,
+        UiEvent::AgentRunChanged { .. } | UiEvent::AgentOutputChanged { .. } => false,
+        UiEvent::WorkItemChanged { .. }
+        | UiEvent::CommentChanged { .. }
+        | UiEvent::SystemPromptChanged { .. }
+        | UiEvent::CodexStatusChanged { .. }
+        | UiEvent::SwimLaneChanged { .. }
+        | UiEvent::WorkItemStateChanged { .. }
+        | UiEvent::LabelKeyChanged { .. } => false,
+    }
+}
+
+pub(crate) fn run_detail_event_matches(
     event: &UiEvent,
     project: Option<&str>,
     run_id: Option<i64>,
@@ -308,19 +339,7 @@ pub(crate) fn run_log_event_matches(
             run_id: changed_run_id,
             ..
         } => Some(*changed_run_id) == run_id,
-        UiEvent::ProjectListChanged { .. }
-        | UiEvent::ProjectChanged { .. }
-        | UiEvent::ProjectDeleted { .. }
-        | UiEvent::AutomationChanged { .. }
-        | UiEvent::CodexStatusChanged { .. }
-        | UiEvent::AgentToolChanged { .. } => true,
-        UiEvent::WorkItemChanged { .. }
-        | UiEvent::CommentChanged { .. }
-        | UiEvent::SystemPromptChanged { .. }
-        | UiEvent::MemoryChanged { .. }
-        | UiEvent::SwimLaneChanged { .. }
-        | UiEvent::WorkItemStateChanged { .. }
-        | UiEvent::LabelKeyChanged { .. } => false,
+        _ => false,
     }
 }
 
@@ -341,10 +360,7 @@ pub(crate) fn runs_section_event_matches(event: &UiEvent, project: &str) -> bool
     event_scopes_named_project(event, Some(project))
         && matches!(
             event,
-            UiEvent::AutomationChanged { .. }
-                | UiEvent::AgentRunChanged { .. }
-                | UiEvent::AgentOutputChanged { .. }
-                | UiEvent::CodexStatusChanged { .. }
+            UiEvent::AutomationChanged { .. } | UiEvent::AgentRunChanged { .. }
         )
 }
 
@@ -359,7 +375,6 @@ fn event_project(event: &UiEvent) -> Option<&str> {
         | UiEvent::SystemPromptChanged { project, .. }
         | UiEvent::WorkItemChanged { project, .. }
         | UiEvent::CommentChanged { project, .. }
-        | UiEvent::MemoryChanged { project, .. }
         | UiEvent::SwimLaneChanged { project, .. }
         | UiEvent::WorkItemStateChanged { project, .. }
         | UiEvent::LabelKeyChanged { project, .. }
@@ -377,9 +392,9 @@ mod tests {
     use super::{
         ProjectDeletionSelectionAction, api_docs_event_matches, board_items_event_matches,
         codex_event_matches, event_scopes_named_project, item_event_matches,
-        project_deletion_selection_action, project_page_event_matches, projects_page_event_matches,
-        resolved_project_was_deleted, run_log_event_matches, runs_page_event_matches,
-        runs_section_event_matches, trigger_runs_event_matches,
+        project_deletion_selection_action, project_page_event_matches,
+        resolved_project_was_deleted, run_detail_event_matches, run_log_event_matches,
+        runs_section_event_matches, top_bar_event_matches, trigger_runs_event_matches,
     };
     use crate::shared::view_models::UiEvent;
     use assertr::prelude::*;
@@ -454,14 +469,6 @@ mod tests {
             timestamp: timestamp(),
             project: project.to_owned(),
             item_id,
-        }
-    }
-
-    fn memory_changed(project: &str) -> UiEvent {
-        UiEvent::MemoryChanged {
-            sequence: 6,
-            timestamp: timestamp(),
-            project: project.to_owned(),
         }
     }
 
@@ -552,12 +559,18 @@ mod tests {
     }
 
     #[test]
-    fn projects_page_refreshes_for_project_lifecycle_and_shell_events() {
-        assert_that!(&(projects_page_event_matches(&project_list_changed()))).is_true();
-        assert_that!(&(projects_page_event_matches(&project_changed(DEMO_PROJECT)))).is_true();
-        assert_that!(&(projects_page_event_matches(&automation_changed(DEMO_PROJECT)))).is_true();
-        assert_that!(&(projects_page_event_matches(&codex_status_changed()))).is_true();
-        assert_that!(&(!projects_page_event_matches(&agent_tool_changed()))).is_true();
+    fn top_bar_refreshes_for_project_lifecycle_and_automation_events() {
+        assert_that!(&(top_bar_event_matches(&project_list_changed()))).is_true();
+        assert_that!(&(top_bar_event_matches(&project_changed(DEMO_PROJECT)))).is_true();
+        assert_that!(&(top_bar_event_matches(&automation_changed(DEMO_PROJECT)))).is_true();
+        assert_that!(top_bar_event_matches(&agent_run_changed(
+            DEMO_PROJECT,
+            42,
+            Some(7)
+        )))
+        .is_true();
+        assert_that!(&(top_bar_event_matches(&codex_status_changed()))).is_false();
+        assert_that!(&(!top_bar_event_matches(&agent_tool_changed()))).is_true();
     }
 
     #[test]
@@ -567,7 +580,6 @@ mod tests {
             project_changed(DEMO_PROJECT),
             project_deleted(DEMO_PROJECT, 1),
             system_prompt_changed(DEMO_PROJECT),
-            memory_changed(DEMO_PROJECT),
         ] {
             assert_that!(&(project_page_event_matches(&event, Some(DEMO_PROJECT)))).is_true();
         }
@@ -575,32 +587,17 @@ mod tests {
             project_changed(OTHER_PROJECT),
             project_deleted(OTHER_PROJECT, 2),
             system_prompt_changed(OTHER_PROJECT),
-            memory_changed(OTHER_PROJECT),
         ] {
             assert_that!(&(!project_page_event_matches(&event, Some(DEMO_PROJECT)))).is_true();
         }
     }
 
     #[test]
-    fn api_docs_and_runs_pages_refresh_for_shell_context_events() {
+    fn api_docs_page_refreshes_for_shell_context_events() {
         assert_that!(&(api_docs_event_matches(&project_list_changed()))).is_true();
         assert_that!(&(api_docs_event_matches(&project_changed(DEMO_PROJECT)))).is_true();
-        assert_that!(&(api_docs_event_matches(&codex_status_changed()))).is_true();
+        assert_that!(&(api_docs_event_matches(&codex_status_changed()))).is_false();
         assert_that!(&(!api_docs_event_matches(&agent_tool_changed()))).is_true();
-
-        assert_that!(&(runs_page_event_matches(&project_list_changed()))).is_true();
-        assert_that!(&(runs_page_event_matches(&project_changed(DEMO_PROJECT)))).is_true();
-        assert_that!(&(runs_page_event_matches(&codex_status_changed()))).is_true();
-        assert_that!(&(!runs_page_event_matches(&agent_tool_changed()))).is_true();
-    }
-
-    #[test]
-    fn runs_page_shell_ignores_live_run_events() {
-        assert_that!(&(!runs_page_event_matches(&automation_changed(DEMO_PROJECT)))).is_true();
-        assert_that!(&(!runs_page_event_matches(&agent_run_changed(DEMO_PROJECT, 42, Some(7)))))
-            .is_true();
-        assert_that!(&(!runs_page_event_matches(&agent_output_changed(DEMO_PROJECT, 42, Some(7)))))
-            .is_true();
     }
 
     #[test]
@@ -610,7 +607,7 @@ mod tests {
         assert_that!(&(item_event_matches(&agent_tool_changed(), Some(DEMO_PROJECT), Some(7))))
             .is_true();
         assert_that!(&(item_event_matches(&codex_status_changed(), Some(DEMO_PROJECT), Some(7))))
-            .is_true();
+            .is_false();
     }
 
     #[test]
@@ -748,7 +745,7 @@ mod tests {
         assert_that!(
             &(run_log_event_matches(&codex_status_changed(), Some(DEMO_PROJECT), Some(42)))
         )
-        .is_true();
+        .is_false();
     }
 
     #[test]
@@ -769,6 +766,27 @@ mod tests {
             ))
         )
         .is_true();
+    }
+
+    #[test]
+    fn embedded_run_detail_ignores_page_shell_events() {
+        for event in [
+            project_list_changed(),
+            project_changed(DEMO_PROJECT),
+            codex_status_changed(),
+            agent_tool_changed(),
+        ] {
+            assert_that!(&(!run_detail_event_matches(&event, Some(DEMO_PROJECT), Some(42),)))
+                .is_true();
+        }
+
+        for event in [
+            agent_run_changed(DEMO_PROJECT, 42, Some(7)),
+            agent_output_changed(DEMO_PROJECT, 42, Some(7)),
+        ] {
+            assert_that!(&(run_detail_event_matches(&event, Some(DEMO_PROJECT), Some(42),)))
+                .is_true();
+        }
     }
 
     #[test]
@@ -815,10 +833,6 @@ mod tests {
                 Some(DEMO_PROJECT),
                 Some(42)
             ))
-        )
-        .is_true();
-        assert_that!(
-            &(!run_log_event_matches(&memory_changed(DEMO_PROJECT), Some(DEMO_PROJECT), Some(42)))
         )
         .is_true();
         assert_that!(
@@ -897,8 +911,6 @@ mod tests {
         for event in [
             automation_changed(DEMO_PROJECT),
             agent_run_changed(DEMO_PROJECT, 42, Some(7)),
-            agent_output_changed(DEMO_PROJECT, 42, Some(7)),
-            codex_status_changed(),
         ] {
             assert_that!(&(runs_section_event_matches(&event, DEMO_PROJECT))).is_true();
             assert_that!(&(trigger_runs_event_matches(&event, DEMO_PROJECT))).is_true();
@@ -908,6 +920,8 @@ mod tests {
             automation_changed(OTHER_PROJECT),
             agent_run_changed(OTHER_PROJECT, 42, Some(7)),
             agent_output_changed(OTHER_PROJECT, 42, Some(7)),
+            agent_output_changed(DEMO_PROJECT, 42, Some(7)),
+            codex_status_changed(),
             work_item_changed(DEMO_PROJECT, 7),
         ] {
             assert_that!(&(!runs_section_event_matches(&event, DEMO_PROJECT))).is_true();

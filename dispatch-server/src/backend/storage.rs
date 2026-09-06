@@ -5,7 +5,9 @@ use std::{
 };
 
 use rootcause::{Result, prelude::*};
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
+};
 use sea_orm_migration::MigratorTrait;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -20,6 +22,21 @@ pub struct Store {
 
 impl Store {
     pub async fn open(path: PathBuf) -> Result<Self> {
+        Self::open_with_connection_limit(path, None).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn open_with_max_connections(
+        path: PathBuf,
+        max_connections: u32,
+    ) -> Result<Self> {
+        Self::open_with_connection_limit(path, Some(max_connections)).await
+    }
+
+    async fn open_with_connection_limit(
+        path: PathBuf,
+        max_connections: Option<u32>,
+    ) -> Result<Self> {
         let path = absolute_path(path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).context_with(|| {
@@ -28,7 +45,11 @@ impl Store {
         }
 
         let url = sqlite_url(&path);
-        let db = Database::connect(&url)
+        let mut options = ConnectOptions::new(url);
+        if let Some(max_connections) = max_connections {
+            options.max_connections(max_connections);
+        }
+        let db = Database::connect(options)
             .await
             .context_with(|| format!("failed to open database {}", path.display()))?;
         db.execute(Statement::from_string(
@@ -99,9 +120,13 @@ fn absolute_path(path: PathBuf) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
+mod migration_tests;
+
+#[cfg(test)]
 mod tests {
     use assertr::prelude::*;
     use sea_orm::{ConnectionTrait, Statement};
+    use sea_orm_migration::MigratorTrait;
     use tempfile::TempDir;
 
     use crate::backend::migrations::{
@@ -257,9 +282,19 @@ mod tests {
             .unwrap();
         }
 
-        // Step through label keys, the Board-preview index, work groups, and workflow support
-        // before rolling back the role-separated prompt migration itself.
-        Migrator::down(&db, Some(5)).await.unwrap();
+        Migrator::down(
+            &db,
+            Some(
+                migration_tests::migration_count_to_roll_back_through(
+                    &db,
+                    "m20260710_000037_separate_automation_run_inputs",
+                )
+                .await
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
 
         let rows = db
             .query_all(Statement::from_string(
@@ -551,7 +586,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_that!(&(rows.len())).is_equal_to(5);
+        assert_that!(&(rows.len())).is_equal_to(7);
         let area = rows
             .iter()
             .find(|row| row.try_get::<String>("", "label_key").unwrap() == "area")
@@ -559,18 +594,21 @@ mod tests {
         assert_that!(&(area.try_get::<i64>("", "persistent").unwrap())).is_equal_to(0);
         assert_that!(&(area.try_get::<i64>("", "built_in").unwrap())).is_equal_to(0);
         assert_that!(&(area.try_get::<i64>("", "usage_count").unwrap())).is_equal_to(1);
-        for key in [
-            "state",
-            "dispatch:claimed-from-state",
-            "dispatch:automation-blocked",
-            "dispatch:feedback-requested",
+        for (key, expected_built_in) in [
+            ("state", 1),
+            ("dispatch:claimed-from-state", 1),
+            ("dispatch:automation-blocked", 1),
+            ("dispatch:feedback-requested", 1),
+            ("dispatch:knowledge-maintenance", 0),
+            ("dispatch:knowledge-drift", 0),
         ] {
             let built_in = rows
                 .iter()
                 .find(|row| row.try_get::<String>("", "label_key").unwrap() == key)
                 .unwrap();
             assert_that!(&(built_in.try_get::<i64>("", "persistent").unwrap())).is_equal_to(1);
-            assert_that!(&(built_in.try_get::<i64>("", "built_in").unwrap())).is_equal_to(1);
+            assert_that!(&(built_in.try_get::<i64>("", "built_in").unwrap()))
+                .is_equal_to(expected_built_in);
         }
     }
 
@@ -612,7 +650,19 @@ mod tests {
             ("id".to_owned(), 1),
         ]);
 
-        Migrator::down(db.as_ref(), Some(2)).await.unwrap();
+        Migrator::down(
+            db.as_ref(),
+            Some(
+                migration_tests::migration_count_to_roll_back_through(
+                    db.as_ref(),
+                    "m20260716_000040_add_agent_run_board_preview_index",
+                )
+                .await
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
         let removed = db
             .query_one(Statement::from_string(
                 DbBackend::Sqlite,
@@ -699,6 +749,20 @@ mod tests {
             "m20260714_000039_add_work_item_groups",
             "m20260716_000040_add_agent_run_board_preview_index",
             "m20260726_000041_add_label_keys",
+            "m20260802_000042_add_knowledge_system_operational_state",
+            "m20260904_000043_add_project_knowledge_directory",
+            "m20260904_000044_migrate_projects_to_newest_gpt_model",
+            "m20260904_000045_add_knowledge_operational_foundations",
+            "m20260904_000046_generalize_knowledge_source_views",
+            "m20260905_000047_add_knowledge_cycle_lifecycle",
+            "m20260905_000048_add_knowledge_execution_fencing",
+            "m20260905_000049_support_knowledge_agent_runs",
+            "m20260905_000050_add_knowledge_inventory_impact",
+            "m20260905_000051_add_knowledge_evidence_proposals",
+            "m20260905_000052_add_knowledge_mutation_operations",
+            "m20260905_000053_add_knowledge_mutation_binding",
+            "m20260905_000054_harden_knowledge_mutation_operations",
+            "m20260905_000055_retire_legacy_knowledge",
         ];
 
         assert_that!(&(names.as_slice())).is_equal_to(expected.as_slice());

@@ -433,6 +433,6 @@ async fn assert_top_nav_order(driver: &WebDriver) -> Result<(), Report> {
     }
     let labels = label_parts.join("|");
     assert_that!(labels)
-        .is_equal_to("Board|Project|Automation|Runs|Projects|System|API".to_owned());
+        .is_equal_to("Board|Project|Knowledge|Automation|Runs|Projects|System|API".to_owned());
     Ok(())
 }

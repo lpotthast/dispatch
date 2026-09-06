@@ -1,8 +1,8 @@
 use crate::{
     frontend::{
-        components::{ActivePage, TopBar, cached_query, encode_path},
+        components::{cached_query, encode_path},
         live_events::{item_event_matches, refetch_on_live_event},
-        services::{item_service, project_cache},
+        services::item_service,
     },
     shared::view_models::{
         AgentRunView, CodexAppServerStatusView, CommentView, ProjectLabelView, ProjectView,
@@ -32,20 +32,20 @@ pub struct ItemPage {
 #[component]
 pub fn PageItem() -> impl IntoView {
     let params = use_params_map();
-    let project = params.read_untracked().get("project");
-    let item_id = params
-        .read_untracked()
-        .get("item_id")
-        .and_then(|value| value.parse::<i64>().ok());
-    let project_for_loader = project.clone();
-    let project_for_events = project.clone();
+    let project = Memo::new(move |_| params.read().get("project"));
+    let item_id = Memo::new(move |_| {
+        params
+            .read()
+            .get("item_id")
+            .and_then(|value| value.parse::<i64>().ok())
+    });
     let service = item_service();
-    let initial = service.cached_page_untracked(&project, item_id);
+    let initial = service.cached_page_untracked(&project.get_untracked(), item_id.get_untracked());
     let service_for_cache = service.clone();
     let service_for_load = service.clone();
     let result = cached_query(
         initial,
-        move || (project_for_loader.clone(), item_id),
+        move || (project.get(), item_id.get()),
         move |(project, item_id)| service_for_cache.cached_page(project, *item_id),
         move |(project, item_id)| {
             let service = service_for_load.clone();
@@ -53,49 +53,27 @@ pub fn PageItem() -> impl IntoView {
             async move { service.load_page(project, item_id).await }
         },
     );
-    project_cache().track(result.value, |page| &page.projects);
     refetch_on_live_event(result.refresh, move |event| {
-        item_event_matches(event, project_for_events.as_deref(), item_id)
+        item_event_matches(event, project.get().as_deref(), item_id.get())
     });
     let (interactive, set_interactive) = signal(false);
     Effect::new(move |_| set_interactive.set(true));
-    let active_project_names = Signal::derive(move || {
-        result
-            .value
+    let board_href = move || {
+        project
             .get()
-            .map(|page| page.active_project_names)
-            .unwrap_or_default()
-    });
-    let codex_status = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.codex_status)
-            .unwrap_or_default()
-    });
-    let topbar = view! {
-        <TopBar
-            active_project_names
-            selected_project=Signal::derive({
-                let project = project.clone();
-                move || project.clone()
-            })
-            active=ActivePage::Board
-            automation=Signal::derive(|| None)
-            codex_status
-        />
+            .as_deref()
+            .map(|project| format!("/?project={}", encode_path(project)))
+            .unwrap_or_else(|| "/".to_owned())
     };
-    let board_href = project
-        .as_deref()
-        .map(|project| format!("/?project={}", encode_path(project)))
-        .unwrap_or_else(|| "/".to_owned());
-    let fallback_title = item_id
-        .map(|item_id| format!("#{item_id}"))
-        .unwrap_or_else(|| "Work item".to_owned());
+    let fallback_title = move || {
+        item_id
+            .get()
+            .map(|item_id| format!("#{item_id}"))
+            .unwrap_or_else(|| "Work item".to_owned())
+    };
     view! {
         <Title text="Dispatch"/>
         <div>
-            {topbar}
             <main class="page-shell item-page">
                 {move || {
                     result
@@ -107,8 +85,8 @@ pub fn PageItem() -> impl IntoView {
                         .unwrap_or_else(|| {
                         view! {
                             <section class="item-header">
-                                <a class="item-board-link" href=board_href.clone()>"Board"</a>
-                                <h1>{fallback_title.clone()}</h1>
+                                <a class="item-board-link" href=board_href>"Board"</a>
+                                <h1>{fallback_title}</h1>
                             </section>
                         }
                         .into_any()
@@ -844,7 +822,7 @@ mod content {
         project: String,
         item: WorkItemView,
         label: WorkItemLabelView,
-        work_item_states: ReadSignal<Vec<WorkItemStateView>>,
+        work_item_states: Signal<Vec<WorkItemStateView>>,
         refresh: Callback<()>,
         interactive: ReadSignal<bool>,
     ) -> impl IntoView + 'static {

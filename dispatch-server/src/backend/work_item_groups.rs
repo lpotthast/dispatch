@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rootcause::{Result, prelude::*};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, TransactionTrait,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, FromQueryResult, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
 };
 
 use crate::{
@@ -59,16 +59,27 @@ pub(crate) async fn list_groups(
         .await
         .context("failed to list work groups")?;
     let counts = WorkItem::find()
+        .select_only()
+        .column(work_item::Column::WorkGroupId)
+        .column_as(work_item::Column::Id.count(), "item_count")
         .filter(work_item::Column::ProjectId.eq(project_id))
+        .filter(work_item::Column::WorkGroupId.is_not_null())
+        .group_by(work_item::Column::WorkGroupId)
+        .into_model::<WorkGroupItemCount>()
         .all(store.db().as_ref())
         .await
         .context("failed to count grouped work items")?
         .into_iter()
-        .filter_map(|item| item.work_group_id)
-        .fold(BTreeMap::<i64, u64>::new(), |mut counts, group_id| {
-            *counts.entry(group_id).or_default() += 1;
-            counts
-        });
+        .map(|count| {
+            Ok((
+                count.work_group_id,
+                count
+                    .item_count
+                    .try_into()
+                    .context("work-group item count cannot be negative")?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     Ok(groups
         .into_iter()
         .map(|group| {
@@ -76,6 +87,12 @@ pub(crate) async fn list_groups(
             group_view(group, count)
         })
         .collect())
+}
+
+#[derive(FromQueryResult)]
+struct WorkGroupItemCount {
+    work_group_id: i64,
+    item_count: i64,
 }
 
 pub(crate) async fn create_group(
@@ -155,17 +172,22 @@ pub(crate) async fn assign_items(
         .await
         .context("failed to load work group")?
         .ok_or_else(|| report!("work group '{group_key}' does not exist in this project"))?;
-    let now = utc_now();
-    let mut changed_ids = Vec::new();
-    for item_id in &item_ids {
-        let item = work_items::get(&txn, project_id, *item_id).await?;
-        if item.work_group_id == Some(group.id) {
-            continue;
-        }
-        if let Some(existing_group_id) = item.work_group_id {
+    let items = work_items::get_many(&txn, project_id, item_ids).await?;
+    for (item_id, item) in &items {
+        if let Some(existing_group_id) = item.work_group_id
+            && existing_group_id != group.id
+        {
             bail!(
                 "item {item_id} already belongs to work group {existing_group_id}; remove it before assigning another group"
             );
+        }
+    }
+
+    let now = utc_now();
+    let mut changed_ids = Vec::new();
+    for (item_id, item) in items {
+        if item.work_group_id == Some(group.id) {
+            continue;
         }
         let version = item.version;
         let mut active: WorkItemActiveModel = item.into();
@@ -179,13 +201,13 @@ pub(crate) async fn assign_items(
         work_item_events::record_event_with_attribution_in_tx(
             &txn,
             project_id,
-            Some(*item_id),
+            Some(item_id),
             WorkItemEventType::ItemUpdated,
             &format!("Assigned to work group {group_key}"),
             attribution.event(),
         )
         .await?;
-        changed_ids.push(*item_id);
+        changed_ids.push(item_id);
     }
     let item_count = WorkItem::find()
         .filter(work_item::Column::ProjectId.eq(project_id))

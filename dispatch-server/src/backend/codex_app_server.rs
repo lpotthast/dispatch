@@ -15,7 +15,7 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -42,12 +42,14 @@ use tokio_process_tools::{
 
 use crate::{
     backend::{
-        agent_tools, events,
+        agent_tools, codex_log_storage, events,
+        process_sessions::{CodexMaintenanceAdmissionRejection, ProcessSessionRegistry},
         storage::{Store, dispatch_home_dir, utc_now},
     },
     shared::view_models::{
         AgentSandboxMode, AgentToolName, CodexAppServerStatusView, CodexAuthSetupView,
-        CodexPreconditionView, CodexRateLimitView, CodexUsageSummaryView, ProjectSettingsView,
+        CodexLogPurgeResultView, CodexLogStorageStatusView, CodexPreconditionView,
+        CodexRateLimitView, CodexUsageSummaryView, ProjectSettingsView,
     },
 };
 
@@ -65,9 +67,9 @@ const CLIENT_NAME: &str = "dispatch";
 const CLIENT_TITLE: &str = "Dispatch";
 const CODEX_HOME_DIR: &str = "codex";
 const CODEX_CONFIG: &str = r#"# Managed by Dispatch.
-# Dispatch provides project memory in each automation prompt and keeps Codex
-# memories and optional remote catalogs disabled for deterministic, low-traffic
-# runs. Dispatch manages Codex updates separately from agent startup.
+# Dispatch provides canonical project guidance through its knowledge service and
+# keeps Codex memories and optional remote catalogs disabled for deterministic,
+# low-traffic runs. Dispatch manages Codex updates separately from agent startup.
 
 check_for_update_on_startup = false
 
@@ -82,6 +84,8 @@ generate_memories = false
 disable_on_external_context = true
 "#;
 const PROJECT_RULES_FILE_NAME: &str = "dispatch-git.rules";
+
+static MANAGED_CODEX_HOME_OPERATION: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 pub(crate) type SharedCodexStatus = Arc<RwLock<CodexAppServerStatusView>>;
 
@@ -687,23 +691,33 @@ async fn app_server_status_with_probe(
     store: &Store,
     probe: StatusProbe,
 ) -> CodexAppServerStatusView {
+    let _operation = MANAGED_CODEX_HOME_OPERATION.lock().await;
     let checked_at = utc_now();
     if let Err(err) = ensure_codex_home() {
-        return unavailable_status(
-            checked_at,
-            format!("Codex app-server is unavailable: {err:#}"),
+        let log_storage = codex_log_storage::scan_managed_codex_logs(&codex_home_dir());
+        return with_log_storage(
+            unavailable_status(
+                checked_at,
+                format!("Codex app-server is unavailable: {err:#}"),
+            ),
+            log_storage,
         );
     }
-    match agent_tools::resolve_tool_path(store, AgentToolName::Codex)
+    let log_storage = codex_log_storage::scan_managed_codex_logs(&codex_home_dir());
+    let status = match agent_tools::resolve_tool_path(store, AgentToolName::Codex)
         .await
         .context_with(|| {
             format!(
                 "Dispatch cannot start Codex automation because Codex is not configured or discoverable. {CODEX_INSTALL_PROMPT}"
             )
         }) {
-        Ok(path) => app_server_status_for_binary(&path, checked_at, probe).await,
-        Err(err) => unavailable_status(checked_at, format!("Codex app-server is unavailable: {err:#}")),
-    }
+        Ok(path) => app_server_status_for_binary_unlocked(&path, checked_at, probe).await,
+        Err(err) => unavailable_status(
+            checked_at,
+            format!("Codex app-server is unavailable: {err:#}"),
+        ),
+    };
+    with_log_storage(status, log_storage)
 }
 
 /// Logs out the account in Dispatch's managed Codex home and returns the refreshed status.
@@ -713,6 +727,7 @@ async fn app_server_status_with_probe(
 /// Returns an error when the managed home or Codex binary is unavailable, the app-server rejects
 /// the logout, or the operation exceeds the status timeout.
 pub async fn logout_current_account(store: &Store) -> Result<CodexAppServerStatusView> {
+    let _operation = MANAGED_CODEX_HOME_OPERATION.lock().await;
     ensure_codex_home()?;
     let codex_binary = agent_tools::resolve_tool_path(store, AgentToolName::Codex)
         .await
@@ -736,7 +751,10 @@ pub async fn logout_current_account(store: &Store) -> Result<CodexAppServerStatu
         )
         .await;
         app_server.shutdown().await?;
-        Ok::<_, Report>(status)
+        Ok::<_, Report>(with_log_storage(
+            status,
+            codex_log_storage::scan_managed_codex_logs(&codex_home_dir()),
+        ))
     })
     .await
     .context("timed out while logging out of Codex")?
@@ -749,10 +767,25 @@ pub async fn logout_current_account(store: &Store) -> Result<CodexAppServerStatu
 pub(crate) async fn app_server_readiness_for_binary(
     codex_binary: &Path,
 ) -> CodexAppServerStatusView {
-    app_server_status_for_binary(codex_binary, utc_now(), StatusProbe::Readiness).await
+    let _operation = MANAGED_CODEX_HOME_OPERATION.lock().await;
+    let checked_at = utc_now();
+    if let Err(error) = ensure_codex_home() {
+        return with_log_storage(
+            unavailable_status(
+                checked_at,
+                format!("Codex app-server is unavailable: {error:#}"),
+            ),
+            codex_log_storage::scan_managed_codex_logs(&codex_home_dir()),
+        );
+    }
+    let log_storage = codex_log_storage::scan_managed_codex_logs(&codex_home_dir());
+    let status =
+        app_server_status_for_binary_unlocked(codex_binary, checked_at, StatusProbe::Readiness)
+            .await;
+    with_log_storage(status, log_storage)
 }
 
-async fn app_server_status_for_binary(
+async fn app_server_status_for_binary_unlocked(
     codex_binary: &Path,
     checked_at: String,
     probe: StatusProbe,
@@ -841,6 +874,7 @@ async fn inspect_initialized_client(
                 rate_limits: Vec::new(),
                 usage_summary: None,
                 warnings,
+                log_storage: CodexLogStorageStatusView::default(),
             };
         }
     };
@@ -960,6 +994,7 @@ async fn inspect_initialized_client(
         rate_limits,
         usage_summary,
         warnings,
+        log_storage: CodexLogStorageStatusView::default(),
     }
 }
 
@@ -1007,7 +1042,47 @@ fn unavailable_status(checked_at: String, message: String) -> CodexAppServerStat
         rate_limits: Vec::new(),
         usage_summary: None,
         warnings: Vec::new(),
+        log_storage: CodexLogStorageStatusView::default(),
     }
+}
+
+fn with_log_storage(
+    mut status: CodexAppServerStatusView,
+    log_storage: CodexLogStorageStatusView,
+) -> CodexAppServerStatusView {
+    status.log_storage = log_storage;
+    status
+}
+
+/// Removes only currently oversized managed Codex log database families.
+///
+/// Cleanup refuses while a Codex session is active. The session-admission guard remains held
+/// across validation and unlinking, while the managed-home operation lock serializes cleanup with
+/// startup, pre-run, detailed, and manual readiness probes.
+pub(crate) async fn purge_oversized_logs(
+    sessions: &ProcessSessionRegistry,
+) -> Result<CodexLogPurgeResultView> {
+    purge_oversized_logs_at(sessions, &codex_home_dir()).await
+}
+
+async fn purge_oversized_logs_at(
+    sessions: &ProcessSessionRegistry,
+    codex_home: &Path,
+) -> Result<CodexLogPurgeResultView> {
+    let _admission = match sessions.begin_codex_maintenance() {
+        Ok(admission) => admission,
+        Err(CodexMaintenanceAdmissionRejection::ActiveSessions(count)) => {
+            bail!(
+                "Cannot purge Codex logs while {count} Codex session{} active.",
+                if count == 1 { " is" } else { "s are" }
+            );
+        }
+        Err(CodexMaintenanceAdmissionRejection::InProgress) => {
+            bail!("Codex managed-home maintenance is already in progress.");
+        }
+    };
+    let _operation = MANAGED_CODEX_HOME_OPERATION.lock().await;
+    codex_log_storage::purge_oversized_codex_logs(codex_home)
 }
 
 /// Builds the concise server-startup guidance for a non-usable Codex status.
@@ -1188,13 +1263,22 @@ async fn spawn_managed_app_server(
     drop(listener);
 
     let mut command = Command::new(codex_binary);
-    command
-        .arg("app-server")
-        .arg("--listen")
-        .arg(&url)
-        .envs(env);
+    command.arg("app-server").arg("--listen").arg(&url);
+    apply_app_server_environment(&mut command, env);
     let process = spawn_app_server_process(command, stderr_path).await?;
     connect_managed_app_server(process, url).await
+}
+
+fn apply_app_server_environment(command: &mut Command, env: HashMap<String, String>) {
+    // The server may itself be running inside a Dispatch-launched process. Reserve the complete
+    // namespace so stale database, project, run, API, Git-policy, and server configuration cannot
+    // cross into a new app-server; the explicit overlay below is the only Dispatch context passed.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("DISPATCH_") {
+            command.env_remove(key);
+        }
+    }
+    command.envs(env);
 }
 
 async fn connect_managed_app_server(
@@ -1692,16 +1776,121 @@ fn utf8_path(path: &Path, description: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use assertr::prelude::*;
-    use std::path::{Path, PathBuf};
+    use std::{
+        fs::OpenOptions,
+        path::{Path, PathBuf},
+    };
 
     use tempfile::TempDir;
 
     use super::*;
-    use crate::backend::{agent_tools::set_tool_path, storage::Store};
-    use crate::shared::view_models::{
-        AgentGitCommandPolicy, AgentReasoningEffort, RevertStrategy, WorkspaceMode,
-        WorktreeCleanupPolicy,
+    use crate::backend::{
+        agent_tools::set_tool_path, process_sessions::ProcessSessionStart, storage::Store,
     };
+    use crate::shared::view_models::{
+        AgentGitCommandPolicy, AgentReasoningEffort, CodexLogDatabaseView, RevertStrategy,
+        WorkspaceMode, WorktreeCleanupPolicy,
+    };
+
+    fn sparse_file(path: &Path, size_bytes: u64) {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        file.set_len(size_bytes).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_server_subprocess_environment_sanitizes_reserved_dispatch_context() {
+        const CHILD_MARKER: &str = "APP_SERVER_ENV_SANITIZATION_CHILD";
+        const ORDINARY_PARENT_KEY: &str = "APP_SERVER_ENV_SANITIZATION_ORDINARY";
+        const STALE_DISPATCH_KEYS: &[&str] = &[
+            "DISPATCH_DATABASE",
+            "DISPATCH_PROJECT",
+            "DISPATCH_AGENT_ID",
+            "DISPATCH_AGENT_RUN_ID",
+            "DISPATCH_CLAIMED_ITEM_ID",
+            "DISPATCH_API_URL",
+            "DISPATCH_URL",
+            "DISPATCH_GIT_POLICY_PATH",
+            "DISPATCH_REAL_GIT",
+            "DISPATCH_DEVELOPMENT",
+            "DISPATCH_BIND",
+            "DISPATCH_LOG",
+            "DISPATCH_SQLX_LOG",
+            "DISPATCH_CLI_TARGET_DIR",
+            "DISPATCH_FUTURE_RESERVED_CONTEXT",
+        ];
+
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .arg("app_server_subprocess_environment_sanitizes_reserved_dispatch_context")
+                .arg("--nocapture")
+                .env(CHILD_MARKER, "1")
+                .env(ORDINARY_PARENT_KEY, "preserved-parent-value");
+            for key in STALE_DISPATCH_KEYS {
+                child.env(key, format!("stale-{key}"));
+            }
+            let output = child.output().await.unwrap();
+            if !output.status.success() {
+                eprintln!(
+                    "child test stdout:\n{}",
+                    String::from_utf8_lossy(&output.stdout)
+                );
+                eprintln!(
+                    "child test stderr:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            assert_that!(&(output.status.success())).is_true();
+            assert_that!(&(String::from_utf8_lossy(&output.stdout).contains("1 passed"))).is_true();
+            return;
+        }
+
+        // This is the production run-overlay builder, and the helper below is called immediately
+        // before the shared app-server spawn. Executing `/usr/bin/env` keeps the inheritance check
+        // independent from the Codex WebSocket handshake while exercising that exact boundary.
+        let git_runtime = crate::backend::automation_runtime::GitRuntimeFiles {
+            shim_dir: PathBuf::from("/tmp/run-41-bin"),
+            policy_path: PathBuf::from("/tmp/run-41.git-policy.json"),
+        };
+        let expected_dispatch_context = crate::backend::automation_runtime::agent_environment(
+            Path::new("/tmp/dispatch"),
+            &git_runtime,
+            Path::new("/usr/bin/git"),
+            "demo",
+            "dispatch-run-41",
+            Some(73),
+            Some("http://127.0.0.1:4000"),
+        );
+        let mut subprocess = Command::new("/usr/bin/env");
+        apply_app_server_environment(&mut subprocess, expected_dispatch_context.clone());
+
+        let output = subprocess.output().await.unwrap();
+        let actual_environment = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect::<HashMap<_, _>>();
+
+        assert_that!(&(output.status.success())).is_true();
+        assert_that!(
+            &(actual_environment
+                .get(ORDINARY_PARENT_KEY)
+                .map(String::as_str))
+        )
+        .is_equal_to(Some("preserved-parent-value"));
+        for key in STALE_DISPATCH_KEYS {
+            assert_that!(&(actual_environment.get(*key)))
+                .is_equal_to(expected_dispatch_context.get(*key));
+        }
+    }
 
     #[tokio::test]
     async fn unavailable_app_server_status_prompts_for_codex_install() {
@@ -1722,6 +1911,97 @@ mod tests {
         assert_that!(&(!status.available)).is_true();
         assert_that!(&(status.message.contains("Codex app-server is unavailable"))).is_true();
         assert_that!(&(status.install_prompt.contains("Install Codex"))).is_true();
+    }
+
+    #[test]
+    fn storage_findings_survive_app_server_failure_without_changing_readiness() {
+        let log_storage = CodexLogStorageStatusView {
+            threshold_bytes: codex_log_storage::CODEX_LOG_DATABASE_THRESHOLD_BYTES,
+            oversized_databases: vec![CodexLogDatabaseView {
+                relative_path: "projects/42/logs_1.sqlite".to_owned(),
+                size_bytes: codex_log_storage::CODEX_LOG_DATABASE_THRESHOLD_BYTES + 1,
+            }],
+            scan_errors: Vec::new(),
+        };
+
+        let status = with_log_storage(
+            unavailable_status(
+                "now".to_owned(),
+                "Codex app-server initialization failed".to_owned(),
+            ),
+            log_storage.clone(),
+        );
+
+        assert_that!(&(!status.available)).is_true();
+        assert_that!(&(!status.usable)).is_true();
+        assert_that!(&(status.log_storage)).is_equal_to(log_storage);
+    }
+
+    #[tokio::test]
+    async fn purge_refuses_an_active_codex_session_without_removing_logs() {
+        let home = TempDir::new().unwrap();
+        let log = home.path().join("logs_active.sqlite");
+        sparse_file(
+            &log,
+            codex_log_storage::CODEX_LOG_DATABASE_THRESHOLD_BYTES + 1,
+        );
+        let sessions = ProcessSessionRegistry::new();
+        sessions.begin(ProcessSessionStart {
+            run_id: 7,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: AgentToolName::Codex.as_storage().to_owned(),
+            command: String::new(),
+            working_dir: String::new(),
+        });
+
+        let result = purge_oversized_logs_at(&sessions, home.path()).await;
+
+        assert_that!(&(result.is_err())).is_true();
+        assert_that!(&(format!("{:#}", result.unwrap_err()))).contains("1 Codex session is active");
+        assert_that!(&(log.exists())).is_true();
+    }
+
+    #[tokio::test]
+    async fn purge_waits_for_probe_lock_and_holds_codex_session_admission() {
+        let home = TempDir::new().unwrap();
+        let log = home.path().join("logs_waiting.sqlite");
+        sparse_file(
+            &log,
+            codex_log_storage::CODEX_LOG_DATABASE_THRESHOLD_BYTES + 1,
+        );
+        let operation = MANAGED_CODEX_HOME_OPERATION.lock().await;
+        let sessions = ProcessSessionRegistry::new();
+        let cleanup_sessions = sessions.clone();
+        let home_path = home.path().to_path_buf();
+        let cleanup =
+            tokio::spawn(
+                async move { purge_oversized_logs_at(&cleanup_sessions, &home_path).await },
+            );
+        for _ in 0..100 {
+            if sessions.codex_maintenance_active() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_that!(&(sessions.codex_maintenance_active())).is_true();
+        let concurrent = sessions.begin(ProcessSessionStart {
+            run_id: 8,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: AgentToolName::Codex.as_storage().to_owned(),
+            command: String::new(),
+            working_dir: String::new(),
+        });
+        assert_that!(&(!concurrent.is_registered())).is_true();
+        assert_that!(&(log.exists())).is_true();
+
+        drop(operation);
+        let result = cleanup.await.unwrap().unwrap();
+
+        assert_that!(&(result.removed_database_count)).is_equal_to(1);
+        assert_that!(&(!log.exists())).is_true();
+        assert_that!(&(!sessions.codex_maintenance_active())).is_true();
     }
 
     #[test]
@@ -2053,8 +2333,8 @@ mod tests {
             r#"#!/bin/sh
 marker="$(dirname "$0")/exited"
 trap 'touch "$marker"; exit 0' TERM INT
-touch "$(dirname "$0")/ready"
 printf '%s\n' 'fake app-server started' >&2
+touch "$(dirname "$0")/ready"
 while :; do sleep 1; done
 "#,
         )
@@ -2156,6 +2436,7 @@ while :; do sleep 1; done
         ProjectSettingsView {
             id: 7,
             project_id: 7,
+            knowledge_directory: "knowledge".to_owned(),
             workspace_mode: WorkspaceMode::GitWorktree,
             max_code_edit_agents: 1,
             max_read_only_agents: 2,

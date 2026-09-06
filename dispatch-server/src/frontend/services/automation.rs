@@ -4,7 +4,7 @@ use crate::backend::{
     automation_triggers, page_data, personalities, projects,
 };
 use crate::frontend::{
-    pages::{AutomationRuleInspectorView, BoardRunSessionView, TriggersPage},
+    pages::{AutomationRuleInspectorView, RunSummaryView, TriggersPage},
     services::{cache::LocalStorageCache, origin::api_base_url, request::ServiceRequest},
     types::AutomationPersonalityInspectorView,
 };
@@ -18,7 +18,7 @@ use leptos::prelude::*;
 #[derive(Clone)]
 pub(crate) struct AutomationService {
     load_page: ServiceRequest<Option<String>, TriggersPage>,
-    load_trigger_runs: ServiceRequest<(String, i64), Vec<BoardRunSessionView>>,
+    load_trigger_runs: ServiceRequest<(String, i64), Vec<RunSummaryView>>,
     set_running: ServiceRequest<(String, bool), ()>,
     schedule_trigger_evaluation: ServiceRequest<(String, i64), ()>,
     validate_bundle_yaml: ServiceRequest<String, AutomationBundleValidationView>,
@@ -36,12 +36,12 @@ pub(crate) struct AutomationService {
     detach_personality: ServiceRequest<(String, i64), dispatch_types::PersonalityView>,
     explain_route: ServiceRequest<(String, i64), RoutingExplanationView>,
     page_cache: Option<LocalStorageCache<TriggersPage>>,
-    trigger_runs_cache: Option<LocalStorageCache<Vec<BoardRunSessionView>>>,
+    trigger_runs_cache: Option<LocalStorageCache<Vec<RunSummaryView>>>,
 }
 
 struct AutomationRequests {
     load_page: ServiceRequest<Option<String>, TriggersPage>,
-    load_trigger_runs: ServiceRequest<(String, i64), Vec<BoardRunSessionView>>,
+    load_trigger_runs: ServiceRequest<(String, i64), Vec<RunSummaryView>>,
     set_running: ServiceRequest<(String, bool), ()>,
     schedule_trigger_evaluation: ServiceRequest<(String, i64), ()>,
     validate_bundle_yaml: ServiceRequest<String, AutomationBundleValidationView>,
@@ -91,7 +91,7 @@ impl AutomationService {
                 Box::pin(load_triggers_page(selected_project, api_base_url()))
             }),
             load_trigger_runs: ServiceRequest::new(|(project, trigger_id)| {
-                Box::pin(load_trigger_run_sessions(project, trigger_id))
+                Box::pin(load_trigger_run_summaries(project, trigger_id))
             }),
             set_running: ServiceRequest::new(|(project, running)| {
                 Box::pin(set_automation_running(project, running))
@@ -154,7 +154,7 @@ impl AutomationService {
             "dispatch.query.automation.v1",
         ));
         service.trigger_runs_cache = Some(LocalStorageCache::persistent(
-            "dispatch.query.automation-trigger-runs.v1",
+            "dispatch.query.automation-trigger-runs.v2",
         ));
         service
     }
@@ -191,7 +191,7 @@ impl AutomationService {
         &self,
         project: &str,
         trigger_id: i64,
-    ) -> Option<Vec<BoardRunSessionView>> {
+    ) -> Option<Vec<RunSummaryView>> {
         self.trigger_runs_cache?.get(&(project, trigger_id))
     }
 
@@ -199,7 +199,7 @@ impl AutomationService {
         &self,
         project: &str,
         trigger_id: i64,
-    ) -> Option<Vec<BoardRunSessionView>> {
+    ) -> Option<Vec<RunSummaryView>> {
         self.trigger_runs_cache?
             .get_untracked(&(project, trigger_id))
     }
@@ -208,7 +208,7 @@ impl AutomationService {
         &self,
         project: String,
         trigger_id: i64,
-    ) -> Result<Vec<BoardRunSessionView>, ServerFnError> {
+    ) -> Result<Vec<RunSummaryView>, ServerFnError> {
         let lifecycle_epoch = self
             .trigger_runs_cache
             .map(|cache| cache.capture_lifecycle_epoch());
@@ -395,12 +395,12 @@ async fn load_triggers_page(
 }
 
 #[server(prefix = "/leptos")]
-async fn load_trigger_run_sessions(
+async fn load_trigger_run_summaries(
     project: String,
     trigger_id: i64,
-) -> Result<Vec<BoardRunSessionView>, ServerFnError> {
+) -> Result<Vec<RunSummaryView>, ServerFnError> {
     let state = app_state::app_state();
-    page_data::trigger_run_sessions(&state.store, &state.sessions, &project, trigger_id)
+    page_data::trigger_run_summaries(&state.store, &state.sessions, &project, trigger_id)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
@@ -438,7 +438,7 @@ async fn schedule_trigger_evaluation(
     automation_triggers::schedule_trigger_evaluation(&state.store, &project, trigger_id)
         .await
         .map(|_| ())
-        .map_err(|err| ServerFnError::new(err.to_string()))
+        .map_err(|error| ServerFnError::new(error.to_string()))
 }
 
 #[server(prefix = "/leptos")]

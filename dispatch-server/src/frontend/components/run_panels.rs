@@ -1,36 +1,24 @@
-use std::collections::HashSet;
+mod sessions;
 
+use sessions::RunSessionsPanel;
+
+use super::{RunOutput, cached_query, encode_path};
 use crate::{
     frontend::{
         live_events::{
             refetch_on_live_event, runs_section_event_matches, trigger_runs_event_matches,
         },
-        pages::{BoardRunSessionView, format_number},
+        pages::format_number,
         services::{automation_service, run_service},
     },
     shared::view_models::{
-        AgentCommitOutcome, AgentRunStatus, AgentRunTokenUsageView, AgentRunView,
-        AutomationStatusView,
+        AgentCommitOutcome, AgentRunStatus, AgentRunTokenUsageView, AgentRunView, RunLogView,
     },
 };
 use leptos::prelude::*;
-use leptos_router::{
-    NavigateOptions,
-    hooks::{use_navigate, use_query_map},
-};
-
-use super::{RunOutput, cached_query, encode_path};
 
 #[component]
-pub(crate) fn LiveRunsSection(
-    project: String,
-    initial_status: AutomationStatusView,
-    initial_running: bool,
-    initial_run_sessions: Vec<BoardRunSessionView>,
-) -> impl IntoView + 'static {
-    let (automation_status, set_automation_status) = signal(initial_status);
-    let (automation_running, set_automation_running) = signal(initial_running);
-    let (run_sessions, set_run_sessions) = signal(initial_run_sessions);
+pub(crate) fn LiveRunsSection(project: String) -> impl IntoView + 'static {
     let project_for_loader = project.clone();
     let service = run_service();
     let initial = service.cached_section_untracked(&project);
@@ -51,27 +39,28 @@ pub(crate) fn LiveRunsSection(
         runs_section_event_matches(event, project_for_events.as_str())
     });
 
-    Effect::new(move |_| {
-        if let Some(section) = section.value.get() {
-            set_automation_status.set(section.automation_status);
-            set_automation_running.set(section.automation_running);
-            set_run_sessions.set(section.run_sessions);
-        }
-    });
-
     let status_note = Signal::derive(move || {
-        let status = automation_status.get();
-        let running_runs = status.running_runs;
-        let mutating = status.running_mutating_runs;
-        let read_only = status.running_read_only_runs;
-        let controller = if automation_running.get() {
-            "controller running"
-        } else {
-            "controller stopped"
-        };
-        Some(format!(
-            "{running_runs} running ({mutating} mutating, {read_only} read-only), {controller}"
-        ))
+        section.value.with(|section| {
+            section.as_ref().map(|section| {
+                let controller = if section.automation_running {
+                    "controller running"
+                } else {
+                    "controller stopped"
+                };
+                format!(
+                    "{} running ({} mutating, {} read-only), {controller}",
+                    section.running_runs,
+                    section.running_mutating_runs,
+                    section.running_read_only_runs,
+                )
+            })
+        })
+    });
+    let runs = Memo::new(move |_| {
+        section
+            .value
+            .with(|section| section.as_ref().map(|section| section.runs.clone()))
+            .unwrap_or_default()
     });
 
     view! {
@@ -79,7 +68,7 @@ pub(crate) fn LiveRunsSection(
             project=project
             title="Runs"
             status_note=status_note
-            run_sessions=run_sessions
+            runs
             sync_selection_with_url=true
             empty_message="No runs yet."
         />
@@ -130,14 +119,11 @@ pub(crate) fn TriggerRunsPanel(
         trigger_runs_event_matches(event, project_for_events.as_str())
             && selected_trigger_id.get().is_some()
     });
-    let (run_sessions, set_run_sessions) = signal(Vec::<BoardRunSessionView>::new());
-    Effect::new(move |_| {
-        if let Some(result) = trigger_runs.value.get() {
-            match result {
-                Some(sessions) => set_run_sessions.set(sessions),
-                None => set_run_sessions.set(Vec::new()),
-            }
-        }
+    let runs = Memo::new(move |_| {
+        trigger_runs
+            .value
+            .with(|result| result.as_ref().and_then(Clone::clone))
+            .unwrap_or_default()
     });
 
     view! {
@@ -163,7 +149,7 @@ pub(crate) fn TriggerRunsPanel(
                         project=project_for_view.clone()
                         title="Runs for selected automation"
                         status_note=Signal::derive(|| None::<String>)
-                        run_sessions=run_sessions
+                        runs
                         sync_selection_with_url=false
                         empty_message="No runs for this automation yet."
                     />
@@ -214,173 +200,6 @@ fn QueueAutomationEvaluation(
         <button type="button" disabled=move || pending.get() on:click=queue>
             "Queue evaluation"
         </button>
-    }
-}
-
-#[component]
-fn RunSessionsPanel(
-    project: String,
-    title: &'static str,
-    #[prop(into)] status_note: Signal<Option<String>>,
-    #[prop(into)] run_sessions: ReadSignal<Vec<BoardRunSessionView>>,
-    sync_selection_with_url: bool,
-    empty_message: &'static str,
-) -> impl IntoView + 'static {
-    let query = use_query_map();
-    let initial_selected_run_id = if sync_selection_with_url {
-        query
-            .read_untracked()
-            .get("run")
-            .and_then(|value| value.parse::<i64>().ok())
-    } else {
-        None
-    };
-    let (selected_run_id, set_selected_run_id) = signal(initial_selected_run_id);
-    let shown_thinking_history = RwSignal::new(HashSet::<i64>::new());
-    Effect::new(move |_| {
-        if !sync_selection_with_url {
-            return;
-        }
-        let query_selected = query
-            .read()
-            .get("run")
-            .and_then(|value| value.parse::<i64>().ok());
-        if let Some(run_id) = query_selected
-            && selected_run_id.get_untracked() != Some(run_id)
-        {
-            set_selected_run_id.set(Some(run_id));
-        }
-    });
-    Effect::new(move |_| {
-        let sessions = run_sessions.get();
-        let selected = selected_run_id.get_untracked();
-        let selected_still_exists = selected
-            .map(|run_id| sessions.iter().any(|session| session.run.id == run_id))
-            .unwrap_or(false);
-        let next = if sessions.is_empty() {
-            None
-        } else if selected_still_exists {
-            selected
-        } else {
-            sessions.first().map(|session| session.run.id)
-        };
-        if selected != next {
-            set_selected_run_id.set(next);
-        }
-    });
-
-    let navigate = use_navigate();
-    let selection_project = project.clone();
-    let select_run = Callback::new(move |run_id: i64| {
-        set_selected_run_id.set(Some(run_id));
-        if sync_selection_with_url {
-            let href = format!(
-                "/runs?project={}&run={run_id}",
-                encode_path(&selection_project)
-            );
-            navigate(
-                &href,
-                NavigateOptions {
-                    replace: true,
-                    scroll: false,
-                    ..NavigateOptions::default()
-                },
-            );
-        }
-    });
-
-    let run_items = move || {
-        let sessions = run_sessions.get();
-        if sessions.is_empty() {
-            return view! { <p class="muted">{empty_message}</p> }.into_any();
-        }
-        let sessions = sessions
-            .into_iter()
-            .map(|session| {
-                let run_id = session.run.id;
-                let is_active = session.active;
-                let summary = run_result_summary(&session.run);
-                let origin = run_origin_label(&session.run);
-                let item = run_item_label(&session.run);
-                let tokens = session.run.token_usage.map(run_token_usage_label);
-                let status_class = run_status_class(session.run.status);
-                let selected_signal = selected_run_id;
-                view! {
-                    <button
-                        type="button"
-                        class=move || {
-                            let selected = if selected_signal.get() == Some(run_id) {
-                                " selected"
-                            } else {
-                                ""
-                            };
-                            format!("run-session {status_class}{selected}")
-                        }
-                        aria-pressed=move || selected_signal.get() == Some(run_id)
-                        on:click=move |_| select_run.run(run_id)
-                    >
-                        <div class="session-head">
-                            <strong>"#" {run_id}</strong>
-                            <span>{session.run.status.to_string()}</span>
-                            {item.map(|item| view! { <span>{item}</span> })}
-                            {origin.map(|origin| view! { <span>{origin}</span> })}
-                            {tokens.map(|tokens| view! { <span>{tokens}</span> })}
-                            {is_active.then(|| view! { <span class="live-badge">"active"</span> })}
-                        </div>
-                        <p>{summary}</p>
-                    </button>
-                }
-            })
-            .collect::<Vec<_>>();
-        view! { <div class="run-session-list">{sessions}</div> }.into_any()
-    };
-    let detail_project = project.clone();
-    let run_detail = move || {
-        let detail_sessions = run_sessions.get();
-        let selected = selected_run_id
-            .get()
-            .and_then(|run_id| {
-                detail_sessions
-                    .iter()
-                    .find(|session| session.run.id == run_id)
-                    .cloned()
-            })
-            .or_else(|| detail_sessions.first().cloned());
-        match selected {
-            Some(session) => {
-                let run_id = session.run.id;
-                let show_thinking_history = shown_thinking_history.get().contains(&run_id);
-                let toggle_thinking_history = Callback::new(move |()| {
-                    shown_thinking_history.update(|shown| {
-                        if !shown.remove(&run_id) {
-                            shown.insert(run_id);
-                        }
-                    });
-                });
-                run_session_detail(
-                    &detail_project,
-                    session,
-                    show_thinking_history,
-                    toggle_thinking_history,
-                )
-            }
-            None => view! { <p class="muted">"No run selected."</p> }.into_any(),
-        }
-    };
-
-    view! {
-        <section class="automation">
-            <div class="panel-heading">
-                <h2>{title}</h2>
-                {move || status_note.get().map(|note| view! { <p class="muted">{note}</p> })}
-            </div>
-            <div class="run-session-shell">
-                {run_items}
-                <aside class="run-session-detail">
-                    {run_detail}
-                </aside>
-            </div>
-        </section>
     }
 }
 
@@ -480,48 +299,44 @@ pub(crate) fn recorded_field(value: &str) -> String {
 
 fn run_session_detail(
     project: &str,
-    session: BoardRunSessionView,
+    detail: RunLogView,
     show_thinking_history: bool,
     toggle_thinking_history: Callback<()>,
 ) -> AnyView {
     let href = format!(
         "/projects/{}/automation/runs/{}/log",
         encode_path(project),
-        session.run.id
+        detail.run.id
     );
-    let model = session
+    let model = detail
         .run
         .agent_model
         .clone()
         .unwrap_or_else(|| "default".to_owned());
-    let reasoning = session
+    let reasoning = detail
         .run
         .agent_reasoning_effort
         .map(|effort| effort.to_string())
         .unwrap_or_else(|| "default".to_owned());
-    let memory_event = session
-        .run
-        .memory_event_id
-        .map(|event_id| format!("MemoryChanged #{event_id}"));
-    let token_usage = run_token_usage_text(&session.run);
-    let summary = run_result_summary(&session.run);
-    let origin = run_origin_label(&session.run);
-    let work_item = run_work_item_link(project, session.run.work_item_id);
-    let command = recorded_field(&session.run.command);
-    let working_dir = recorded_field(&session.run.working_dir);
-    let status_class = run_status_class(session.run.status);
+    let token_usage = run_token_usage_text(&detail.run);
+    let summary = run_result_summary(&detail.run);
+    let origin = run_origin_label(&detail.run);
+    let work_item = run_work_item_link(project, detail.run.work_item_id);
+    let command = recorded_field(&detail.run.command);
+    let working_dir = recorded_field(&detail.run.working_dir);
+    let status_class = run_status_class(detail.run.status);
     let output = view! {
         <RunOutput
-            output=session.output.clone()
-            active=session.active
+            output=detail.output.clone()
+            active=detail.active
             show_thinking_history
             toggle_thinking_history
         />
     };
-    let developer_instructions = session
+    let developer_instructions = detail
         .developer_instructions
         .unwrap_or_else(|| "No developer instructions have been written yet.".to_owned());
-    let user_prompt = session
+    let user_prompt = detail
         .user_prompt
         .unwrap_or_else(|| "No user prompt has been written yet.".to_owned());
 
@@ -529,12 +344,12 @@ fn run_session_detail(
         <article>
             <header class="run-detail-header">
                 <div>
-                    <h3>"Run #" {session.run.id}</h3>
+                    <h3>"Run #" {detail.run.id}</h3>
                     <p>
-                        {session.run.status.to_string()}
+                        {detail.run.status.to_string()}
                         " · "
                         "cleanup "
-                        {session.run.cleanup_status.to_string()}
+                        {detail.run.cleanup_status.to_string()}
                     </p>
                 </div>
                 <a class="button-link secondary-link" href=href>"Open"</a>
@@ -558,12 +373,6 @@ fn run_session_detail(
                 <dd>{reasoning}</dd>
                 <dt>"tokens"</dt>
                 <dd>{token_usage}</dd>
-                {memory_event.map(|memory_event| view! {
-                    <>
-                        <dt>"memory"</dt>
-                        <dd>{memory_event}</dd>
-                    </>
-                })}
                 <dt>"command"</dt>
                 <dd>{command}</dd>
                 <dt>"working dir"</dt>

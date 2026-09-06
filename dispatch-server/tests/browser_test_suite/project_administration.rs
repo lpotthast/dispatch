@@ -19,7 +19,6 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
     async fn run(&self, driver: &WebDriver, app: &DispatchTestApp) -> Result<(), Report> {
         reset_test_projects(driver, app, true).await?;
         seed_system_prompt_history(driver).await?;
-        seed_memory_history(driver).await?;
         driver
             .goto(app.url("/project?project=demo"))
             .await
@@ -60,13 +59,12 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
             .context("failed to restore selected-project administration after request check")?;
         find(driver, By::Css("section.project-settings")).await?;
         assert_source_contains(driver, "System prompt").await?;
-        assert_source_contains(driver, "Memory").await?;
+        assert_source_does_not_contain(driver, "Project memory").await?;
         assert_source_does_not_contain(driver, "Automation policy").await?;
         assert_source_contains(driver, "Maintenance").await?;
         assert_source_contains(driver, "Cleanup worktrees").await?;
         assert_source_does_not_contain(driver, "project-option-key").await?;
         assert_source_contains(driver, "system prompt history").await?;
-        assert_source_contains(driver, "memory history").await?;
         assert_source_does_not_contain(driver, "Compact history").await?;
         assert_source_contains(driver, "Clear history").await?;
         assert_source_does_not_contain(driver, "Append memory").await?;
@@ -78,9 +76,6 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
         find(driver, By::Css("#project-system-prompt-version")).await?;
         find(driver, By::Css("textarea.project-system-prompt-text")).await?;
         assert_system_prompt_history_selector_behaviour(driver).await?;
-        find(driver, By::Css("#project-memory-version")).await?;
-        find(driver, By::Css("textarea.project-memory-text")).await?;
-        assert_memory_history_selector_behaviour(driver).await?;
         assert_dirty_project_text_survives_live_event(driver).await?;
         driver
             .goto(app.url("/project?project=demo"))
@@ -105,6 +100,7 @@ impl BrowserTest<DispatchTestApp> for ProjectAdministrationTest {
         edit_swim_lane_filter_through_structured_controls(driver, app, structured_lane_id).await?;
         create_structured_lane_matching_item(driver).await?;
         assert_structured_swim_lane_filter_board_behaviour(driver, app).await?;
+        assert_uninitialized_knowledge_workspace(driver, app).await?;
 
         Ok(())
     }
@@ -614,19 +610,6 @@ async fn assert_structured_swim_lane_filter_board_behaviour(
     Ok(())
 }
 
-async fn seed_memory_history(driver: &WebDriver) -> Result<(), Report> {
-    for body in ["Initial shared memory", "Current shared memory"] {
-        let response = browser_request(driver, reqwest::Method::POST, "/projects/demo/memory")
-            .await?
-            .form(&[("body", body)])
-            .send()
-            .await
-            .context("failed to seed project memory through browser-test setup request")?;
-        response_text(response, "project-memory seed").await?;
-    }
-    Ok(())
-}
-
 async fn seed_system_prompt_history(driver: &WebDriver) -> Result<(), Report> {
     for body in ["Initial project prompt", "Current project prompt"] {
         let response = browser_request(
@@ -642,22 +625,6 @@ async fn seed_system_prompt_history(driver: &WebDriver) -> Result<(), Report> {
         response_text(response, "project-system-prompt seed").await?;
     }
     Ok(())
-}
-
-async fn assert_memory_history_selector_behaviour(driver: &WebDriver) -> Result<(), Report> {
-    assert_history_selector_behaviour(
-        driver,
-        HistorySelectorCase {
-            select_selector: "#project-memory-version",
-            textarea_selector: "textarea.project-memory-text",
-            save_selector: ".project-memory-save",
-            clear_selector: ".project-memory-history-clear",
-            current_draft: "Unsaved current memory",
-            historical_value: "Initial shared memory",
-            description: "memory",
-        },
-    )
-    .await
 }
 
 async fn assert_system_prompt_history_selector_behaviour(driver: &WebDriver) -> Result<(), Report> {
@@ -678,25 +645,7 @@ async fn assert_system_prompt_history_selector_behaviour(driver: &WebDriver) -> 
 
 async fn assert_dirty_project_text_survives_live_event(driver: &WebDriver) -> Result<(), Report> {
     const PROMPT_TEXTAREA: &str = "textarea.project-system-prompt-text";
-    const MEMORY_TEXTAREA: &str = "textarea.project-memory-text";
-    const MEMORY_SELECT: &str = "#project-memory-version";
-
-    let memory_history_count = history_option_count(driver, MEMORY_SELECT, "memory").await?;
-    let response = browser_request(driver, reqwest::Method::POST, "/projects/demo/memory")
-        .await?
-        .form(&[("body", "Current shared memory")])
-        .send()
-        .await
-        .context("failed to publish live memory event while project text was dirty")?;
-    response_text(response, "live project-memory update").await?;
-
-    wait_until("project text live refresh", || async {
-        Ok(
-            (history_option_count(driver, MEMORY_SELECT, "memory").await? > memory_history_count)
-                .then_some(()),
-        )
-    })
-    .await?;
+    create_browser_test_item(driver, "Project text refresh", "Emit a project live event").await?;
 
     let prompt = find(driver, By::Css(PROMPT_TEXTAREA)).await?;
     assert_that!(element_value(&prompt, "dirty system prompt after live refresh").await?)
@@ -706,19 +655,6 @@ async fn assert_dirty_project_text_survives_live_event(driver: &WebDriver) -> Re
             .class_name()
             .await
             .context("failed to inspect system-prompt state after live refresh")?
-            .unwrap_or_default()
-            .split_whitespace()
-            .any(|class| class == "dirty")
-    )
-    .is_true();
-    let memory = find(driver, By::Css(MEMORY_TEXTAREA)).await?;
-    assert_that!(element_value(&memory, "dirty memory after live refresh").await?)
-        .is_equal_to("Unsaved current memory");
-    assert_that!(
-        memory
-            .class_name()
-            .await
-            .context("failed to inspect memory state after live refresh")?
             .unwrap_or_default()
             .split_whitespace()
             .any(|class| class == "dirty")
@@ -1057,7 +993,7 @@ async fn assert_request_error_toast_preserves_project_page(
             .context("failed to inspect top navigation after request failure")?
             .len()
     )
-    .is_equal_to(7);
+    .is_equal_to(8);
     for selector in [
         "header.app-topbar .project-switcher",
         "header.app-topbar .topbar-codex",
@@ -1225,26 +1161,15 @@ async fn assert_history_selector_behaviour(
 async fn assert_history_clear_behaviour(driver: &WebDriver) -> Result<(), Report> {
     const MODAL: &str = "leptonic-modal#project-history-clear-modal";
     const PROMPT_SELECT: &str = "#project-system-prompt-version";
-    const MEMORY_SELECT: &str = "#project-memory-version";
     const PROMPT_CLEAR: &str = ".project-system-prompt-history-clear";
-    const MEMORY_CLEAR: &str = ".project-memory-history-clear";
 
     assert_history_available(driver, PROMPT_SELECT, "system prompt").await?;
-    assert_history_available(driver, MEMORY_SELECT, "memory").await?;
     assert_that!(
         find(driver, By::Css(PROMPT_CLEAR))
             .await?
             .is_enabled()
             .await
             .context("failed to inspect system prompt clear action")?
-    )
-    .is_true();
-    assert_that!(
-        find(driver, By::Css(MEMORY_CLEAR))
-            .await?
-            .is_enabled()
-            .await
-            .context("failed to inspect memory clear action")?
     )
     .is_true();
 
@@ -1304,7 +1229,6 @@ async fn assert_history_clear_behaviour(driver: &WebDriver) -> Result<(), Report
             .is_none()
     )
     .is_true();
-    assert_history_available(driver, MEMORY_SELECT, "memory").await?;
     assert_that!(
         find(driver, By::Css(PROMPT_CLEAR))
             .await?
@@ -1320,43 +1244,35 @@ async fn assert_history_clear_behaviour(driver: &WebDriver) -> Result<(), Report
     )
     .await?;
 
-    click(driver, By::Css(MEMORY_CLEAR)).await?;
-    find(driver, By::Css(MODAL)).await?;
-    assert_source_contains(driver, "Clear memory history?").await?;
-    assert_source_contains(driver, "The currently saved memory is kept.").await?;
-    click(driver, By::Css(".history-clear-confirm")).await?;
-    wait_until("memory history clear", || async {
-        Ok((history_option_count(driver, MEMORY_SELECT, "memory").await? == 1).then_some(()))
-    })
-    .await?;
-    wait_for_history_clear_modal_closed(driver).await?;
-    let current_memory = find(driver, By::Css("textarea.project-memory-text")).await?;
-    assert_that!(element_value(&current_memory, "current memory after history clear").await?)
-        .is_equal_to("Current shared memory");
-    assert_that!(
-        current_memory
-            .attr("readonly")
-            .await
-            .context("failed to inspect current memory after history clear")?
-            .is_none()
-    )
-    .is_true();
     assert_that!(history_option_count(driver, PROMPT_SELECT, "system prompt").await?)
         .is_equal_to(1);
-    assert_that!(
-        find(driver, By::Css(MEMORY_CLEAR))
-            .await?
-            .is_enabled()
-            .await
-            .context("failed to inspect cleared memory action")?
-    )
-    .is_false();
     assert_history_clear_document_state(
         driver,
         &history_clear_document_url,
         &history_clear_document_body,
     )
     .await?;
+    Ok(())
+}
+
+async fn assert_uninitialized_knowledge_workspace(
+    driver: &WebDriver,
+    app: &DispatchTestApp,
+) -> Result<(), Report> {
+    driver
+        .goto(app.url("/knowledge?project=demo"))
+        .await
+        .context("failed to open the Knowledge workspace")?;
+    find(
+        driver,
+        By::Css(".top-nav a.active[href='/knowledge?project=demo']"),
+    )
+    .await?;
+    find(driver, By::Css("main.knowledge-page")).await?;
+    find(driver, By::Css(".knowledge-controls")).await?;
+    assert_source_contains(driver, "All documents").await?;
+    assert_source_contains(driver, "Document diagnostics").await?;
+    assert_source_does_not_contain(driver, "project-memory-text").await?;
     Ok(())
 }
 

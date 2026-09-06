@@ -100,15 +100,6 @@ pub(crate) fn publish_comment_changed(project: &str, item_id: i64) {
     });
 }
 
-pub(crate) fn publish_memory_changed(project: &str) {
-    let project = project.to_owned();
-    publish(|sequence, timestamp| UiEvent::MemoryChanged {
-        sequence,
-        timestamp,
-        project,
-    });
-}
-
 pub(crate) fn publish_swim_lane_changed(project: &str) {
     let project = project.to_owned();
     publish(|sequence, timestamp| UiEvent::SwimLaneChanged {

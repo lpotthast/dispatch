@@ -1,5 +1,3 @@
-use leptonic::prelude::TiptapContent;
-
 pub(crate) fn rich_text_editor_html(value: &str) -> String {
     if looks_like_rich_text_html(value) {
         value.to_owned()
@@ -117,13 +115,6 @@ fn decode_basic_html_entities(value: &str) -> String {
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
-}
-
-pub(crate) fn tiptap_content_to_string(content: TiptapContent) -> String {
-    match content {
-        TiptapContent::Html(content) => content,
-        TiptapContent::Json(content) => content.to_string(),
-    }
 }
 
 pub(crate) fn normalize_tiptap_storage_value(value: String) -> String {

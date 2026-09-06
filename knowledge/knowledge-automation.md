@@ -150,7 +150,8 @@ candidates and avoid redundant model work; they do not establish semantic consis
 finds unlinked new areas and accumulated blind spots. A finding names the claim, observed contradiction, supporting
 references, likely affected scope, and uncertainty. "Not examined" must not become "no drift."
 
-Known design-first transitions are reported as implementation pending when evidence shows they belong to active work.
+An accepted contract remains in knowledge even when code does not satisfy it. Jobs record an implementation gap in
+their findings, using task reports or run evidence to identify active design-first work.
 Outside that scope, ordinary drift reporting continues. Once work ends, recheck the transition; completion or failure
 alone cannot erase it. Reuse an unresolved finding for the same contradiction instead of opening a duplicate on each
 scan. Resolve it only with correction evidence or a user explanation, preserving the reason in the job/finding history.

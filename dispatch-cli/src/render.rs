@@ -2,10 +2,42 @@ use std::io::{self, Write};
 
 use dispatch_types::{
     AgentCommitOutcome, AgentRunOutputPiece, AgentRunTokenUsageView, AgentRunView, CommentView,
-    ProjectLabelView, ProjectMemoryEventView, RunLogView, WorkItemLabelView,
-    WorkItemRelationshipDirection, WorkItemRelationshipItemSummary, WorkItemRelationshipListEntry,
-    WorkItemRelationshipView, WorkItemView,
+    ProjectLabelView, ProjectView, RunLogView, WorkItemLabelView, WorkItemRelationshipDirection,
+    WorkItemRelationshipItemSummary, WorkItemRelationshipListEntry, WorkItemRelationshipView,
+    WorkItemView,
 };
+use tabled::settings::Style;
+use tabled::{Table, Tabled};
+
+pub(crate) fn write_project_rows(
+    output: &mut dyn Write,
+    projects: &[ProjectView],
+) -> io::Result<()> {
+    let rows = projects.iter().map(PrintableProject::from);
+    let mut table = Table::new(rows);
+    table.with(Style::modern_rounded());
+    writeln!(output, "{table}")
+}
+
+#[derive(Tabled)]
+struct PrintableProject<'a> {
+    #[tabled(rename = "Name")]
+    name: &'a str,
+    #[tabled(rename = "Display Name")]
+    display_name: &'a str,
+    #[tabled(rename = "Workspace Path")]
+    workspace_path: &'a str,
+}
+
+impl<'a> From<&'a ProjectView> for PrintableProject<'a> {
+    fn from(project: &'a ProjectView) -> Self {
+        Self {
+            name: &project.name,
+            display_name: &project.display_name,
+            workspace_path: project.path.as_deref().unwrap_or(""),
+        }
+    }
+}
 
 pub(crate) fn write_item_rows(output: &mut dyn Write, items: &[WorkItemView]) -> io::Result<()> {
     for item in items {
@@ -145,27 +177,6 @@ pub(crate) fn write_comments(output: &mut dyn Write, comments: &[CommentView]) -
     Ok(())
 }
 
-pub(crate) fn write_memory_events(
-    output: &mut dyn Write,
-    events: &[ProjectMemoryEventView],
-) -> io::Result<()> {
-    for event in events {
-        writeln!(
-            output,
-            "#{}\t{}\t{}\t{}",
-            event.id,
-            event.operation,
-            event.created_at,
-            event
-                .actor_id
-                .as_deref()
-                .or(event.actor_type.as_deref())
-                .unwrap_or("")
-        )?;
-    }
-    Ok(())
-}
-
 pub(crate) fn write_automation_runs(
     output: &mut dyn Write,
     runs: &[AgentRunView],
@@ -173,11 +184,12 @@ pub(crate) fn write_automation_runs(
     for run in runs {
         writeln!(
             output,
-            "#{}\t{}\t{}\t{}\t{}\t{}",
+            "#{}\t{}\t{}\t{}\t{}\t{}\t{}",
             run.id,
             run.status,
             run.tool_name,
             run.mutability,
+            run_launch_authority_text(run),
             run_token_usage_text(run),
             run.result_summary
         )?;
@@ -188,6 +200,7 @@ pub(crate) fn write_automation_runs(
 pub(crate) fn write_run_log(output: &mut dyn Write, log: &RunLogView) -> io::Result<()> {
     writeln!(output, "run #{} {}", log.run.id, log.run.status)?;
     writeln!(output, "mutability: {}", log.run.mutability)?;
+    writeln!(output, "launch: {}", run_launch_authority_text(&log.run))?;
     writeln!(output, "summary: {}", log.run.result_summary)?;
     writeln!(output, "tokens: {}", run_token_usage_text(&log.run))?;
     writeln!(output, "commit: {}", run_commit_outcome_text(&log.run))?;
@@ -246,6 +259,44 @@ fn run_token_usage_text(run: &AgentRunView) -> String {
     run.token_usage
         .map(run_token_usage_label)
         .unwrap_or_else(|| "not reported".to_owned())
+}
+
+fn run_launch_authority_text(run: &AgentRunView) -> String {
+    use dispatch_types::{
+        AgentRunLaunchResolutionView as Resolution, AgentRunLaunchTargetView as Target,
+    };
+
+    let target = match &run.launch_target {
+        None => return "legacy".to_owned(),
+        Some(Target::None { .. }) => "none".to_owned(),
+        Some(Target::NextOpen { state, .. }) => format!("next_open:{state}"),
+        Some(Target::Selector {
+            selector_sha256, ..
+        }) => {
+            format!("selector:{}", &selector_sha256[..8])
+        }
+        Some(Target::Specific {
+            work_item_id,
+            expected_version,
+            ..
+        }) => {
+            format!("item:{work_item_id}@v{expected_version}")
+        }
+    };
+    let resolution = match &run.launch_resolution {
+        None => "missing".to_owned(),
+        Some(Resolution::Pending { .. }) => "pending".to_owned(),
+        Some(Resolution::None { .. }) => "none".to_owned(),
+        Some(Resolution::Claimed {
+            work_item_id,
+            claimed_version,
+            ..
+        }) => {
+            format!("claimed:{work_item_id}@v{claimed_version}")
+        }
+        Some(Resolution::Unavailable { reason, .. }) => format!("unavailable:{reason}"),
+    };
+    format!("{target}/{resolution}")
 }
 
 fn run_token_usage_label(usage: AgentRunTokenUsageView) -> String {
@@ -322,9 +373,9 @@ fn metadata_value_text(metadata: &serde_json::Value, key: &str) -> Option<String
 mod tests {
     use assertr::prelude::*;
     use dispatch_types::{
-        AgentRunCleanupStatus, AgentRunOutputKind, AgentRunStatus, AgentToolName, AuthorType,
-        AutomationRunMutability, WorkItemRelationshipDirection, WorkItemRelationshipItemSummary,
-        WorkItemRelationshipListEntry, WorkItemRelationshipView,
+        AgentRunCleanupStatus, AgentRunKind, AgentRunOutputKind, AgentRunStatus, AgentToolName,
+        AuthorType, AutomationRunMutability, WorkItemRelationshipDirection,
+        WorkItemRelationshipItemSummary, WorkItemRelationshipListEntry, WorkItemRelationshipView,
     };
     use serde_json::json;
 
@@ -372,6 +423,44 @@ mod tests {
         }
     }
 
+    fn project() -> ProjectView {
+        serde_json::from_value(json!({
+            "id": 4,
+            "name": "patchbay",
+            "display_name": "Dispatch",
+            "path": "/tmp/dispatch",
+            "knowledge_directory": "knowledge",
+            "path_exists": true,
+            "path_checked_at": null,
+            "git_status": null,
+            "system_prompt": "",
+            "workspace_mode": "current_branch",
+            "max_code_edit_agents": 1,
+            "max_read_only_agents": 2,
+            "create_pr": false,
+            "auto_commit": true,
+            "commit_standard": "",
+            "revert_strategy": "manual",
+            "stale_claim_minutes": 0,
+            "worktree_cleanup_policy": "manual",
+            "default_agent_tool": "codex",
+            "default_agent_model": null,
+            "default_agent_reasoning_effort": null,
+            "agent_sandbox_mode": "workspace_write",
+            "agent_extra_writable_roots": [],
+            "agent_git_command_policy": {
+                "add": true,
+                "commit": true,
+                "push": true,
+                "reset": true,
+                "hard_reset": "isolated_workspaces"
+            },
+            "created_at": "2026-06-18T00:00:00Z",
+            "updated_at": "2026-06-18T00:00:00Z"
+        }))
+        .unwrap()
+    }
+
     fn relationship_item(id: i64, title: &str, state: &str) -> WorkItemRelationshipItemSummary {
         WorkItemRelationshipItemSummary {
             id,
@@ -400,7 +489,18 @@ mod tests {
             id: 12,
             project_id: 1,
             work_item_id: Some(42),
-            memory_event_id: None,
+            run_kind: AgentRunKind::Task,
+            purpose: None,
+            launch_target: None,
+            launch_resolution: None,
+            knowledge_revision: None,
+            source_baseline_id: None,
+            source_snapshot_id: None,
+            knowledge_view_sha256: None,
+            input_overlay_sha256: None,
+            source_authority_kind: None,
+            source_ref_name: None,
+            source_raw_head: None,
             trigger_id: None,
             trigger_name: None,
             trigger_revision_id: None,
@@ -455,6 +555,30 @@ mod tests {
     }
 
     #[test]
+    fn project_rows_render_a_bordered_table_with_headers() {
+        let output = text_output(|output| write_project_rows(output, &[project()]));
+
+        assert_that!(&(output)).is_equal_to(concat!(
+            "╭──────────┬──────────────┬────────────────╮\n",
+            "│ Name     │ Display Name │ Workspace Path │\n",
+            "├──────────┼──────────────┼────────────────┤\n",
+            "│ patchbay │ Dispatch     │ /tmp/dispatch  │\n",
+            "╰──────────┴──────────────┴────────────────╯\n",
+        ));
+    }
+
+    #[test]
+    fn empty_project_list_still_renders_the_table_headers() {
+        let output = text_output(|output| write_project_rows(output, &[]));
+
+        assert_that!(&(output)).is_equal_to(concat!(
+            "╭──────┬──────────────┬────────────────╮\n",
+            "│ Name │ Display Name │ Workspace Path │\n",
+            "╰──────┴──────────────┴────────────────╯\n",
+        ));
+    }
+
+    #[test]
     fn relationship_rows_render_direction_kind_and_related_item() {
         let output = text_output(|output| {
             write_relationship_rows(
@@ -493,7 +617,6 @@ mod tests {
         let log = RunLogView {
             run: agent_run(),
             active: false,
-            memory_event: None,
             developer_instructions: Some("Follow Dispatch policy".to_owned()),
             user_prompt: Some("Run this task".to_owned()),
             output: vec![AgentRunOutputPiece {

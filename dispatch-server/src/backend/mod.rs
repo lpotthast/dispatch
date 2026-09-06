@@ -5,6 +5,7 @@
 //! before applying workflow policy or returning data to clients.
 
 pub(crate) mod agent_ids;
+pub(crate) mod agent_run_launch;
 pub(crate) mod agent_tools;
 pub(crate) mod api;
 pub(crate) mod app_state;
@@ -22,7 +23,9 @@ pub(crate) mod automation_routing;
 pub(crate) mod automation_runtime;
 pub(crate) mod automation_triggers;
 pub(crate) mod automation_workspace;
+pub(crate) mod bounded_output;
 pub(crate) mod codex_app_server;
+pub(crate) mod codex_log_storage;
 pub(crate) mod comments;
 pub(crate) mod crudkit_resources;
 pub(crate) mod entities;
@@ -33,8 +36,10 @@ pub(crate) mod item_label_mutations;
 pub(crate) mod item_label_service;
 pub(crate) mod item_labels;
 pub(crate) mod items;
+pub(crate) mod knowledge;
 pub(crate) mod label_conditions;
 pub(crate) mod label_keys;
+pub(crate) mod metrics;
 pub(crate) mod migrations;
 pub(crate) mod page_data;
 pub(crate) mod personalities;

@@ -1,10 +1,15 @@
 use axum::http::HeaderMap;
+use dispatch_types::{AgentRunKind, AgentRunPurposeV1, AgentRunStatus};
 use rootcause::{Result, prelude::*};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::{
     backend::{
         agent_ids,
+        agent_run_launch::{
+            AgentLaunchResolutionV1, AgentLaunchTargetV1, AgentRunLaunchRepository,
+            PersistedLaunchContract,
+        },
         entities::{
             agent_run::{self, AgentRun},
             automation_trigger::AutomationTrigger,
@@ -24,10 +29,13 @@ pub(crate) const AGENT_RUN_ID_HEADER: &str = "x-dispatch-agent-run-id";
 pub(crate) struct RequestAttribution {
     pub(crate) agent_id: Option<String>,
     pub(crate) agent_run_id: Option<i64>,
+    run_kind: Option<AgentRunKind>,
+    run_status: Option<AgentRunStatus>,
     trigger_id: Option<i64>,
     trigger_revision_id: Option<i64>,
     trigger_name: Option<String>,
     bundle_key: Option<String>,
+    launch_contract: Option<PersistedLaunchContract>,
 }
 
 impl RequestAttribution {
@@ -36,7 +44,25 @@ impl RequestAttribution {
         project_name: &str,
         headers: &HeaderMap,
     ) -> Result<Self> {
+        Self::from_headers_inner(store, project_name, headers, false).await
+    }
+
+    pub(crate) async fn from_knowledge_headers(
+        store: &Store,
+        project_name: &str,
+        headers: &HeaderMap,
+    ) -> Result<Self> {
+        Self::from_headers_inner(store, project_name, headers, true).await
+    }
+
+    async fn from_headers_inner(
+        store: &Store,
+        project_name: &str,
+        headers: &HeaderMap,
+        knowledge_read: bool,
+    ) -> Result<Self> {
         let agent_id = header_value(headers, AGENT_ID_HEADER)?;
+
         let agent_run_id = header_value(headers, AGENT_RUN_ID_HEADER)?
             .map(|value| {
                 value
@@ -48,6 +74,9 @@ impl RequestAttribution {
         if agent_run_id.is_some() && agent_id.is_none() {
             bail!("{AGENT_RUN_ID_HEADER} requires {AGENT_ID_HEADER}");
         }
+        if knowledge_read && agent_id.is_some() && agent_run_id.is_none() {
+            bail!("knowledge agent attribution requires {AGENT_RUN_ID_HEADER}");
+        }
         if let Some(agent_id) = &agent_id {
             agent_ids::validate_agent_id(agent_id)?;
         }
@@ -55,6 +84,9 @@ impl RequestAttribution {
         let mut trigger_revision_id = None;
         let mut trigger_name = None;
         let mut bundle_key = None;
+        let mut run_kind = None;
+        let mut run_status = None;
+        let mut launch_contract = None;
         if let Some(run_id) = agent_run_id {
             let project_id = projects::project_id(store, project_name).await?;
             let run = AgentRun::find_by_id(run_id)
@@ -70,6 +102,44 @@ impl RequestAttribution {
                 );
             }
             trigger_id = run.trigger_id;
+            run_kind = Some(
+                run.run_kind
+                    .parse()
+                    .context("invalid persisted agent run kind")?,
+            );
+            run_status = Some(
+                run.status
+                    .parse()
+                    .context("invalid persisted agent run status")?,
+            );
+            launch_contract = AgentRunLaunchRepository::new(store)
+                .load(project_id, run_id)
+                .await?;
+            if run.purpose.is_some() && launch_contract.is_none() {
+                bail!("post-049 agent run {run_id} is missing its launch contract");
+            }
+            if let Some(purpose) = run.purpose {
+                let purpose: AgentRunPurposeV1 = purpose
+                    .parse()
+                    .context("invalid persisted agent run purpose")?;
+                if launch_contract
+                    .as_ref()
+                    .is_none_or(|contract| contract.purpose != purpose)
+                {
+                    bail!("agent run {run_id} purpose disagrees with its launch contract");
+                }
+                let kind_matches_purpose = match purpose {
+                    AgentRunPurposeV1::KnowledgeAnswer => {
+                        run_kind == Some(AgentRunKind::KnowledgeAnswer)
+                    }
+                    AgentRunPurposeV1::Ordinary | AgentRunPurposeV1::KnowledgeCycle => {
+                        run_kind == Some(AgentRunKind::Task)
+                    }
+                };
+                if !kind_matches_purpose {
+                    bail!("agent run {run_id} kind disagrees with its launch purpose");
+                }
+            }
             trigger_revision_id = run.trigger_revision_id;
             trigger_name = run.trigger_name;
             if let Some(id) = trigger_id {
@@ -81,14 +151,32 @@ impl RequestAttribution {
             }
         }
 
-        Ok(Self {
+        let attribution = Self {
             agent_id,
             agent_run_id,
+            run_kind,
+            run_status,
             trigger_id,
             trigger_revision_id,
             trigger_name,
             bundle_key,
-        })
+            launch_contract,
+        };
+        if knowledge_read
+            && attribution.agent_run_id.is_some()
+            && attribution.run_status != Some(AgentRunStatus::Running)
+        {
+            bail!("knowledge run context is no longer active");
+        }
+        if attribution.run_kind == Some(AgentRunKind::KnowledgeAnswer)
+            || attribution
+                .launch_contract
+                .as_ref()
+                .is_some_and(|contract| contract.purpose != AgentRunPurposeV1::Ordinary)
+        {
+            bail!("legacy knowledge runs are retired and cannot issue new requests");
+        }
+        Ok(attribution)
     }
 
     pub(crate) fn cross_check_agent_id(&self, body_agent_id: &str) -> Result<()> {
@@ -102,14 +190,24 @@ impl RequestAttribution {
         Ok(())
     }
 
-    pub(crate) fn cross_check_agent_run_id(&self, body_agent_run_id: Option<i64>) -> Result<()> {
-        if let Some(header_run_id) = self.agent_run_id
-            && body_agent_run_id != Some(header_run_id)
+    /// Generic claim is never a valid operation for a contracted run. Its target was resolved by
+    /// the server before the process started. Legacy pre-049 runs retain compatibility.
+    pub(crate) fn ensure_generic_claim(&self) -> Result<()> {
+        if self.launch_contract.is_some() {
+            bail!("persisted launch contracts cannot call the generic item claim endpoint");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_item_mutation(&self, operation: &str) -> Result<()> {
+        let Some(contract) = &self.launch_contract else {
+            return Ok(());
+        };
+        if contract.purpose != dispatch_types::AgentRunPurposeV1::Ordinary
+            || matches!(contract.target, AgentLaunchTargetV1::None { .. })
+            || !matches!(contract.resolution, AgentLaunchResolutionV1::Claimed { .. })
         {
-            bail!(
-                "request agent run id {header_run_id} does not match body agent run id {:?}",
-                body_agent_run_id
-            );
+            bail!("this agent run's persisted launch contract cannot {operation}");
         }
         Ok(())
     }
@@ -159,11 +257,16 @@ fn header_value(headers: &HeaderMap, name: &str) -> Result<Option<String>> {
 mod tests {
     use assertr::prelude::*;
     use axum::http::HeaderValue;
-    use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+    use dispatch_types::AutomationRunMutability;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, TransactionTrait};
     use tempfile::TempDir;
 
     use super::*;
     use crate::backend::{
+        agent_run_launch::{
+            AgentCapabilitySetV1, AgentLaunchTargetV1, insert_contract_in_tx, mark_spawned_in_tx,
+            mark_terminal_in_tx,
+        },
         entities::agent_run::AgentRunActiveModel,
         projects::{CreateProject, create_project},
         storage::utc_now,
@@ -212,6 +315,62 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    async fn insert_contracted_run(
+        store: &Store,
+        project_name: &str,
+        mutability: AutomationRunMutability,
+        status: AgentRunStatus,
+        resolved: bool,
+    ) -> i64 {
+        let project_id = projects::project_id(store, project_name).await.unwrap();
+        let now = utc_now();
+        let txn = store.db().begin().await.unwrap();
+        let run = AgentRunActiveModel {
+            project_id: Set(project_id),
+            run_kind: Set(AgentRunKind::Task.as_storage().to_owned()),
+            purpose: Set(Some(AgentRunPurposeV1::Ordinary.as_storage().to_owned())),
+            tool_name: Set("codex".to_owned()),
+            mutability: Set(mutability.as_storage().to_owned()),
+            status: Set(status.as_storage().to_owned()),
+            command: Set(String::new()),
+            working_dir: Set(String::new()),
+            created_at: Set(now.clone()),
+            updated_at: Set(now.clone()),
+            ..Default::default()
+        }
+        .insert(&txn)
+        .await
+        .unwrap();
+        let target = if resolved {
+            AgentLaunchTargetV1::none()
+        } else {
+            AgentLaunchTargetV1::next_open("open").unwrap()
+        };
+        insert_contract_in_tx(
+            &txn,
+            project_id,
+            run.id,
+            AgentRunPurposeV1::Ordinary,
+            &target,
+            &AgentCapabilitySetV1::ordinary(),
+            &now,
+        )
+        .await
+        .unwrap();
+        if resolved {
+            mark_spawned_in_tx(&txn, project_id, run.id, &now)
+                .await
+                .unwrap();
+            if status != AgentRunStatus::Running {
+                mark_terminal_in_tx(&txn, project_id, run.id, &now)
+                    .await
+                    .unwrap();
+            }
+        }
+        txn.commit().await.unwrap();
+        run.id
     }
 
     fn headers(agent_id: Option<&str>, run_id: Option<i64>) -> HeaderMap {
@@ -280,8 +439,39 @@ mod tests {
         assert_that!(&(attribution.item_origin().kind)).is_equal_to(WorkItemOriginKind::AgentRun);
         assert_that!(&(attribution.item_origin().agent_run_id)).is_equal_to(Some(run_id));
         attribution.cross_check_agent_id(&agent_id).unwrap();
-        attribution.cross_check_agent_run_id(Some(run_id)).unwrap();
         assert_that!(&(attribution.cross_check_agent_id("agent-other").is_err())).is_true();
-        assert_that!(&(attribution.cross_check_agent_run_id(None).is_err())).is_true();
+    }
+
+    #[tokio::test]
+    async fn knowledge_agent_headers_require_a_project_scoped_persisted_run() {
+        let (_temp, store) = test_store().await;
+        let arbitrary = RequestAttribution::from_knowledge_headers(
+            &store,
+            "demo",
+            &headers(Some("agent-arbitrary"), None),
+        )
+        .await
+        .unwrap_err();
+        assert_that!(&arbitrary.to_string()).contains(AGENT_RUN_ID_HEADER);
+
+        let run_id = insert_contracted_run(
+            &store,
+            "demo",
+            AutomationRunMutability::Mutating,
+            AgentRunStatus::Running,
+            true,
+        )
+        .await;
+        let cross_project = RequestAttribution::from_knowledge_headers(
+            &store,
+            "other",
+            &headers(
+                Some(&agent_ids::dispatch_run_agent_id(run_id)),
+                Some(run_id),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_that!(&cross_project.to_string()).contains("does not exist in this project");
     }
 }

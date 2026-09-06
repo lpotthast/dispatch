@@ -3,10 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     frontend::{
         live_events::{event_scopes_named_project, reload_crudkit_on_live_event},
-        rich_text::{
-            normalize_tiptap_storage_value, rich_text_editor_html, rich_text_plain_text,
-            tiptap_content_to_string,
-        },
+        rich_text::{normalize_tiptap_storage_value, rich_text_editor_html, rich_text_plain_text},
         types::{
             AutomationPersonalityInspectorView,
             agent_tool::{
@@ -70,8 +67,8 @@ use crudkit_leptos::{
     prelude::*,
 };
 use indexmap::indexmap;
-use leptonic::components::prelude::{Icon, TiptapEditor};
-use leptonic::prelude::icondata;
+use leptonic::components::prelude::{Icon, TiptapToolbarEditor};
+use leptonic::prelude::{TiptapContent, TiptapEditorHandle, icondata};
 use leptos::prelude::*;
 #[cfg(not(feature = "ssr"))]
 use serde::Deserialize;
@@ -219,9 +216,10 @@ fn rich_text_field_renderer<F: TypeErasedField>(label: &'static str) -> FieldRen
                 }
                 FieldMode::Readable | FieldMode::Editable => {
                     let disabled = field_mode != FieldMode::Editable || field_options.disabled;
-                    let seen_editor_update = RwSignal::new(false);
-                    let editor_value =
-                        Signal::derive(move || rich_text_editor_html(&current.get()));
+                    let handle = TiptapEditorHandle::new();
+                    let editor_id = format!("dispatch-tiptap-{}", uuid::Uuid::new_v4());
+                    let initial_content =
+                        TiptapContent::html(rich_text_editor_html(&current.get_untracked()));
                     view! {
                         {render_label(field_options.label.clone().or_else(|| Some(Label::new(label))))}
                         <div
@@ -241,22 +239,28 @@ fn rich_text_field_renderer<F: TypeErasedField>(label: &'static str) -> FieldRen
                                     value_changed.run(Ok(Value::String(event_target_value(&event))));
                                 }
                             />
-                            <TiptapEditor
-                                value=editor_value
+                            <TiptapToolbarEditor
+                                attr:class="crud-input-field"
+                                id=editor_id
+                                handle=handle
+                                initial_content=initial_content
                                 disabled=Signal::derive(move || disabled)
-                                set_value=move |content| {
+                                on_change=move || {
                                     let current_value = current.get_untracked();
-                                    let next_value = normalize_tiptap_storage_value(tiptap_content_to_string(content));
-                                    let first_editor_update = !seen_editor_update.get_untracked();
-                                    seen_editor_update.set(true);
-                                    if first_editor_update
-                                        && rich_text_plain_text(&next_value) == rich_text_plain_text(&current_value)
-                                    {
-                                        return;
+                                    match handle.get_html() {
+                                        Ok(content) => {
+                                            let next_value = normalize_tiptap_storage_value(content);
+                                            if next_value != current_value {
+                                                value_changed.run(Ok(Value::String(next_value)));
+                                            }
+                                        }
+                                        Err(report) => {
+                                            tracing::error!(error = %report, "Could not read Tiptap editor content");
+                                        }
                                     }
-                                    if next_value != current_value {
-                                        value_changed.run(Ok(Value::String(next_value)));
-                                    }
+                                }
+                                on_error=move |report| {
+                                    tracing::error!(error = %report, "Tiptap editor operation failed");
                                 }
                             />
                         </div>

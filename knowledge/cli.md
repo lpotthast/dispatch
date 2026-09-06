@@ -32,14 +32,12 @@ dispatch knowledge impact --json
 dispatch knowledge check --json
 ```
 
-Knowledge commands in this document describe the replacement interface. [Knowledge Agent Interface](knowledge-agents.md)
-owns their exact behavior and working-copy binding; [Transition and acceptance](knowledge-transition.md) identifies the
-current binary's legacy behavior.
+[Knowledge Agent Interface](knowledge-agents.md) owns knowledge command behavior and working-copy binding.
 
 Root/document reads, lexical search, impact mapping, and structural checks are immediate operations and never launch
 agents. Agents edit Markdown and frontmatter using ordinary file tools in their assigned working copy. Background
 knowledge jobs report results through their own job interface and do not claim work items. No signed-change or
-knowledge-review receipt protocol is required by the replacement.
+knowledge-review receipt protocol is required.
 
 For follow-up items or explicit cross-item work, item ids remain available:
 
@@ -251,5 +249,5 @@ The agent CLI intentionally has no trigger create, schedule, bundle, restore, or
 
 ## Knowledge Location
 
-Knowledge location and explicit relocation follow [Documents and relationships](knowledge-documents.md). The legacy
-signed relocation command is not part of the replacement agent interface.
+Knowledge location and explicit relocation follow [Documents and relationships](knowledge-documents.md). Relocation is
+a user-requested checked file move, independent of signing or canonical metadata sidecars.

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use rootcause::{Result, prelude::*};
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, FromQueryResult, QueryFilter};
 
 use crate::{
     backend::{
@@ -14,12 +14,25 @@ use crate::{
         projects, work_item_comments, work_item_groups, work_item_labels, workflow_labels,
     },
     shared::view_models::{
-        AgentReasoningEffort, WorkItemClaimSourceView, WorkItemGroupSummaryView, WorkItemLabelView,
-        WorkItemOriginKind, WorkItemOriginView, WorkItemView,
+        AgentReasoningEffort, BoardWorkItemView, WorkItemClaimSourceView, WorkItemGroupSummaryView,
+        WorkItemLabelView, WorkItemOriginKind, WorkItemOriginView, WorkItemView,
     },
 };
 
 use super::storage::Store;
+
+#[derive(Debug, FromQueryResult)]
+pub(crate) struct BoardWorkItemModel {
+    id: i64,
+    work_group_id: Option<i64>,
+    title: String,
+    description_excerpt: String,
+    claimed_by: Option<String>,
+    claimed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    comment_count: i64,
+}
 
 pub(crate) async fn models_to_views(
     store: &Store,
@@ -31,19 +44,22 @@ pub(crate) async fn models_to_views(
     }
 
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let mut labels =
-        work_item_labels::for_items(store.db().as_ref(), project_id, &item_ids).await?;
-    let mut comment_counts =
-        work_item_comments::counts_for_items(store.db().as_ref(), &item_ids).await?;
-    let mut claim_sources =
-        claim_sources_for_items(store.db().as_ref(), project_id, &items).await?;
-    let mut origins = origins_for_items(store.db().as_ref(), project_id, &item_ids).await?;
-    let groups = work_item_groups::summaries_for_items(
-        store,
-        project_id,
-        items.iter().filter_map(|item| item.work_group_id),
-    )
-    .await?;
+    let group_ids = items
+        .iter()
+        .filter_map(|item| item.work_group_id)
+        .collect::<Vec<_>>();
+    let db = store.db();
+    let (mut labels, mut comment_counts, mut claim_sources, mut origins, groups) =
+        crate::backend::metrics::time_repository("work_items.enrich", async {
+            tokio::try_join!(
+                work_item_labels::for_items(db.as_ref(), project_id, &item_ids),
+                work_item_comments::counts_for_items(db.as_ref(), &item_ids),
+                claim_sources_for_items(db.as_ref(), project_id, &items),
+                origins_for_items(db.as_ref(), project_id, &item_ids),
+                work_item_groups::summaries_for_items(store, project_id, group_ids),
+            )
+        })
+        .await?;
 
     let mut views = Vec::with_capacity(items.len());
     for item in items {
@@ -61,34 +77,60 @@ pub(crate) async fn models_to_views(
     Ok(views)
 }
 
+pub(crate) async fn board_models_to_views(
+    store: &Store,
+    project_id: i64,
+    items: Vec<BoardWorkItemModel>,
+) -> Result<Vec<BoardWorkItemView>> {
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let group_ids = items
+        .iter()
+        .filter_map(|item| item.work_group_id)
+        .collect::<Vec<_>>();
+    let run_to_item = claimed_run_to_item(
+        items
+            .iter()
+            .map(|item| (item.id, item.claimed_by.as_deref())),
+    );
+    let db = store.db();
+    let (mut labels, mut claim_sources, groups) =
+        crate::backend::metrics::time_repository("work_items.enrich_board", async {
+            tokio::try_join!(
+                work_item_labels::for_items(db.as_ref(), project_id, &item_ids),
+                claim_sources_for_run_to_item(db.as_ref(), project_id, run_to_item),
+                work_item_groups::summaries_for_items(store, project_id, group_ids),
+            )
+        })
+        .await?;
+
+    Ok(items
+        .into_iter()
+        .map(|item| BoardWorkItemView {
+            id: item.id,
+            title: item.title,
+            description_excerpt: item.description_excerpt,
+            labels: labels.remove(&item.id).unwrap_or_default(),
+            claimed_by: item.claimed_by,
+            claimed_at: item.claimed_at,
+            claim_source: claim_sources.remove(&item.id),
+            created_at: item.created_at,
+            updated_at: item.updated_at,
+            comment_count: item.comment_count,
+            work_group: item.work_group_id.and_then(|id| groups.get(&id).cloned()),
+        })
+        .collect())
+}
+
 pub(crate) async fn model_to_view(store: &Store, item: WorkItemModel) -> Result<WorkItemView> {
-    let work_group_id = item.work_group_id;
-    let labels = work_item_labels::for_item(store.db().as_ref(), item.project_id, item.id).await?;
-    let comment_count = work_item_comments::counts_for_items(store.db().as_ref(), &[item.id])
+    let project_id = item.project_id;
+    models_to_views(store, project_id, vec![item])
         .await?
-        .remove(&item.id)
-        .unwrap_or(0);
-    let mut claim_sources = claim_sources_for_items(
-        store.db().as_ref(),
-        item.project_id,
-        std::slice::from_ref(&item),
-    )
-    .await?;
-    let claim_source = claim_sources.remove(&item.id);
-    let origin = origins_for_items(store.db().as_ref(), item.project_id, &[item.id])
-        .await?
-        .remove(&item.id);
-    let work_group = work_item_groups::summaries_for_items(store, item.project_id, work_group_id)
-        .await?
-        .remove(&work_group_id.unwrap_or_default());
-    to_view(
-        item,
-        labels,
-        comment_count,
-        claim_source,
-        work_group,
-        origin,
-    )
+        .pop()
+        .ok_or_else(|| report!("failed to build work item view"))
 }
 
 async fn origins_for_items<C>(
@@ -137,13 +179,34 @@ async fn claim_sources_for_items<C>(
 where
     C: ConnectionTrait,
 {
-    let run_to_item = items
-        .iter()
-        .filter_map(|item| {
-            let run_id = agent_ids::parse_dispatch_run_agent_id(item.claimed_by.as_deref()?)?;
-            Some((run_id, item.id))
+    let run_to_item = claimed_run_to_item(
+        items
+            .iter()
+            .map(|item| (item.id, item.claimed_by.as_deref())),
+    );
+    claim_sources_for_run_to_item(conn, project_id, run_to_item).await
+}
+
+fn claimed_run_to_item<'a>(
+    items: impl IntoIterator<Item = (i64, Option<&'a str>)>,
+) -> BTreeMap<i64, i64> {
+    items
+        .into_iter()
+        .filter_map(|(item_id, claimed_by)| {
+            let run_id = agent_ids::parse_dispatch_run_agent_id(claimed_by?)?;
+            Some((run_id, item_id))
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect()
+}
+
+async fn claim_sources_for_run_to_item<C>(
+    conn: &C,
+    project_id: i64,
+    run_to_item: BTreeMap<i64, i64>,
+) -> Result<BTreeMap<i64, WorkItemClaimSourceView>>
+where
+    C: ConnectionTrait,
+{
     if run_to_item.is_empty() {
         return Ok(BTreeMap::new());
     }

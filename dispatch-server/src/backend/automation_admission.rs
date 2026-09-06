@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use rootcause::{Result, prelude::*};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect};
 
 use crate::{
     backend::{
@@ -79,10 +79,9 @@ pub(crate) async fn enforce_rule_start_allowed(
             .filter(agent_run::Column::ProjectId.eq(project_id))
             .filter(agent_run::Column::Status.eq(AgentRunStatus::Running.as_storage()))
             .filter(agent_run::Column::TriggerId.eq(trigger_id))
-            .all(store.db().as_ref())
+            .count(store.db().as_ref())
             .await
-            .context("failed to count running automation rule runs")?
-            .len() as u64;
+            .context("failed to count running automation rule runs")?;
         if running >= limit {
             bail!("automation rule already has {running} running run(s); limit is {limit}");
         }
@@ -92,10 +91,10 @@ pub(crate) async fn enforce_rule_start_allowed(
             .filter(agent_run::Column::ProjectId.eq(project_id))
             .filter(agent_run::Column::Status.eq(AgentRunStatus::Running.as_storage()))
             .filter(agent_run::Column::EffectiveConcurrencyGroup.eq(group))
-            .all(store.db().as_ref())
+            .count(store.db().as_ref())
             .await
             .context("failed to inspect automation concurrency group")?;
-        if !running.is_empty() {
+        if running > 0 {
             bail!("automation concurrency group '{group}' already has an active run");
         }
     }
@@ -146,15 +145,25 @@ pub(crate) async fn can_start_run(
 
 pub(crate) async fn running_counts(store: &Store, project_name: &str) -> Result<RunningRunCounts> {
     let project_id = projects::project_id(store, project_name).await?;
-    let runs = AgentRun::find()
+    running_counts_for_project_id(store, project_id).await
+}
+
+pub(crate) async fn running_counts_for_project_id(
+    store: &Store,
+    project_id: i64,
+) -> Result<RunningRunCounts> {
+    let mutabilities = AgentRun::find()
+        .select_only()
+        .column(agent_run::Column::Mutability)
         .filter(agent_run::Column::ProjectId.eq(project_id))
         .filter(agent_run::Column::Status.eq(AgentRunStatus::Running.as_storage()))
+        .into_tuple::<String>()
         .all(store.db().as_ref())
         .await
-        .context("failed to load running agent runs")?;
+        .context("failed to load running agent run mutabilities")?;
     let mut counts = RunningRunCounts::default();
-    for run in runs {
-        match AutomationRunMutability::from_str(&run.mutability)? {
+    for mutability in mutabilities {
+        match AutomationRunMutability::from_str(&mutability)? {
             AutomationRunMutability::Mutating => counts.mutating += 1,
             AutomationRunMutability::ReadOnly => counts.read_only += 1,
         }

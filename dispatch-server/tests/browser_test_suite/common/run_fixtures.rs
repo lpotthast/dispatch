@@ -193,10 +193,10 @@ pub(crate) async fn seed_run_commit_outcome_fixtures(app: &DispatchTestApp) -> R
     assert_that!(missing_required.rows_affected()).is_equal_to(1);
 
     let output_path = app.temp_dir().join("run-503.output.json");
-    let command = r#"/bin/zsh -lc "sed -n '1,4p' design/ui.md""#;
+    let command = r#"/bin/zsh -lc "sed -n '1,4p' knowledge/ui.md""#;
     let generic_command = "/bin/zsh -lc 'just check'";
-    let diff_command = "/bin/zsh -lc 'git diff -- design/ui.md'";
-    let diff_output = "diff --git a/design/ui.md b/design/ui.md\nindex 1111111..2222222 100644\n--- a/design/ui.md\n+++ b/design/ui.md\n@@ -1 +1 @@\n-old copy\n+new copy";
+    let diff_command = "/bin/zsh -lc 'git diff -- knowledge/ui.md'";
+    let diff_output = "diff --git a/knowledge/ui.md b/knowledge/ui.md\nindex 1111111..2222222 100644\n--- a/knowledge/ui.md\n+++ b/knowledge/ui.md\n@@ -1 +1 @@\n-old copy\n+new copy";
     let output = serde_json::json!({
         "schema_version": 1,
         "pieces": [

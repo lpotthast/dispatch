@@ -22,6 +22,7 @@ const CLAIM_SCAN_BATCH_SIZE: u64 = 2;
 
 pub(super) struct ClaimCandidate {
     pub(super) item_id: i64,
+    pub(super) observed_version: i64,
     pub(super) source_state: String,
 }
 
@@ -93,6 +94,7 @@ where
                 self.cursor = Some(ClaimScanCursor::from(&candidate));
                 return Ok(Some(ClaimCandidate {
                     item_id: candidate.id,
+                    observed_version: candidate.version,
                     source_state: workflow_labels::source_state_for_new_claim(labels),
                 }));
             }

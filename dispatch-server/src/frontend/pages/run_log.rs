@@ -1,13 +1,12 @@
 use crate::{
     frontend::{
         components::{
-            ActivePage, RunOutput, TopBar, cached_query, encode_path, recorded_field,
-            run_commit_outcome_label, run_origin_label, run_result_summary, run_status_class,
-            run_token_usage_text, run_work_item_link,
+            RunOutput, cached_query, encode_path, recorded_field, run_commit_outcome_label,
+            run_origin_label, run_result_summary, run_status_class, run_token_usage_text,
+            run_work_item_link,
         },
         live_events::{refetch_on_live_event, run_log_event_matches},
-        pages::memory_event_ref_label,
-        services::{project_cache, run_service},
+        services::run_service,
     },
     shared::view_models::{CodexAppServerStatusView, ProjectView, RunLogView},
 };
@@ -28,20 +27,20 @@ pub struct RunLogPage {
 #[component]
 pub fn PageRunLog() -> impl IntoView {
     let params = use_params_map();
-    let project = params.read_untracked().get("project");
-    let run_id = params
-        .read_untracked()
-        .get("run_id")
-        .and_then(|value| value.parse::<i64>().ok());
-    let project_for_loader = project.clone();
-    let project_for_events = project.clone();
+    let project = Memo::new(move |_| params.read().get("project"));
+    let run_id = Memo::new(move |_| {
+        params
+            .read()
+            .get("run_id")
+            .and_then(|value| value.parse::<i64>().ok())
+    });
     let service = run_service();
-    let initial = service.cached_log_untracked(&project, run_id);
+    let initial = service.cached_log_untracked(&project.get_untracked(), run_id.get_untracked());
     let service_for_cache = service.clone();
     let service_for_load = service.clone();
     let result = cached_query(
         initial,
-        move || (project_for_loader.clone(), run_id),
+        move || (project.get(), run_id.get()),
         move |(project, run_id)| service_for_cache.cached_log(project, *run_id),
         move |(project, run_id)| {
             let service = service_for_load.clone();
@@ -49,51 +48,34 @@ pub fn PageRunLog() -> impl IntoView {
             async move { service.load_log(project, run_id).await }
         },
     );
-    project_cache().track(result.value, |page| &page.projects);
     refetch_on_live_event(result.refresh, move |event| {
-        run_log_event_matches(event, project_for_events.as_deref(), run_id)
+        run_log_event_matches(event, project.get().as_deref(), run_id.get())
     });
-    let active_project_names = Signal::derive(move || {
-        result
-            .value
+    let board_href = move || {
+        project
             .get()
-            .map(|page| page.active_project_names)
-            .unwrap_or_default()
-    });
-    let codex_status = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.codex_status)
-            .unwrap_or_default()
-    });
-    let topbar = view! {
-        <TopBar
-            active_project_names
-            selected_project=Signal::derive({
-                let project = project.clone();
-                move || project.clone()
-            })
-            active=ActivePage::Board
-            automation=Signal::derive(|| None)
-            codex_status
-        />
+            .as_deref()
+            .map(|project| format!("/?project={}", encode_path(project)))
+            .unwrap_or_else(|| "/".to_owned())
     };
-    let board_href = project
-        .as_deref()
-        .map(|project| format!("/?project={}", encode_path(project)))
-        .unwrap_or_else(|| "/".to_owned());
-    let title = run_id
-        .map(|run_id| format!("Run #{run_id}"))
-        .unwrap_or_else(|| "Run log".to_owned());
+    let title = move || {
+        run_id
+            .get()
+            .map(|run_id| format!("Run #{run_id}"))
+            .unwrap_or_else(|| "Run log".to_owned())
+    };
     let show_thinking_history = RwSignal::new(false);
+    Effect::new(move |_| {
+        project.track();
+        run_id.track();
+        show_thinking_history.set(false);
+    });
     let toggle_thinking_history = Callback::new(move |()| {
         show_thinking_history.update(|show| *show = !*show);
     });
     view! {
         <Title text="Run log"/>
         <div>
-            {topbar}
             <main class="page-shell run-log">
                 <section class="item-header">
                     <a href=board_href>"Board"</a>
@@ -133,7 +115,6 @@ pub(crate) fn RunLogContent(
     let command = recorded_field(&run_log.run.command);
     let working_dir = recorded_field(&run_log.run.working_dir);
     let status_class = run_status_class(run_log.run.status);
-    let memory_event = run_log.memory_event.as_ref().map(memory_event_ref_label);
     let token_usage = run_token_usage_text(&run_log.run);
     let commit_outcome = run_commit_outcome_label(&run_log.run);
     let trigger_revision = run_log.run.trigger_revision_id;
@@ -235,12 +216,6 @@ pub(crate) fn RunLogContent(
                         })}
                         {concurrency_group.map(|group| view! {
                             <><dt>"concurrency group"</dt><dd>{group}</dd></>
-                        })}
-                        {memory_event.map(|memory_event| view! {
-                            <>
-                                <dt>"memory"</dt>
-                                <dd>{memory_event}</dd>
-                            </>
                         })}
                         {pr_url}
                     </dl>

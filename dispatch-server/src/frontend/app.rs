@@ -1,8 +1,11 @@
 use crate::frontend::{
-    components::{WorkspaceBar, provide_workspace_dock_size},
+    components::{
+        TopBar, WorkspaceBar, provide_elapsed_time_context, provide_workspace_dock_size,
+        workspace_dock_height,
+    },
     live_events::LiveEventsProvider,
     routes::routes,
-    services::provide_frontend_services,
+    services::{SharedStatusProvider, provide_frontend_services},
 };
 use crudkit_leptos::crud_instance_mgr::CrudInstanceMgr;
 use leptonic::components::prelude::{LeptonicTheme, Root};
@@ -58,12 +61,21 @@ pub fn App() -> impl IntoView {
 #[component]
 pub fn MainLayout() -> impl IntoView {
     provide_frontend_services();
+    provide_elapsed_time_context();
     provide_workspace_dock_size();
+    let dock_height = workspace_dock_height();
 
     view! {
         <CrudInstanceMgr>
             <LiveEventsProvider/>
-            <Outlet/>
+            <SharedStatusProvider/>
+            <div
+                class="app-layout"
+                style=move || dock_height.get().map(|height| format!("--workspace-dock-height: {height}px;")).unwrap_or_default()
+            >
+                <TopBar/>
+                <Outlet/>
+            </div>
             <WorkspaceBar/>
         </CrudInstanceMgr>
     }

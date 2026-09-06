@@ -463,14 +463,176 @@ a {
   padding: $page-padding;
 }
 
+.metrics-page {
+  display: grid;
+  gap: $space-lg;
+}
+
+.metrics-page-heading {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+}
+
+.metrics-summary {
+  display: grid;
+  gap: $space;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric-summary-card {
+  display: grid;
+  gap: $space-xs;
+  min-width: 0;
+}
+
+.metric-summary-card strong {
+  font-size: 1.05em;
+  overflow-wrap: anywhere;
+}
+
+.metrics-panel {
+  min-width: 0;
+}
+
+.metrics-panel .panel-heading p {
+  margin: $space-xs 0 0;
+}
+
+.metrics-table-scroll {
+  overflow-x: auto;
+}
+
+.metrics-table {
+  border-collapse: collapse;
+  font-size: 0.88em;
+  width: 100%;
+}
+
+.metrics-table th,
+.metrics-table td {
+  border-top: $line solid $border;
+  padding: $space;
+  text-align: left;
+  vertical-align: top;
+}
+
+.metrics-table th {
+  white-space: nowrap;
+}
+
+.metrics-table .numeric {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (max-width: $breakpoint-stack) {
+  .metrics-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: $breakpoint-mobile) {
+  .metrics-page-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: $space;
+  }
+
+  .metrics-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
 .system-sections {
   display: grid;
   gap: $space-2xl;
 
   > .codex-status-panel,
+  > .codex-log-storage,
   > .app-tools {
     margin: 0;
   }
+}
+
+.codex-log-storage {
+  @include surface;
+  display: grid;
+  gap: $space;
+  padding: $panel-padding;
+  border-top: $accent-line solid $amber;
+
+  h2,
+  p,
+  ul {
+    margin: 0;
+  }
+
+  &.codex-log-storage-warning {
+    background: $amber-soft;
+  }
+
+  &.codex-log-storage-danger {
+    border-top-color: $danger;
+    background: $danger-soft;
+  }
+
+  &.codex-log-storage-success {
+    border-top-color: $green;
+    background: $green-soft;
+  }
+}
+
+.codex-log-storage-header {
+  display: flex;
+  gap: $space;
+  align-items: start;
+  justify-content: space-between;
+
+  > div {
+    display: grid;
+    gap: $space-sm;
+  }
+
+  button {
+    flex: none;
+  }
+}
+
+.codex-log-databases,
+.codex-log-scan-errors {
+  display: grid;
+  gap: $space-sm;
+  padding: 0;
+  list-style: none;
+}
+
+.codex-log-databases li {
+  display: flex;
+  min-width: 0;
+  gap: $space;
+  align-items: center;
+  justify-content: space-between;
+
+  code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  strong {
+    flex: none;
+  }
+}
+
+.codex-log-scan-errors,
+.codex-log-purge-result.error-message {
+  color: $danger;
+}
+
+.codex-log-purge-result.success {
+  color: $green;
+  font-weight: 700;
 }
 
 .automation-sections {
@@ -1069,7 +1231,7 @@ textarea {
     }
   }
 
-  leptos-tiptap-instance {
+  .leptos-tiptap-instance {
     display: block;
     min-height: 10.7143em;
     padding: $space $space;
@@ -1100,7 +1262,7 @@ textarea {
   }
 }
 
-.crud-rich-text-field leptos-tiptap-instance {
+.crud-rich-text-field .leptos-tiptap-instance {
   min-height: 10em;
 }
 
@@ -1166,11 +1328,20 @@ button.danger {
   color: $muted;
 }
 
-.board-page {
-  --workspace-dock-height: calc(#{$dock-height} + #{$line});
-
+.app-layout:has(> .board-page) {
   display: flex;
-  height: calc(100dvh - var(--workspace-dock-height));
+  height: calc(100dvh - var(--workspace-dock-height, #{$dock-height} + #{$line}));
+  min-height: 0;
+  flex-direction: column;
+}
+
+.app-layout > .app-topbar {
+  flex: none;
+}
+
+.board-page {
+  display: flex;
+  flex: 1;
   min-height: 0;
   flex-direction: column;
 
@@ -2601,6 +2772,170 @@ a.claim-badge {
   padding: $panel-padding;
 }
 
+.knowledge-route { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.knowledge-page {
+  display: flex; flex: 1; min-height: 0; flex-direction: column; gap: $space;
+  [hidden] { display: none !important; }
+  textarea, code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid $accent; outline-offset: 2px; }
+  button[aria-pressed="true"] { border-color: $accent; background: $accent-soft; color: $accent-strong; }
+  button.primary { border-color: $accent; background: $accent; color: $on-accent; }
+}
+.knowledge-page-heading {
+  display: flex; align-items: center; justify-content: space-between; gap: $space;
+  h1 { margin: 0; }
+  p { margin: $space-xs 0 0; color: $muted; }
+}
+.knowledge-workbench {
+  @include surface;
+  position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr);
+  height: clamp(38em, calc(100dvh - 12em), 65em); min-width: 0; overflow: hidden;
+}
+.knowledge-tools-rail {
+  z-index: 14; display: flex; align-items: center; gap: $space-xs;
+  min-width: 0; min-height: $control-height; padding: $space-xs $space-sm;
+  overflow-x: auto; border-bottom: $line solid $border; background: $surface;
+  > strong { padding: 0 $space; color: $muted; font-size: $text-sm; }
+  button {
+    flex: none; padding: $space-xs $space; border-color: transparent; background: transparent; color: $ink-soft;
+    &:hover, &:focus-visible, &.active { border-color: $border; background: $surface-raised; color: $ink; }
+    &.active { border-color: $accent; }
+  }
+}
+.knowledge-document-count { margin-left: auto; padding-inline: $space; white-space: nowrap; color: $muted; font-size: $text-sm; }
+.knowledge-workspace {
+  --knowledge-graph-width: 56%;
+  display: grid; grid-template-columns: minmax(0, var(--knowledge-graph-width)) 0.7143em minmax(0, 1fr);
+  min-width: 0; min-height: 0; overflow: hidden;
+  &.resizing { cursor: col-resize; user-select: none; }
+}
+.knowledge-workspace-resizer {
+  position: relative; z-index: 4; width: 100%; min-width: 0; padding: 0; touch-action: none;
+  border: 0; border-inline: $line solid $border; border-radius: 0; background: $surface; cursor: col-resize;
+  &::before { position: absolute; inset: 42% 0; width: 3px; margin: auto; content: ""; border-radius: $pill; background: $border-strong; }
+  &:hover, &:focus-visible { background: $accent-soft; &::before { background: $accent; } }
+}
+.knowledge-canvas-pane, .knowledge-document-pane { min-width: 0; min-height: 0; }
+.knowledge-canvas-pane { position: relative; display: flex; flex-direction: column; overflow: hidden; }
+.knowledge-canvas-heading, .knowledge-document-heading {
+  display: flex; min-height: 3.2857em; gap: $space; align-items: center; justify-content: space-between;
+  padding: $space-sm $space-lg; border-bottom: $line solid $border; background: $surface;
+  h2 { margin: 0; font-size: $text-lg; }
+}
+.knowledge-document-heading { position: sticky; z-index: 3; top: 0; }
+.knowledge-view-toggle, .knowledge-editor-toolbar, .knowledge-canvas-controls, .knowledge-zoom-controls {
+  display: flex; gap: $space-sm; align-items: center; flex-wrap: wrap;
+}
+.knowledge-view-toggle button { padding: $space-xs $space-sm; }
+.knowledge-canvas-controls { padding: $space-sm $space; border-bottom: $line solid $border; }
+.knowledge-zoom-controls { gap: 0; }
+.knowledge-zoom-value { min-width: 3.5em; text-align: center; color: $muted; font-size: $text-sm; font-variant-numeric: tabular-nums; }
+.knowledge-graph-container { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.knowledge-canvas-frame {
+  position: relative; flex: 1; min-height: 15em; overflow: hidden;
+  background-color: $surface; background-image: radial-gradient($border-strong 0.8px, transparent 0.8px); background-size: 20px 20px;
+}
+.knowledge-canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; &:active { cursor: grabbing; } }
+.knowledge-graph-edge {
+  fill: none; stroke: $border-strong; stroke-width: 1.8;
+  &.depends-on { stroke: $muted; stroke-dasharray: 8 4; }
+  &.related-to { stroke: $muted; stroke-dasharray: 2 5; }
+  &.selected { stroke: $accent; stroke-width: 2.6; }
+}
+#knowledge-arrow path { fill: $muted; }
+.knowledge-graph-node {
+  cursor: pointer; outline: none;
+  rect { fill: $surface-raised; stroke: $border-strong; stroke-width: 1.5; }
+  &.root rect { fill: $accent-soft; stroke: $accent; }
+  &.unorganized rect { stroke-dasharray: 5 3; }
+  &.selected rect, &:hover rect, &:focus-visible rect { stroke: $accent; stroke-width: 3; fill: $accent-soft; }
+  &.diagnostic:not(.selected) rect { stroke-width: 2.5; }
+  text { pointer-events: none; user-select: none; fill: $ink; font-family: inherit; }
+  .knowledge-graph-node-title { font-size: 13px; font-weight: 600; }
+  .knowledge-graph-node-id { font-size: 10px; fill: $muted; }
+}
+.knowledge-graph-legend {
+  display: flex; flex-wrap: wrap; gap: $space; align-items: center; padding: $space-sm $space;
+  border-top: $line solid $border; font-size: $text-sm; color: $muted;
+  span { display: inline-flex; align-items: center; gap: $space-xs; }
+  i { display: inline-block; width: 1.3em; height: 0.7em; border: 1px solid $border-strong; border-radius: 2px; }
+  .root { border-color: $accent; background: $accent-soft; }
+  .unorganized { border-style: dashed; }
+  .legend-edge { height: 0; border: 0; border-top: 2px solid $border-strong; border-radius: 0; }
+  .dependency { border-top-style: dashed; }
+  .related { border-top-style: dotted; }
+}
+.knowledge-document-pane { overflow: auto; background: $surface; }
+.knowledge-document-content { padding: $space-lg; }
+.knowledge-document-path { margin-top: 0; font-size: $text-sm; color: $muted; overflow-wrap: anywhere; }
+.knowledge-markdown-preview {
+  font-size: 1em; line-height: 1.7; overflow-wrap: anywhere;
+  > :first-child { margin-top: 0; }
+  h1 { font-size: 1.7em; } h2 { font-size: 1.35em; } h3 { font-size: 1.1em; }
+  h1, h2, h3, h4 { line-height: 1.3; margin-top: 1.7em; }
+  a { color: $accent; text-decoration: underline; }
+  ul, ol { padding-left: 1.6em; }
+  pre { padding: $space; overflow: auto; background: $subtle; border: $line solid $border; border-radius: $radius-sm; white-space: pre; }
+  code { font-size: 0.9em; }
+  blockquote { margin-left: 0; padding-left: $space; border-left: 3px solid $border-strong; color: $muted; }
+  table { display: block; overflow-x: auto; max-width: 100%; border-collapse: collapse; }
+  th, td { padding: $space-sm; border: $line solid $border; text-align: left; }
+}
+.knowledge-document-list { overflow: auto; min-height: 0; padding: $space; }
+.knowledge-search-results {
+  display: grid; gap: $space-sm; margin: 0; padding: 0; list-style: none;
+  li > button {
+    display: grid; gap: $space-xs; width: 100%; padding: $space; text-align: left; border: $line solid $border; background: $surface;
+    &.selected, &:hover { border-color: $accent; background: $accent-soft; }
+    code { font-size: $text-sm; color: $muted; overflow-wrap: anywhere; }
+    span { color: $ink-soft; font-weight: normal; line-height: 1.5; }
+  }
+}
+.knowledge-tool-backdrop {
+  position: absolute; z-index: 10; inset: 3.2em 0 0; display: none; padding: 0; border: 0; border-radius: 0; background: rgba($ink,0.16);
+  &.shown { display: block; }
+}
+.knowledge-tool-drawer {
+  position: absolute; z-index: 12; inset: 3.2em 0 0 auto; display: none; width: min(42em, 92%); min-width: 0; min-height: 0;
+  overflow: hidden; border-left: $line solid $border-strong; background: $surface; box-shadow: $shadow-drawer;
+  &.open { display: flex; flex-direction: column; }
+}
+.knowledge-tool-drawer-heading {
+  display: flex; min-height: 4em; gap: $space; align-items: center; justify-content: space-between;
+  padding: $space $space-lg; border-bottom: $line solid $border;
+  h2 { margin: 0; font-size: $text-lg; }
+}
+.knowledge-tool-body {
+  display: flex; flex-direction: column; min-height: 0; gap: $space; padding: $space-lg; overflow: auto; overscroll-behavior: contain;
+  > p { margin: 0; }
+  label { display: grid; gap: $space-xs; font-weight: 600; }
+  input, textarea { width: 100%; box-sizing: border-box; }
+  .button-row { display: flex; gap: $space-sm; }
+}
+.knowledge-search-input { display: flex; gap: $space-sm; align-items: end; label { flex: 1; min-width: 0; } }
+.knowledge-markdown-editor { min-height: 24em; padding: $space; resize: vertical; font-size: $text-sm; line-height: 1.6; tab-size: 2; }
+.knowledge-relationships { h3 { margin-bottom: $space-sm; } ul { list-style: none; padding: 0; } li + li { margin-top: $space-xs; } }
+.knowledge-diagnostic-list { list-style: none; margin: 0; padding: 0; }
+.knowledge-diagnostic { margin-bottom: $space; padding: $space; border: $line solid $border; border-radius: $radius-sm; p { overflow-wrap: anywhere; } }
+.knowledge-empty-state { padding: $space-lg; color: $muted; }
+.knowledge-conflict-comparison pre { max-height: 24em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.knowledge-message { padding: $space; background: $subtle; border: $line solid $border; overflow-wrap: anywhere; }
+@media (min-width: $breakpoint-stack) {
+  .app-layout:has(> .knowledge-route) { display: flex; height: calc(100dvh - var(--workspace-dock-height, #{$dock-height} + #{$line})); min-height: 0; flex-direction: column; }
+  .knowledge-page { padding-bottom: 0; }
+  .knowledge-workbench { flex: 1; min-height: 0; height: auto; }
+}
+@media (max-width: 900px) {
+  .knowledge-workbench { height: auto; min-height: 40em; overflow: visible; }
+  .knowledge-workspace { display: flex; flex-direction: column; overflow: visible; }
+  .knowledge-workspace-resizer { display: none; }
+  .knowledge-document-pane { order: -1; max-height: 65dvh; min-height: 16em; border-bottom: $line solid $border; }
+  .knowledge-canvas-pane { min-height: 32em; }
+  .knowledge-graph-container { min-height: 28em; }
+  .knowledge-tool-drawer { position: absolute; width: 100%; max-height: 80dvh; top: 3.2em; }
+  .knowledge-document-count, .knowledge-tools-rail > strong { display: none; }
+}
+
 .crudkit-projects,
 .crudkit-agent-tools,
 .crudkit-automation-triggers,
@@ -3580,6 +3915,7 @@ dd {
   .label-row,
   .label-add-controls,
   .codex-status-header,
+  .codex-log-storage-header,
   .codex-auth-guide-main,
   .codex-status-actions {
     flex-direction: column;

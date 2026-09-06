@@ -43,10 +43,12 @@ is not a promise that no other document will be read.
 
 ## Document and graph workspace
 
-Provide a document list and a navigable graph alongside the selected document. The graph starts around the root or
-selected subject and can expand to immediate neighbors or the full project. It is not necessary to fetch every document
-body to draw it. Layout follows refinement where possible and uses stable ordering so unrelated updates do not
-constantly rearrange it.
+The workspace has a graph on the left and the selected document on the right. A tool rail opens actions in a side drawer
+over the workspace; actions do not replace the graph or document with a separate page. The split is resizable by pointer
+or keyboard. Search, document editing, relationships, diagnostics, AI actions, jobs, and settings use this shared
+workspace. A document list is an alternative to the graph. The graph starts around the root or selected subject and can
+expand to immediate neighbors or the full project. It is not necessary to fetch every document body to draw it. Layout
+follows refinement where possible and uses stable ordering so unrelated updates do not constantly rearrange it.
 
 Show titles, clear relation types and direction, and distinguish unorganized documents and invalid relationships.
 Refinement connects detailed documents to broader ones; contextual relationships are visibly different. Source
@@ -54,9 +56,9 @@ references live in document details rather than turning the graph into a drawing
 remain visible as diagnostics without exposing excluded bodies.
 
 Users can pan, zoom, fit, select, and navigate by keyboard. A list provides equivalent navigation for users who cannot
-or do not want to use the graph. Search results open and locate documents. On wide screens, graph/list and document can
-appear side by side; smaller screens retain a usable document-first layout. Do not require graph manipulation to read or
-edit prose.
+or do not want to use the graph. Search results open and locate documents. On wide screens, graph/list and document
+appear side by side; smaller screens place the document first and retain graph/list navigation below it. Do not require
+graph manipulation to read or edit prose.
 
 The editor offers raw Markdown and rendered preview. Relationship controls edit the same frontmatter as the raw editor;
 they do not create a second metadata store. Preserve unknown frontmatter fields. A plain Markdown file is editable
@@ -64,8 +66,9 @@ immediately, with a clear route to adding identity and refinement parents.
 
 Save compares the content originally opened with current disk content. An intervening edit preserves the user's draft
 and offers comparison/reload rather than overwriting it. Same-project refresh preserves selection, scroll position,
-graph viewport, and dirty drafts. Switching project or navigating away uses the existing dirty-edit guard. A bad
-document does not unmount the entire workspace.
+graph viewport, and dirty drafts. Closing the editor, selecting a different document, switching project, or navigating
+away uses the shared dirty-edit guard. Escape and the drawer close button follow that same guard and restore focus to
+the originating action. A bad document does not unmount the entire workspace.
 
 ## Answers
 
@@ -120,6 +123,5 @@ retroactively erase prior model inputs or history. Editing an ignore control is 
 autonomous reorganization action.
 
 Missing roots, unreadable paths, invalid metadata, absent models, and exhausted budgets produce local, actionable
-messages. Reading valid documents remains available whenever their files can be read. No signer-trust panel,
-signed-history browser, typed-change editor, or mandatory work-item diagnostics queue is required by the replacement
-design.
+messages. Reading valid documents remains available whenever their files can be read. Reading and document editing
+require neither a signer-trust flow nor a work-item diagnostics queue.

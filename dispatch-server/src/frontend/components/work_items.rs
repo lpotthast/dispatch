@@ -8,15 +8,31 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(Clone, Copy)]
 pub(crate) struct WorkItemStatesContext {
-    pub(crate) states: ReadSignal<Vec<WorkItemStateView>>,
-    pub(crate) set_states: WriteSignal<Vec<WorkItemStateView>>,
+    pub(crate) states: Signal<Vec<WorkItemStateView>>,
+}
+
+#[derive(Clone, Copy)]
+struct ElapsedTimeContext {
+    now: ReadSignal<OffsetDateTime>,
+}
+
+pub(crate) fn provide_elapsed_time_context() {
+    let (now, set_now) = signal(OffsetDateTime::now_utc());
+    let _clock = use_interval_fn(move || set_now.set(OffsetDateTime::now_utc()), 1000);
+    provide_context(ElapsedTimeContext { now });
 }
 
 pub(crate) fn provide_work_item_states_context(
     initial_states: Vec<WorkItemStateView>,
 ) -> WorkItemStatesContext {
-    let (states, set_states) = signal(initial_states);
-    let context = WorkItemStatesContext { states, set_states };
+    let (states, _) = signal(initial_states);
+    provide_work_item_states_signal(states.into())
+}
+
+pub(crate) fn provide_work_item_states_signal(
+    states: Signal<Vec<WorkItemStateView>>,
+) -> WorkItemStatesContext {
+    let context = WorkItemStatesContext { states };
     provide_context(context);
     context
 }
@@ -128,26 +144,17 @@ pub(crate) fn claim_elapsed_timer(claimed_at: Option<String>) -> AnyView {
         return ().into_any();
     }
 
-    let (tick, set_tick) = signal(0_u64);
-    let _poll = use_interval_fn(
-        move || {
-            set_tick.update(|tick| *tick = tick.saturating_add(1));
-        },
-        1000,
-    );
+    let now = expect_context::<ElapsedTimeContext>().now;
     view! {
         <span class="claim-elapsed" title="Time in progress">
-            {move || {
-                let _ = tick.get();
-                claim_elapsed_label(&claimed_at).unwrap_or_default()
-            }}
+            {move || claim_elapsed_label_at(&claimed_at, now.get()).unwrap_or_default()}
         </span>
     }
     .into_any()
 }
 
-fn claim_elapsed_label(claimed_at: &str) -> Option<String> {
-    claim_elapsed_seconds(claimed_at).map(format_claim_elapsed_seconds)
+fn claim_elapsed_label_at(claimed_at: &str, now: OffsetDateTime) -> Option<String> {
+    claim_elapsed_seconds_at(claimed_at, now).map(format_claim_elapsed_seconds)
 }
 
 fn claim_elapsed_seconds(claimed_at: &str) -> Option<i64> {

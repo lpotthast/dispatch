@@ -62,6 +62,11 @@ impl<Input, Output> ServiceRequest<Input, Output> {
         }
     }
 
+    /// Use when the calling surface renders recoverable errors alongside the user's draft.
+    pub(super) async fn execute_inline(&self, input: Input) -> Result<Output, ServerFnError> {
+        (self.execute)(input).await
+    }
+
     pub(super) async fn execute(&self, input: Input) -> Result<Output, ServerFnError> {
         let result = (self.execute)(input).await;
         if let Err(error) = &result {

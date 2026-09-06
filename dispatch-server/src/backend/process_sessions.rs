@@ -6,8 +6,8 @@ use std::{
 use tokio::sync::watch;
 
 use crate::{
-    backend::{events, storage::utc_now},
-    shared::view_models::{AgentRunOutputPiece, ProcessSessionView},
+    backend::{bounded_output, events, storage::utc_now},
+    shared::view_models::{AgentRunOutputPiece, AgentToolName, ProcessSessionView},
 };
 
 #[cfg(test)]
@@ -24,6 +24,7 @@ pub struct ProcessSessionRegistry {
 struct ProcessSessionState {
     sessions: HashMap<i64, ProcessSession>,
     project_lifecycle: HashMap<i64, ProjectLifecycleState>,
+    codex_maintenance_active: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,13 +37,14 @@ enum ProjectLifecycleState {
 pub(crate) enum ProcessSessionRegistration {
     Registered { cancellation: watch::Receiver<bool> },
     RejectedByProjectDeletion,
+    RejectedByCodexMaintenance,
 }
 
 impl ProcessSessionRegistration {
     pub(crate) fn cancellation_requested(&self) -> bool {
         match self {
             Self::Registered { cancellation } => *cancellation.borrow(),
-            Self::RejectedByProjectDeletion => true,
+            Self::RejectedByProjectDeletion | Self::RejectedByCodexMaintenance => true,
         }
     }
 
@@ -70,6 +72,23 @@ impl ProcessSessionRegistration {
 pub(crate) enum ProjectDeletionAdmissionRejection {
     InProgress,
     AlreadyDeleted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CodexMaintenanceAdmissionRejection {
+    ActiveSessions(usize),
+    InProgress,
+}
+
+#[derive(Debug)]
+pub(crate) struct CodexMaintenanceAdmission {
+    registry: ProcessSessionRegistry,
+}
+
+impl Drop for CodexMaintenanceAdmission {
+    fn drop(&mut self) {
+        self.registry.lock_state().codex_maintenance_active = false;
+    }
 }
 
 #[derive(Debug)]
@@ -113,6 +132,9 @@ impl ProcessSessionRegistry {
         let mut state = self.lock_state();
         if state.project_lifecycle.contains_key(&start.project_id) {
             return ProcessSessionRegistration::RejectedByProjectDeletion;
+        }
+        if state.codex_maintenance_active && start.tool_name == AgentToolName::Codex.as_storage() {
+            return ProcessSessionRegistration::RejectedByCodexMaintenance;
         }
 
         let now = utc_now();
@@ -170,8 +192,7 @@ impl ProcessSessionRegistry {
     pub fn append_output_piece(&self, run_id: i64, piece: AgentRunOutputPiece) {
         let mut state = self.lock_state();
         let project_name = if let Some(session) = state.sessions.get_mut(&run_id) {
-            session.output.push(piece);
-            trim_output_pieces(&mut session.output, MAX_SESSION_OUTPUT_BYTES);
+            bounded_output::push_with_limit(&mut session.output, piece, MAX_SESSION_OUTPUT_BYTES);
             session.updated_at = utc_now();
             Some(session.project_name.clone())
         } else {
@@ -202,6 +223,18 @@ impl ProcessSessionRegistry {
         sessions
     }
 
+    pub(crate) fn active_run_ids_for_project(&self, project_id: i64) -> Vec<i64> {
+        let mut run_ids = self
+            .lock_state()
+            .sessions
+            .values()
+            .filter(|session| session.project_id == project_id)
+            .map(|session| session.run_id)
+            .collect::<Vec<_>>();
+        run_ids.sort_unstable();
+        run_ids
+    }
+
     pub fn get_for_project(&self, project_id: i64, run_id: i64) -> Option<ProcessSessionView> {
         self.lock_state()
             .sessions
@@ -219,6 +252,38 @@ impl ProcessSessionRegistry {
             .collect::<Vec<_>>();
         sessions.sort_by_key(|session| session.run_id);
         sessions
+    }
+
+    /// Closes Codex session admission only when there are no existing Codex sessions.
+    ///
+    /// Holding the returned guard keeps new Codex runs from crossing the same synchronized
+    /// boundary while managed-home maintenance validates and removes files.
+    pub(crate) fn begin_codex_maintenance(
+        &self,
+    ) -> Result<CodexMaintenanceAdmission, CodexMaintenanceAdmissionRejection> {
+        let mut state = self.lock_state();
+        if state.codex_maintenance_active {
+            return Err(CodexMaintenanceAdmissionRejection::InProgress);
+        }
+        let active_sessions = state
+            .sessions
+            .values()
+            .filter(|session| session.tool_name == AgentToolName::Codex.as_storage())
+            .count();
+        if active_sessions > 0 {
+            return Err(CodexMaintenanceAdmissionRejection::ActiveSessions(
+                active_sessions,
+            ));
+        }
+        state.codex_maintenance_active = true;
+        Ok(CodexMaintenanceAdmission {
+            registry: self.clone(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn codex_maintenance_active(&self) -> bool {
+        self.lock_state().codex_maintenance_active
     }
 
     pub fn cancel_project(&self, project_id: i64) -> usize {
@@ -364,25 +429,6 @@ impl From<&ProcessSession> for ProcessSessionView {
     }
 }
 
-fn trim_output_pieces(pieces: &mut Vec<AgentRunOutputPiece>, max_bytes: usize) {
-    while pieces.len() > 1 && output_pieces_size(pieces) > max_bytes {
-        pieces.remove(0);
-    }
-}
-
-fn output_pieces_size(pieces: &[AgentRunOutputPiece]) -> usize {
-    pieces.iter().map(output_piece_size).sum()
-}
-
-fn output_piece_size(piece: &AgentRunOutputPiece) -> usize {
-    piece.timestamp.len()
-        + piece.source.len()
-        + piece.item_id.as_deref().map(str::len).unwrap_or_default()
-        + piece.title.len()
-        + piece.body.len()
-        + piece.metadata.to_string().len()
-}
-
 #[cfg(test)]
 fn test_piece(sequence: u64, body: &str) -> AgentRunOutputPiece {
     AgentRunOutputPiece {
@@ -421,6 +467,24 @@ mod tests {
         assert_that!(&(active[0].output.len())).is_equal_to(1);
         assert_that!(&(active[0].output[0].kind)).is_equal_to(AgentRunOutputKind::ModelMessage);
         assert_that!(&(active[0].output[0].body)).is_equal_to("line one");
+    }
+
+    #[test]
+    fn active_run_ids_do_not_materialize_session_output() {
+        let sessions = ProcessSessionRegistry::new();
+        for (run_id, project_id) in [(9, 1), (7, 1), (8, 2)] {
+            sessions.begin(ProcessSessionStart {
+                run_id,
+                project_id,
+                project_name: format!("project-{project_id}"),
+                tool_name: "codex".to_owned(),
+                command: "codex app-server".to_owned(),
+                working_dir: "/tmp/demo".to_owned(),
+            });
+            sessions.append_output_piece(run_id, test_piece(1, "large session output"));
+        }
+
+        assert_that!(&(sessions.active_run_ids_for_project(1))).is_equal_to(vec![7, 9]);
     }
 
     #[tokio::test]
@@ -531,5 +595,62 @@ mod tests {
         });
         assert_that!(&(!after_abort.cancellation_requested())).is_true();
         assert_that!(&(after_abort.is_registered())).is_true();
+    }
+
+    #[tokio::test]
+    async fn codex_maintenance_refuses_active_sessions() {
+        let sessions = ProcessSessionRegistry::new();
+        sessions.begin(ProcessSessionStart {
+            run_id: 7,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: AgentToolName::Codex.as_storage().to_owned(),
+            command: String::new(),
+            working_dir: String::new(),
+        });
+
+        let admission = sessions.begin_codex_maintenance();
+
+        assert_that!(
+            &(matches!(
+                admission,
+                Err(CodexMaintenanceAdmissionRejection::ActiveSessions(1))
+            ))
+        )
+        .is_true();
+    }
+
+    #[tokio::test]
+    async fn codex_maintenance_holds_run_admission_until_cleanup_finishes() {
+        let sessions = ProcessSessionRegistry::new();
+        let maintenance = sessions.begin_codex_maintenance().unwrap();
+        let concurrent_sessions = sessions.clone();
+        let concurrent = std::thread::spawn(move || {
+            concurrent_sessions.begin(ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: AgentToolName::Codex.as_storage().to_owned(),
+                command: String::new(),
+                working_dir: String::new(),
+            })
+        })
+        .join()
+        .unwrap();
+        assert_that!(&(!concurrent.is_registered())).is_true();
+        assert_that!(&(concurrent.cancellation_requested())).is_true();
+
+        drop(maintenance);
+
+        let admitted = sessions.begin(ProcessSessionStart {
+            run_id: 8,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: AgentToolName::Codex.as_storage().to_owned(),
+            command: String::new(),
+            working_dir: String::new(),
+        });
+        assert_that!(&(admitted.is_registered())).is_true();
+        assert_that!(&(!admitted.cancellation_requested())).is_true();
     }
 }

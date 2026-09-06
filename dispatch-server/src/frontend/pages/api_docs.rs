@@ -1,8 +1,8 @@
 use crate::{
     frontend::{
-        components::{ActivePage, TopBar, cached_query, selected_project_signal},
+        components::{cached_query, selected_project_signal},
         live_events::{api_docs_event_matches, refetch_on_live_event},
-        services::{api_docs_service, project_cache},
+        services::api_docs_service,
     },
     shared::view_models::{
         AUTOMATION_BLOCKED_LABEL_KEY, CLAIMED_FROM_STATE_LABEL_KEY, CodexAppServerStatusView,
@@ -38,36 +38,11 @@ pub fn PageApiDocs() -> impl IntoView {
             async move { service.load_page(selected_project).await }
         },
     );
-    project_cache().track(result.value, |page| &page.projects);
     refetch_on_live_event(result.refresh, api_docs_event_matches);
-    let active_project_names = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.active_project_names)
-            .unwrap_or_default()
-    });
-    let codex_status = Signal::derive(move || {
-        result
-            .value
-            .get()
-            .map(|page| page.codex_status)
-            .unwrap_or_default()
-    });
-    let topbar = view! {
-        <TopBar
-            active_project_names
-            selected_project=selected_project.into()
-            active=ActivePage::Api
-            automation=Signal::derive(|| None)
-            codex_status
-        />
-    };
 
     view! {
         <Title text="Dispatch API"/>
         <div>
-            {topbar}
             <main class="page-shell api-docs">
                 <section class="page-heading">
                     <h1>"Dispatch API"</h1>
@@ -111,11 +86,7 @@ fn DispatchLabelsPanel() -> impl IntoView {
 #[component]
 fn CustomEndpointsPanel() -> impl IntoView {
     let custom_endpoints = [
-        "GET /api/projects/{project}/memory",
-        "PUT /api/projects/{project}/memory",
-        "POST /api/projects/{project}/memory/append",
-        "GET /api/projects/{project}/memory/events",
-        "POST /api/projects/{project}/memory/events/clear",
+        "GET /api/projects",
         "GET /api/events/ws",
         "GET /api/projects/{project}/events",
         "GET /api/projects/{project}/items/{item_id}/events",
@@ -127,6 +98,12 @@ fn CustomEndpointsPanel() -> impl IntoView {
         "PATCH /api/projects/{project}/relationships/{relationship_id}",
         "DELETE /api/projects/{project}/relationships/{relationship_id}",
         "GET /api/projects/{project}/automation/sessions",
+        "GET /api/projects/{project}/knowledge/root",
+        "GET /api/projects/{project}/knowledge/node?path=README.md",
+        "GET /api/projects/{project}/knowledge/search?text=architecture",
+        "GET /api/projects/{project}/knowledge/check",
+        "GET /api/projects/{project}/knowledge/documents",
+        "GET /api/projects/{project}/knowledge/graph",
         "POST /projects/{project}/automation/start",
         "POST /projects/{project}/automation/stop",
         "POST /projects/{project}/automation/recover-stale-claims",

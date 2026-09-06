@@ -1,5 +1,14 @@
 # TODO
 
+## Knowledge System
+
+- Rename Dispatch only after its expanded product identity and scope stabilize. The current implementation deliberately retains the Dispatch name, branding, and assets.
+- Add an MCP server exposing the established knowledge contracts. The current implementation exposes typed HTTP, API-client, CLI, server-function, and operator-UI surfaces instead.
+- Add embedding-based semantic indexes as an optional retrieval accelerator. The current deterministic routing path uses canonical aliases/terms/routing tests and a revision-keyed FTS5 Porter/BM25 index; semantic questions use explicit answer agents.
+- Evaluate direct semantic inference inside the service, including future local models, instead of spawning a remote agent. The current deterministic core has no model or network dependency and delegates only explicit `knowledge ask`, maintenance, and drift work through Dispatch automation.
+- Add service-owned automatic summarization or compaction during ingestion and retrieval, distinct from the reviewed maintenance-agent workflow. The current implementation diagnoses compression pressure and seeds an editable proposal-only maintenance automation; semantic retain/move/delete decisions remain human or working-agent judgments recorded in signed compression notes.
+- Add a structured user-question subsystem for agents, including typed questions, options, blocking state, responses, and resumption. The current workflow uses item comments, `request-feedback`, blocked labels, and later human-driven run resumption.
+
 ## Workflows
 
 It is not yet clear what the best "automated workflow" looks like. Here are a few ideas:

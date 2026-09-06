@@ -37,6 +37,7 @@ pub(crate) struct ProjectDeletionService {
     sessions: ProcessSessionRegistry,
     run_artifact_dir: PathBuf,
     codex_projects_dir: PathBuf,
+    knowledge_projects_dir: PathBuf,
 }
 
 impl ProjectDeletionService {
@@ -51,6 +52,8 @@ impl ProjectDeletionService {
             sessions,
             run_artifact_dir: automation::automation_log_dir(),
             codex_projects_dir: codex_app_server::codex_home_dir().join("projects"),
+            knowledge_projects_dir: crate::backend::storage::dispatch_home_dir()
+                .join("knowledge-artifacts/projects"),
         }
     }
 
@@ -103,7 +106,7 @@ impl ProjectDeletionService {
         self.cleanup_run_workspaces(project, &runs)?;
         self.cleanup_run_artifacts(&runs)?;
         remove_path_if_exists(&self.codex_projects_dir.join(project.id.to_string()))?;
-
+        remove_path_if_exists(&self.knowledge_projects_dir.join(project.id.to_string()))?;
         let deleted = Project::delete_by_id(project.id)
             .exec(self.store.db().as_ref())
             .await
@@ -248,6 +251,7 @@ mod tests {
                 sessions: ProcessSessionRegistry::new(),
                 run_artifact_dir: temp.path().join("runs"),
                 codex_projects_dir: codex_projects_dir.clone(),
+                knowledge_projects_dir: temp.path().join("knowledge-artifacts/projects"),
             },
             codex_projects_dir,
         )
@@ -383,6 +387,7 @@ mod tests {
             sessions: sessions.clone(),
             run_artifact_dir,
             codex_projects_dir,
+            knowledge_projects_dir: temp.path().join("knowledge-artifacts/projects"),
         };
 
         let deletion_task = {
@@ -451,7 +456,6 @@ mod tests {
         assert_that!(&(replacement_session.is_registered())).is_true();
         assert_that!(&(!automation_controller.is_project_running(recreated.id).await)).is_true();
         assert_that!(&(loaded.path.as_deref())).is_equal_to(new_workspace.to_str());
-        assert_that!(&(loaded.memory.is_empty())).is_true();
     }
 
     #[tokio::test]
@@ -479,6 +483,7 @@ mod tests {
             sessions: sessions.clone(),
             run_artifact_dir: temp.path().join("runs"),
             codex_projects_dir: temp.path().join("codex-projects"),
+            knowledge_projects_dir: temp.path().join("knowledge-artifacts/projects"),
         };
         let deletion_task = {
             let deletion = deletion.clone();

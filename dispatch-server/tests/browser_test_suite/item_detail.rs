@@ -4,6 +4,7 @@ use assertr::prelude::*;
 use browser_test::thirtyfour::{By, WebDriver, components::SelectElement};
 use browser_test::{BrowserTest, async_trait};
 use leptos_browser_test::{Report, ResultExt, bail};
+use rootcause::option_ext::OptionExt;
 
 use super::common::*;
 
@@ -262,6 +263,18 @@ async fn assert_board_active_run_context(
         .await
         .context("failed to read Board run elapsed time")?;
     assert_that!(is_elapsed_time(&elapsed)).is_true();
+    wait_until("Board claim elapsed timer tick", || async {
+        let next = find(
+            driver,
+            By::Css(".card-run-preview[href$='/runs/503/log'] .claim-elapsed"),
+        )
+        .await?
+        .text()
+        .await
+        .context("failed to read updated Board run elapsed time")?;
+        Ok((next != elapsed && is_elapsed_time(&next)).then_some(()))
+    })
+    .await?;
     for property in ["margin-top", "margin-right", "margin-bottom", "margin-left"] {
         let value = overview
             .css_value(property)
@@ -274,6 +287,7 @@ async fn assert_board_active_run_context(
             .context_with(|| format!("failed to parse Board run overview {property}: {value:?}"))?;
         assert_that!(pixels > 0.0).is_true();
     }
+    assert_live_refresh_preserves_unaffected_lane(driver, &card).await?;
 
     driver
         .goto(item_url)
@@ -283,12 +297,98 @@ async fn assert_board_active_run_context(
     Ok(())
 }
 
+async fn assert_live_refresh_preserves_unaffected_lane(
+    driver: &WebDriver,
+    active_card: &browser_test::thirtyfour::WebElement,
+) -> Result<(), Report> {
+    find(driver, By::Css("[data-live-events-state='open']")).await?;
+    let unaffected_lane = find(
+        driver,
+        By::XPath(
+            "//section[contains(@class, 'lane')][not(.//h3[normalize-space()='Browser item'])]",
+        ),
+    )
+    .await?;
+    let item_id = active_card
+        .find(By::Css(".card-main-link"))
+        .await
+        .context("failed to find active Board card link")?
+        .attr("data-board-item-id")
+        .await
+        .context("failed to read active Board item id")?
+        .context("active Board card did not expose its item id")?;
+    let previous_comment_count = active_card
+        .find(By::Css("footer span:nth-child(2)"))
+        .await
+        .context("failed to find Board card comment count")?
+        .text()
+        .await
+        .context("failed to read Board card comment count")?;
+
+    let response = browser_request(
+        driver,
+        reqwest::Method::POST,
+        &format!("/api/projects/demo/items/{item_id}/comments"),
+    )
+    .await?
+    .json(&serde_json::json!({
+        "author_type": "user",
+        "author_name": "Browser user",
+        "body": "Refresh the active Board lane"
+    }))
+    .send()
+    .await
+    .context("failed to create the Board live-refresh comment")?;
+    response_text(response, "Board live-refresh comment").await?;
+
+    wait_until("Board comment count live refresh", || async {
+        let comment_count = find(
+            driver,
+            By::XPath(
+                "//article[contains(@class, 'card')][.//*[contains(@class, 'card-main-link')]//h3[normalize-space()='Browser item']]//footer/span[2]",
+            ),
+        )
+        .await?
+        .text()
+        .await
+        .context("failed to read live-refreshed Board comment count")?;
+        Ok((comment_count != previous_comment_count).then_some(()))
+    })
+    .await?;
+
+    assert_that!(
+        unaffected_lane
+            .is_displayed()
+            .await
+            .context("an unaffected Board lane was replaced during a focused live refresh")?
+    )
+    .is_true();
+    Ok(())
+}
+
 async fn assert_item_detail_dirty_leave_protection(driver: &WebDriver) -> Result<(), Report> {
     set_input_value(
         driver,
         "section.item-settings .crud-input-field",
         "Unsaved detail title",
     )
+    .await?;
+    wait_until("item editor dirty state", || async {
+        let save_buttons = driver
+            .find_all(By::XPath(
+                "//section[contains(@class, 'item-settings')]//button[normalize-space()='Speichern']",
+            ))
+            .await
+            .context("failed to inspect item editor save state")?;
+        let Some(save_button) = save_buttons.first() else {
+            return Ok(None);
+        };
+        Ok(save_button
+            .is_enabled()
+            .await
+            .context("failed to inspect item editor save availability")?
+            .then_some(()))
+    })
     .await?;
     let item_url = driver
         .current_url()

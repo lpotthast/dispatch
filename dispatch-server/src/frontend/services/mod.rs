@@ -4,16 +4,22 @@ mod board;
 mod cache;
 mod codex;
 mod items;
+mod knowledge;
+mod metrics;
 mod origin;
 mod projects;
 mod request;
 mod runs;
+mod status;
+pub(crate) use status::SharedStatusProvider;
 
 pub(crate) use api_docs::ApiDocsService;
 pub(crate) use automation::AutomationService;
 pub(crate) use board::BoardService;
 pub(crate) use codex::CodexService;
 pub(crate) use items::ItemService;
+pub(crate) use knowledge::{KnowledgeUiService, knowledge_ui_service};
+pub(crate) use metrics::MetricsService;
 pub(crate) use projects::{CommitPolicyUpdate, ProjectService, project_cache};
 pub(crate) use runs::RunService;
 
@@ -30,6 +36,8 @@ pub(crate) fn provide_frontend_services() {
     provide_context(BoardService::production());
     provide_context(CodexService::production());
     provide_context(ItemService::production());
+    provide_context(KnowledgeUiService::production());
+    provide_context(MetricsService::production());
     provide_context(ProjectService::production());
     provide_context(RunService::production());
 }
@@ -62,6 +70,10 @@ pub(crate) fn codex_service() -> CodexService {
 }
 
 pub(crate) fn item_service() -> ItemService {
+    expect_context()
+}
+
+pub(crate) fn metrics_service() -> MetricsService {
     expect_context()
 }
 

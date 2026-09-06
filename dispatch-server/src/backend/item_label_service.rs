@@ -26,6 +26,13 @@ pub async fn list_project_labels(
     project_name: &str,
 ) -> Result<Vec<ProjectLabelView>> {
     let project_id = projects::project_id(store, project_name).await?;
+    list_project_labels_for_project_id(store, project_id).await
+}
+
+pub(crate) async fn list_project_labels_for_project_id(
+    store: &Store,
+    project_id: i64,
+) -> Result<Vec<ProjectLabelView>> {
     work_item_labels::project_label_summaries(store.db().as_ref(), project_id).await
 }
 

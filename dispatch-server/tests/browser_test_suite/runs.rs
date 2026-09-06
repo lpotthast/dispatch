@@ -90,7 +90,7 @@ async fn assert_run_output_fixture(
             .await
             .context("failed to read exploring summary")?
     )
-    .is_equal_to("Exploring design/ui.md...");
+    .is_equal_to("Exploring knowledge/ui.md...");
     find(
         driver,
         By::XPath("//code[normalize-space()='Ran just check']"),
@@ -137,13 +137,13 @@ async fn assert_run_output_fixture(
 
     find(
         driver,
-        By::XPath("//code[normalize-space()='Ran git diff -- design/ui.md']"),
+        By::XPath("//code[normalize-space()='Ran git diff -- knowledge/ui.md']"),
     )
     .await?;
     let diff_row = find(
         driver,
         By::XPath(
-            "//article[contains(@class, 'output-command')][.//code[normalize-space()='Ran git diff -- design/ui.md']]",
+            "//article[contains(@class, 'output-command')][.//code[normalize-space()='Ran git diff -- knowledge/ui.md']]",
         ),
     )
     .await?;
@@ -178,7 +178,7 @@ async fn assert_run_output_fixture(
     click(
         driver,
         By::XPath(
-            "//article[.//code[normalize-space()='Ran git diff -- design/ui.md']]//details[contains(@class, 'tool-output-block')]/summary",
+            "//article[.//code[normalize-space()='Ran git diff -- knowledge/ui.md']]//details[contains(@class, 'tool-output-block')]/summary",
         ),
     )
     .await?;

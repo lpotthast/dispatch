@@ -24,38 +24,67 @@ pub(crate) fn run_git(args: Vec<String>) -> Result<()> {
 }
 
 fn checked_git_args(
-    args: Vec<String>,
+    mut args: Vec<String>,
     runtime_policy: &AgentGitRuntimePolicy,
 ) -> Result<Vec<String>> {
-    let Some(command_index) = protected_git_command_index(&args) else {
-        if args.is_empty() {
-            bail!("git command is required");
-        }
+    if args.is_empty() {
+        bail!("git command is required");
+    }
+    let Some((command_index, command)) = protected_git_command(&args) else {
         return Ok(args);
     };
-    let Some(command) = args.get(command_index).map(String::as_str) else {
-        bail!("git command is required");
+
+    let allowed = match command {
+        ProtectedGitCommand::Add => runtime_policy.policy.add,
+        ProtectedGitCommand::Commit => runtime_policy.policy.commit,
+        ProtectedGitCommand::Push => runtime_policy.policy.push,
+        ProtectedGitCommand::Reset => runtime_policy.policy.reset,
     };
+    if !allowed {
+        bail!(
+            "git {} is not allowed by this Dispatch project policy",
+            args[command_index]
+        );
+    }
+
     match command {
-        "add" => {
-            if !runtime_policy.policy.add {
-                bail!("git add is not allowed by this Dispatch project policy");
-            }
-            Ok(args)
+        ProtectedGitCommand::Add => {}
+        ProtectedGitCommand::Commit => enforce_commit_args(&mut args, command_index)?,
+        ProtectedGitCommand::Push => validate_push_args(&args[command_index + 1..])?,
+        ProtectedGitCommand::Reset => {
+            validate_reset_args(&args[command_index + 1..], runtime_policy)?;
         }
-        "commit" => checked_git_commit_args(args, runtime_policy, command_index),
-        "push" => checked_git_push_args(args, runtime_policy, command_index),
-        "reset" => checked_git_reset_args(args, runtime_policy, command_index),
-        _ => Ok(args),
+    }
+
+    Ok(args)
+}
+
+#[derive(Clone, Copy)]
+enum ProtectedGitCommand {
+    Add,
+    Commit,
+    Push,
+    Reset,
+}
+
+impl ProtectedGitCommand {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "add" => Some(Self::Add),
+            "commit" => Some(Self::Commit),
+            "push" => Some(Self::Push),
+            "reset" => Some(Self::Reset),
+            _ => None,
+        }
     }
 }
 
-fn protected_git_command_index(args: &[String]) -> Option<usize> {
+fn protected_git_command(args: &[String]) -> Option<(usize, ProtectedGitCommand)> {
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
-        if matches!(arg, "add" | "commit" | "push" | "reset") {
-            return Some(index);
+        if let Some(command) = ProtectedGitCommand::parse(arg) {
+            return Some((index, command));
         }
         if arg == "--" {
             return None;
@@ -92,20 +121,13 @@ fn git_global_option_with_inline_value(arg: &str) -> bool {
     .any(|prefix| arg.starts_with(prefix))
 }
 
-fn checked_git_commit_args(
-    mut args: Vec<String>,
-    runtime_policy: &AgentGitRuntimePolicy,
-    command_index: usize,
-) -> Result<Vec<String>> {
-    if !runtime_policy.policy.commit {
-        bail!("git commit is not allowed by this Dispatch project policy");
-    }
+fn enforce_commit_args(args: &mut Vec<String>, command_index: usize) -> Result<()> {
     if args
         .iter()
         .skip(command_index + 1)
-        .any(|arg| arg == "--verify")
+        .any(|arg| enables_commit_hooks(arg))
     {
-        bail!("git commit --verify is blocked; Dispatch requires --no-verify");
+        bail!("git commit hook verification is blocked; Dispatch requires --no-verify");
     }
     if !args
         .iter()
@@ -114,18 +136,17 @@ fn checked_git_commit_args(
     {
         args.insert(command_index + 1, "--no-verify".to_owned());
     }
-    Ok(args)
+    Ok(())
 }
 
-fn checked_git_push_args(
-    args: Vec<String>,
-    runtime_policy: &AgentGitRuntimePolicy,
-    command_index: usize,
-) -> Result<Vec<String>> {
-    if !runtime_policy.policy.push {
-        bail!("git push is not allowed by this Dispatch project policy");
-    }
-    for arg in args.iter().skip(command_index + 1) {
+fn enables_commit_hooks(arg: &str) -> bool {
+    // Git accepts unique long-option abbreviations and automatically generates
+    // `--no-no-verify` as the inverse of `--no-verify`.
+    arg.starts_with("--veri") || arg.starts_with("--no-no-v")
+}
+
+fn validate_push_args(args: &[String]) -> Result<()> {
+    for arg in args {
         if arg == "-f"
             || is_short_force_push_flag(arg)
             || arg.starts_with("--force")
@@ -143,22 +164,15 @@ fn checked_git_push_args(
             );
         }
     }
-    Ok(args)
+    Ok(())
 }
 
 fn is_short_force_push_flag(arg: &str) -> bool {
     arg.starts_with('-') && !arg.starts_with("--") && arg.chars().skip(1).any(|ch| ch == 'f')
 }
 
-fn checked_git_reset_args(
-    args: Vec<String>,
-    runtime_policy: &AgentGitRuntimePolicy,
-    command_index: usize,
-) -> Result<Vec<String>> {
-    if !runtime_policy.policy.reset {
-        bail!("git reset is not allowed by this Dispatch project policy");
-    }
-    for arg in args.iter().skip(command_index + 1) {
+fn validate_reset_args(args: &[String], runtime_policy: &AgentGitRuntimePolicy) -> Result<()> {
+    for arg in args {
         if (arg == "--hard" || arg.starts_with("--hard="))
             && !runtime_policy
                 .policy
@@ -176,7 +190,7 @@ fn checked_git_reset_args(
             bail!("git reset mode '{arg}' is blocked by Dispatch");
         }
     }
-    Ok(args)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -197,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn git_commit_policy_injects_no_verify_and_rejects_verify() {
+    fn git_commit_policy_always_disables_hooks() {
         let policy = git_runtime_policy(Default::default(), WorkspaceMode::CurrentBranch);
 
         let args = checked_git_args(
@@ -212,9 +226,11 @@ mod tests {
         assert_that!(&(args[0])).is_equal_to("commit");
         assert_that!(&(args[1])).is_equal_to("--no-verify");
 
-        let err = checked_git_args(vec!["commit".to_owned(), "--verify".to_owned()], &policy)
-            .unwrap_err();
-        assert_that!(&(err.to_string().contains("--verify is blocked"))).is_true();
+        for option in ["--verify", "--veri", "--no-no-verify", "--no-no-v"] {
+            let err = checked_git_args(vec!["commit".to_owned(), option.to_owned()], &policy)
+                .unwrap_err();
+            assert_that!(&(err.to_string().contains("verification is blocked"))).is_true();
+        }
     }
 
     #[test]
