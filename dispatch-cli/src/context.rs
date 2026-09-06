@@ -23,6 +23,9 @@ pub(crate) struct ContextOverrides {
     /// Override the Dispatch agent-run id used for request attribution.
     #[arg(long = "agent-run")]
     agent_run_id: Option<i64>,
+    /// Knowledge job context, overriding DISPATCH_KNOWLEDGE_JOB_ID.
+    #[arg(long = "knowledge-job")]
+    knowledge_job_id: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -31,9 +34,15 @@ pub(crate) struct ResolvedContext {
     project: Option<String>,
     agent_id: Option<String>,
     claimed_item_id: Option<i64>,
+    knowledge_job_id: Option<i64>,
 }
 
 impl ResolvedContext {
+    pub(crate) fn knowledge_job_id(&self) -> Result<i64> {
+        Ok(self.knowledge_job_id.context(
+            "missing knowledge job; pass --knowledge-job or set DISPATCH_KNOWLEDGE_JOB_ID",
+        )?)
+    }
     pub(crate) fn client(&self) -> &DispatchClient {
         &self.client
     }
@@ -72,6 +81,7 @@ pub(crate) fn resolve_context(
         project,
         agent_id,
         agent_run_id,
+        knowledge_job_id,
     } = overrides;
     let api_url = api_url
         .or_else(|| env_value("DISPATCH_API_URL").ok())
@@ -84,6 +94,10 @@ pub(crate) fn resolve_context(
         Some(run_id) => Some(run_id),
         None => optional_i64_env(&env_value, "DISPATCH_AGENT_RUN_ID")?,
     };
+    let knowledge_job_id = match knowledge_job_id {
+        Some(id) => Some(id),
+        None => optional_i64_env(&env_value, "DISPATCH_KNOWLEDGE_JOB_ID")?,
+    };
     let project = project.or_else(|| env_value("DISPATCH_PROJECT").ok());
     let agent_id = agent_id.or_else(|| env_value("DISPATCH_AGENT_ID").ok());
 
@@ -92,6 +106,7 @@ pub(crate) fn resolve_context(
         project,
         agent_id,
         claimed_item_id,
+        knowledge_job_id,
     })
 }
 
@@ -154,12 +169,14 @@ mod tests {
                 project: Some("override".to_owned()),
                 agent_id: Some("human".to_owned()),
                 agent_run_id: Some(9),
+                knowledge_job_id: Some(7),
             },
             env_from(&[
                 ("DISPATCH_API_URL", "http://127.0.0.1:4100"),
                 ("DISPATCH_PROJECT", "demo"),
                 ("DISPATCH_AGENT_ID", "dispatch-run-1"),
                 ("DISPATCH_AGENT_RUN_ID", "invalid"),
+                ("DISPATCH_KNOWLEDGE_JOB_ID", "invalid"),
             ]),
         )
         .unwrap();
@@ -199,6 +216,7 @@ mod tests {
             project: Some("demo".to_owned()),
             agent_id: Some("dispatch-run-1".to_owned()),
             claimed_item_id: Some(42),
+            knowledge_job_id: None,
         };
 
         assert_that!(&(context.item_id(Some(124)).unwrap())).is_equal_to(124);
@@ -230,5 +248,29 @@ mod tests {
         .unwrap_err();
 
         assert_that!(&(error.to_string().contains("invalid Dispatch API URL"))).is_true();
+    }
+    #[test]
+    fn knowledge_job_context_is_explicit_then_environment_and_never_claimed_item() {
+        let missing = resolve_context(
+            ContextOverrides::default(),
+            env_from(&[("DISPATCH_CLAIMED_ITEM_ID", "42")]),
+        )
+        .unwrap();
+        assert_that!(&missing.knowledge_job_id().is_err()).is_true();
+        let environment = resolve_context(
+            ContextOverrides::default(),
+            env_from(&[("DISPATCH_KNOWLEDGE_JOB_ID", "12")]),
+        )
+        .unwrap();
+        assert_that!(&environment.knowledge_job_id().unwrap()).is_equal_to(12);
+        let explicit = resolve_context(
+            ContextOverrides {
+                knowledge_job_id: Some(7),
+                ..Default::default()
+            },
+            env_from(&[("DISPATCH_KNOWLEDGE_JOB_ID", "invalid")]),
+        )
+        .unwrap();
+        assert_that!(&explicit.knowledge_job_id().unwrap()).is_equal_to(7);
     }
 }

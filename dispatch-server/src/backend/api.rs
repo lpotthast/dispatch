@@ -49,6 +49,7 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
+        .merge(crate::backend::knowledge::jobs::routes())
         .route(
             "/api/projects/{project}/knowledge/{operation}",
             get(query_knowledge),

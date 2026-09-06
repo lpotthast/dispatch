@@ -56,14 +56,23 @@ pub(crate) fn LiveRunsSection(project: String) -> impl IntoView + 'static {
             })
         })
     });
+    let purpose = RwSignal::new("all".to_owned());
     let runs = Memo::new(move |_| {
         section
             .value
             .with(|section| section.as_ref().map(|section| section.runs.clone()))
             .unwrap_or_default()
+            .into_iter()
+            .filter(|summary| match purpose.get().as_str() {
+                "knowledge" => summary.run.knowledge_job_id.is_some(),
+                "tasks" => summary.run.knowledge_job_id.is_none(),
+                _ => true,
+            })
+            .collect::<Vec<_>>()
     });
 
     view! {
+        <label>"Purpose "<select aria-label="Run purpose" on:change=move |e|purpose.set(event_target_value(&e))><option value="all">"All runs"</option><option value="tasks">"Work items"</option><option value="knowledge">"Knowledge jobs"</option></select></label>
         <RunSessionsPanel
             project=project
             title="Runs"
@@ -262,6 +271,9 @@ pub(crate) fn run_token_usage_label(usage: AgentRunTokenUsageView) -> String {
 }
 
 pub(crate) fn run_origin_label(run: &AgentRunView) -> Option<String> {
+    if let Some(job_id) = run.knowledge_job_id {
+        return Some(format!("knowledge job #{job_id}"));
+    }
     run.trigger_id.map(|trigger_id| {
         let trigger_name = run
             .trigger_name

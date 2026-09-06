@@ -109,6 +109,7 @@ pub(crate) fn RunLogContent(
         run_log,
         codex_status: _,
     } = page;
+    let knowledge_job_link = run_log.run.knowledge_job_id.map(|id|view!{<a href=format!("/knowledge?project={}&job={id}",urlencoding::encode(&project))>{format!("Knowledge job #{id}")}</a>});
     let summary = run_result_summary(&run_log.run);
     let origin = run_origin_label(&run_log.run);
     let work_item = run_work_item_link(&project, run_log.run.work_item_id);
@@ -166,7 +167,7 @@ pub(crate) fn RunLogContent(
                         " · "
                         {summary.clone()}
                     </p>
-                    <div class="run-log-actions">{cancel_action}</div>
+                    <div class="run-log-actions">{knowledge_job_link}{cancel_action}</div>
                 </section>
                 <section>
                     <h2>"Run"</h2>

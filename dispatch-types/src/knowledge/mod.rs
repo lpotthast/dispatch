@@ -109,3 +109,5 @@ pub struct KnowledgeSaveRequest {
 pub struct KnowledgeSaveResult {
     pub fingerprint: String,
 }
+
+pub mod jobs;

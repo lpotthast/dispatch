@@ -1,17 +1,21 @@
+mod jobs;
 use super::request::ServiceRequest;
 use dispatch_types::knowledge::{
     KnowledgeOperation, KnowledgeQuery, KnowledgeSaveRequest, KnowledgeSaveResult, KnowledgeView,
 };
+pub(crate) use jobs::KnowledgeJobsUiService;
 use leptos::prelude::*;
 
 #[derive(Clone)]
 pub(crate) struct KnowledgeUiService {
+    pub(crate) jobs: KnowledgeJobsUiService,
     read: ServiceRequest<(String, KnowledgeOperation, KnowledgeQuery), KnowledgeView>,
     save: ServiceRequest<(String, KnowledgeSaveRequest), KnowledgeSaveResult>,
 }
 impl KnowledgeUiService {
     pub(super) fn production() -> Self {
         Self {
+            jobs: KnowledgeJobsUiService::production(),
             save: ServiceRequest::new(|(project, request)| {
                 Box::pin(save_knowledge(project, request))
             }),

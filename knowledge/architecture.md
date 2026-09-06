@@ -29,7 +29,7 @@ workflow state, automation launch, and the HTTP API. The standalone CLI is an AP
 The server crate contains:
 
 - the Axum and Leptos application;
-- SeaORM entities and migrations;
+- SeaORM entities and schema migrations;
 - storage initialization and database path handling;
 - project, item, work-group, comment, automation, and event services;
 - custom JSON API endpoints;
@@ -50,7 +50,37 @@ Backend interaction is owned by focused service objects under `frontend/services
 functions and other transport details, are provided once from the root layout through Leptos context, and expose typed
 domain-oriented methods to pages and shared components. Their request callbacks are replaceable so consumers can be
 tested with in-process mocks. Route modules may own their page response types, resources, and rendering, but they do not
-define or invoke server functions or browser request clients directly.
+define or invoke server functions or browser request clients directly. [UI Design](ui.md) owns layout, controls,
+navigation, and refresh behavior, with [Knowledge UI](knowledge-ui.md) owning the knowledge workspace.
+
+Cross-route browser caches are focused services provided through Leptos context and contain typed backend DTOs, not
+rendered views, complete page response objects, or serialized payloads. Persistence through browser local storage is a
+service boundary: values are decoded immediately into the typed reactive cache before consumers access them.
+
+[Backend Metrics](metrics.md) owns in-process performance instrumentation and aggregation, including repository and SQL
+timings and the board-loading query boundary.
+
+### `dispatch-types`
+
+This crate defines shared transport types for the API client and server. Examples include project views, work item
+views, comments, agent runs, automation rules, workflow request payloads, and shared enum values.
+
+Types in this crate describe the wire contract. Server-only persistence details stay in `dispatch-server`.
+
+### `dispatch-api-client`
+
+This crate provides typed HTTP methods for the custom JSON API. It is used by `dispatch-cli` and can be reused by future
+tooling. It does not know about SQLite, SeaORM, Leptos, or server internals.
+
+### `dispatch-cli`
+
+This crate builds the `dispatch` binary used by agents. It is intentionally small: parse command arguments, resolve
+context from flags and environment variables, call the typed API client, and print human or JSON output.
+
+### `dispatch-operator`
+
+This crate builds the operator-only automation administration client. It consumes YAML files for rule and personality
+writes and manages bundles, revisions, scheduling, routing diagnostics, and analytics through HTTP.
 
 ## Knowledge Storage Boundary
 
@@ -76,34 +106,10 @@ adds no useful boundary. These modules have no model execution dependency. Extra
 when a real second consumer needs the same behavior; do not introduce a family of speculative knowledge crates.
 
 `dispatch-types` owns the transport DTOs, and `dispatch-api-client` and `dispatch-cli` relay them. Knowledge jobs
-belong to a separate server service using the shared agent runtime. Deterministic file operations have no dependency on
+belong to a separate server service using the shared agent runtime. The `knowledge/jobs` modules own durable admission,
+source snapshots and aspect assessments, reading evaluation, sequential execution, and journaled publication. Shared
+execution allocates no-item knowledge passes with normal run logs and purpose/job links. Deterministic file operations have no dependency on
 agent execution.
-
-Cross-route browser caches are focused services provided through Leptos context and contain typed backend DTOs, not
-rendered views, complete page response objects, or serialized payloads. Persistence through browser local storage is a
-service boundary: values are decoded immediately into the typed reactive cache before consumers access them.
-
-### `dispatch-types`
-
-This crate defines shared transport types for the API client and server. Examples include project views, work item
-views, comments, agent runs, automation rules, workflow request payloads, and shared enum values.
-
-Types in this crate describe the wire contract. Server-only persistence details stay in `dispatch-server`.
-
-### `dispatch-api-client`
-
-This crate provides typed HTTP methods for the custom JSON API. It is used by `dispatch-cli` and can be reused by future
-tooling. It does not know about SQLite, SeaORM, Leptos, or server internals.
-
-### `dispatch-cli`
-
-This crate builds the `dispatch` binary used by agents. It is intentionally small: parse command arguments, resolve
-context from flags and environment variables, call the typed API client, and print human or JSON output.
-
-### `dispatch-operator`
-
-This crate builds the operator-only automation administration client. It consumes YAML files for rule and personality
-writes and manages bundles, revisions, scheduling, routing diagnostics, and analytics through HTTP.
 
 ## Storage
 
@@ -134,35 +140,22 @@ personality resolution remains a service operation.
 
 Codex runtime state is Dispatch-owned local state under the user's Dispatch data directory. The shared managed Codex
 home stores login/status state. Each project gets a project Codex home under that shared tree for generated
-`config.toml`, `rules/*.rules`, sessions, logs, and SQLite state. Project homes may symlink shared auth and skill assets
+`config.toml`, `rules/*.rules`, sessions, logs, and SQLite state. Prepared knowledge jobs retain isolated Codex homes with their job artifacts and reuse shared authentication.
+Project homes may symlink shared auth and skill assets
 so projects can have independent runtime policy without requiring a new login for every project.
 
-Project lifecycle coordination is keyed by immutable database project id. The server's deletion service is the single
-authority shared by direct operator and CrudKit paths; it coordinates the automation controller, process-session
-registry, filesystem artifacts, Git workspaces and refs, managed Codex state, and finally the operational-database
-cascade. Name remains a reusable routing key, but it is not used to associate live process or cleanup state across
-project lifetimes. Deletion admission is single-flight per project id: a concurrent duplicate is rejected while
-different project ids remain independent. Session entries and deletion admission share one synchronized state boundary.
-After deletion closes admission, a late session start is rejected as cancelled without entering the registry, so an
-observed empty session set remains stable. Automation-controller activation is registered synchronously through this
-same boundary: deletion either observes and stops the registered controller or closes admission first and rejects the
-activation. Controller entries, cancellation receivers, and scheduler snapshots are keyed by immutable project id, so a
-snapshot from an old project lifetime cannot activate a same-name replacement. The owning deletion holds an admission
-permit. Failure or task cancellation drops the permit and reopens admission for retry; successful row deletion
-synchronously converts it to a process-lifetime tombstone, permanently rejecting delayed starts for that old id. A
-duplicate caller never owns a permit and cannot release the owner's state. CrudKit reaches the service through the
-project resource's dedicated repository only after its before-delete validation succeeds; project lifecycle hooks do not
-perform destructive cleanup. Detached automation execution likewise owns session completion through an unwind-safe
-guard.
+The server's deletion service is the single authority shared by direct operator and CrudKit paths. It coordinates
+admission, processes, runtime artifacts, and the database cascade by immutable project ID under the
+[project-deletion workflow](workflows.md#project-deletion). CrudKit reaches the service through the project resource's
+dedicated repository after before-delete validation; lifecycle hooks do not perform destructive cleanup. Detached
+automation execution owns session completion through an unwind-safe guard.
 
 Dispatch minimizes control-plane traffic to OpenAI. It performs one Codex readiness probe when the server starts and one
 immediately before each actual automation run so authentication or an active rate-limit block fails before work is
 claimed. It does not poll Codex status globally while idle, and enabling project automation does not add a probe before
-the per-run check. Readiness probes read account and rate-limit state only. While an operator has `/system` mounted,
-that page loads a detailed status immediately and refreshes it every five minutes, including the token-activity summary;
-duplicate page or live-event requests within four minutes share the most recent detailed result. The manual Refresh
-action always forces a new detailed check. Managed Codex config disables automatic update checks and optional remote app
-or plugin catalogs that Dispatch automation does not use.
+the per-run check. Readiness probes read account and rate-limit state only. Detailed status requests, caching, and manual
+refresh follow the [System-page contract](ui.md#admin-surfaces). Managed Codex config disables automatic update checks
+and optional remote app or plugin catalogs that Dispatch automation does not use.
 
 Every spawned Codex app-server has an owned process lifetime. Dispatch starts the configured executable on a loopback
 WebSocket endpoint, uses the unmodified published SDK as the protocol client, and independently terminates and reaps the
@@ -170,9 +163,8 @@ process tree. A status probe exits after its responses are collected, and an aut
 or recovery attempt ends. Cleanup does not depend on SDK client-drop behavior, so completed probes and runs cannot
 retain background processes that continue refreshing remote catalogs.
 
-Knowledge UI reads use current visible files and working-copy-scoped derived data. Expensive traversal, parsing, and
-indexing run on blocking workers rather than occupying async request workers. Initial navigation does not load all
-document bodies or historical job artifacts. Local document errors do not invalidate unrelated readable content.
+Knowledge traversal, parsing, and indexing run on blocking workers rather than occupying async request workers.
+[Knowledge UI](knowledge-ui.md) owns progressive loading and local-error presentation over working-copy-scoped data.
 
 ## Server Routes
 
@@ -210,10 +202,9 @@ hashed frontend filenames, later `cargo leptos` builds, browser-test runs, or ot
 `/pkg/dispatch.js`, `/pkg/dispatch_bg.wasm`, and `/pkg/dispatch.css`; browser refreshes or navigations may then show
 newer frontend code while the already-running backend process remains unchanged.
 
-`just serve` explicitly sets `DISPATCH_DEVELOPMENT=1`. In that mode, automation builds the sibling `dispatch-cli` source
-crate before each agent launch and gives the resulting executable to the sandboxed agent. A published server does not
-assume source files exist: it requires an executable published `dispatch` CLI on `PATH` and rejects the automation
-launch before Codex starts or work is claimed when the CLI is unavailable.
+`just serve` explicitly sets `DISPATCH_DEVELOPMENT=1` to use the source-built agent CLI.
+[CLI availability](cli.md#cli-availability-and-development-builds) owns development and published resolution, validation,
+and failure behavior.
 
 Server tracing writes pretty logs to stderr. The default target filter is `info,tokio=warn,runtime=warn,sqlx=warn`,
 which hides SQLx query noise while keeping warnings visible. Set `DISPATCH_SQLX_LOG=info` to opt SQLx query logs back

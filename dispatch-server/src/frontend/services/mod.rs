@@ -18,7 +18,7 @@ pub(crate) use automation::AutomationService;
 pub(crate) use board::BoardService;
 pub(crate) use codex::CodexService;
 pub(crate) use items::ItemService;
-pub(crate) use knowledge::{KnowledgeUiService, knowledge_ui_service};
+pub(crate) use knowledge::{KnowledgeJobsUiService, KnowledgeUiService, knowledge_ui_service};
 pub(crate) use metrics::MetricsService;
 pub(crate) use projects::{CommitPolicyUpdate, ProjectService, project_cache};
 pub(crate) use runs::RunService;

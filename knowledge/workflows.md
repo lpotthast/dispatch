@@ -146,10 +146,8 @@ personality, and the automation trigger instructions. The turn's user prompt sta
 description followed by a launch-time item-state snapshot. Work-item descriptions and automation trigger prompts are
 converted from stored Tiptap HTML to Markdown at this boundary; Dispatch preserves the original rich text in storage.
 
-Dispatch injects the short project knowledge root and immediate child summaries from the run's assigned working copy.
-Agents fetch current item/comments when a work item exists and navigate further knowledge as needed. The full knowledge
-base and comment history are not injected by default. The launch contract is defined
-in [Knowledge Agent Interface](knowledge-agents.md).
+Knowledge launch input follows [Knowledge Agent Interface](knowledge-agents.md#launch-context-and-instructions).
+Agents fetch current item/comments when a work item exists; comment history is not injected by default.
 
 For work-consuming automation runs started from an automation rule, Dispatch resolves the rule's selected project-local
 personality before building the role-separated input. A non-empty personality is included before the automation-specific
@@ -164,17 +162,10 @@ commands expected to work, commit/revert behavior, and sandbox blocker reporting
 
 For auditability, every run persists developer instructions and the user prompt as two independent Markdown files with
 separate database paths, API fields, CLI sections, and UI sections. Dispatch never combines new run input into one
-prompt artifact. When migrating a historical run whose legacy prompt artifact contains both roles, Dispatch preserves
-access by initializing both role-specific paths from that legacy path before removing the combined database column. If
-that migration is rolled back, equal role-specific paths reuse the shared artifact; differing paths are combined into a
-legacy Markdown artifact containing explicit developer-instructions and user-prompt sections before the role-specific
-columns are removed. The live Codex call supplies the same two role-specific strings through their respective SDK
-fields. Repository conventions remain in `AGENTS.md`, which Codex discovers from the run working directory rather than
-Dispatch duplicating them in its generated input.
-
-Knowledge jobs receive the shared authoring rules and a role-specific procedure with their task, scope, working copy,
-and permissions. Their actual instructions are retained with ordinary run input. No separate versioned skill registry or
-signed instruction receipt is required.
+prompt artifact. Historical rows may reference the same legacy artifact from both role-specific paths. The live Codex
+call supplies the same two role-specific strings through their respective SDK fields. Repository conventions remain in
+`AGENTS.md`, which Codex discovers from the run working directory rather than Dispatch duplicating them in its generated
+input.
 
 ## Automation Rule Behavior
 
@@ -212,19 +203,14 @@ a review item with the expensive prompt, and a work-consuming automation can lat
 
 When one run creates several items that form one human-visible unit, it creates a stable project work group and submits
 all created item ids in one atomic assignment. Grouping does not imply ordering or dependency and does not replace
-relationships. The board renders same-group items together within each lane, and the item detail exposes the group
-key/name. A group may span lanes as its items move through independent states.
+relationships. A group may span lanes as its items move through independent states.
+[UI Design](ui.md#workflow-surface) owns group presentation on the board and item detail.
 
-For Codex-backed launches, Dispatch prepares a project-specific Codex home before the run starts. The project home
-contains generated Codex config and rules derived from project settings, while shared Codex auth and skills are linked
-from Dispatch's shared managed Codex home when present. The run sets `CODEX_HOME` and `CODEX_SQLITE_HOME` to that
-project home so settings, rules, logs, sessions, and SQLite state are isolated per project.
+For Codex-backed launches, Dispatch prepares the [managed runtime storage](architecture.md#storage) and sets `CODEX_HOME`
+and `CODEX_SQLITE_HOME` to the run's project home, preserving the configured isolation.
 
-Immediately before an actual Codex-backed run, Dispatch performs one minimal readiness probe that reads account and
-rate-limit state but not the optional token-activity summary. This is the authoritative pre-claim check. Starting the
-project automation scheduler does not perform an additional probe, and Dispatch does not poll readiness while idle. The
-probe app-server exits before run preparation continues; the app-server used for the agent turn exits when that run or
-recovery attempt ends.
+The [readiness and process-lifetime contract](architecture.md#storage) supplies the authoritative pre-claim check; the
+probe app-server exits before run preparation continues.
 
 Codex app-server stream transport interruptions that are consistent with host sleep, reconnect, broken pipe, or timeout
 behavior are recoverable. Dispatch keeps the run in `running`, keeps any claimed work item claimed, appends a concise
@@ -237,34 +223,6 @@ Dispatch repairs stale shared-asset symlinks in a project Codex home before laun
 captures a bounded stderr diagnostic alongside the structured run log. When launch or execution fails, the run summary
 and automatic claim-release comment put the root cause reported by Codex first, followed by the SDK and transport
 details; a generic transport closure must not hide an available process error.
-
-## Project Deletion
-
-Project deletion is an ordered server lifecycle, not a raw project-row delete. Dispatch first closes run admission for
-the immutable project id, stops its automation scheduler, cancels every registered run including runs that have not
-spawned a child process yet, and waits for all sessions to finish. Session registration, automation-controller
-activation, and deletion admission share one atomic synchronous boundary. A session or controller start attempted after
-deletion begins is rejected without entering active state, while a start admitted first is visible to deletion and is
-stopped. Scheduler activation and cancellation snapshots carry immutable project ids rather than names, so an in-flight
-snapshot from the deleted lifetime cannot route work into a same-name replacement. Deletion is single-flight per project
-id: a concurrent duplicate fails as already in progress and cannot release the first deletion's admission marker.
-Failure or task cancellation drops the owning admission permit and reopens the id for retry. Successful row deletion
-instead converts the permit to a process-lifetime deleted-id tombstone, so a delayed start captured before deletion
-cannot register afterward.
-
-After processes have stopped, Dispatch removes every project-owned runtime artifact: per-run developer instructions,
-user prompts, structured output, Codex stderr diagnostics, Git policy files, run shim directories, isolated Git
-worktrees, `dispatch/*` run branches, and the project's managed Codex home. Missing artifacts are treated as already
-cleaned; any other cleanup failure aborts the database deletion so the operator can correct the problem and retry.
-Dispatch never deletes the configured source workspace itself.
-
-Only after cleanup succeeds does Dispatch delete the project row and its cascading project data. Both custom operator
-handlers and CrudKit deletion use this same lifecycle. Completion publishes a project-deleted live event containing both
-the deleted id and name, so a same-name replacement is never confused with the deleted project. Persisted run and claim
-cleanup use the captured project id; the reusable name is retained only for messages and event routing. A replacement
-with that name has a new id and is unaffected by the old id's session-admission tombstone. CrudKit validates the project
-before entering this lifecycle, and the lifecycle's row delete fulfills CrudKit's repository delete without a second
-row-delete attempt.
 
 ### Produced work
 
@@ -299,6 +257,35 @@ The optional engineering-review fixture makes the planner create exactly one ite
 all six to one group, and finish only when a postcondition verifies the exact total, each lens-specific selector, and
 shared non-empty group membership. Scout-created candidates inherit that human-visible grouping through explicit agent
 assignment; Dispatch itself does not understand review lenses or candidate semantics.
+
+## Project Deletion
+
+Project deletion is an ordered server lifecycle, not a raw project-row delete. Dispatch first closes run admission for
+the immutable project id, stops its automation scheduler, cancels every registered run including runs that have not
+spawned a child process yet, and waits for all sessions to finish. Session registration, automation-controller
+activation, and deletion admission share one atomic synchronous boundary. A session or controller start attempted after
+deletion begins is rejected without entering active state, while a start admitted first is visible to deletion and is
+stopped. Scheduler activation and cancellation snapshots carry immutable project ids rather than names, so an in-flight
+snapshot from the deleted lifetime cannot route work into a same-name replacement. Deletion is single-flight per project
+id: a concurrent duplicate fails as already in progress and cannot release the first deletion's admission marker.
+Different project IDs remain independent. Late session starts are rejected as cancelled without entering the registry.
+Failure or task cancellation drops the owning admission permit and reopens the id for retry. Successful row deletion
+instead converts the permit to a process-lifetime deleted-id tombstone, so a delayed start captured before deletion
+cannot register afterward.
+
+After processes have stopped, Dispatch removes every project-owned runtime artifact: per-run developer instructions,
+user prompts, structured output, Codex stderr diagnostics, Git policy files, run shim directories, isolated Git
+worktrees, `dispatch/*` run branches, and the project's managed Codex home. Missing artifacts are treated as already
+cleaned; any other cleanup failure aborts the database deletion so the operator can correct the problem and retry.
+Dispatch never deletes the configured source workspace itself.
+
+Only after cleanup succeeds does Dispatch delete the project row and its cascading project data. Both custom operator
+handlers and CrudKit deletion use this same lifecycle. Completion publishes a project-deleted live event containing both
+the deleted id and name, so a same-name replacement is never confused with the deleted project. Persisted run and claim
+cleanup use the captured project id; the reusable name is retained only for messages and event routing. A replacement
+with that name has a new id and is unaffected by the old id's session-admission tombstone. CrudKit validates the project
+before entering this lifecycle, and the lifecycle's row delete fulfills CrudKit's repository delete without a second
+row-delete attempt.
 
 ## Automation Concurrency
 
@@ -352,8 +339,8 @@ is not a Git repository, and `missing_required` when a required commit was absen
 remained. Completed agent processes with `missing_required` are marked as failed at the run level; the server records
 this without rewriting item history that the agent already reported through workflow commands.
 
-Project settings also define the mutable Git command policy. New and migrated projects allow `git add`, `git commit`,
-`git push`, and `git reset` by default. `git commit` must use `--no-verify`; Dispatch's Git guard injects it when
+Project settings also define the mutable Git command policy. Projects allow `git add`, `git commit`, `git push`, and
+`git reset` by default. `git commit` must use `--no-verify`; Dispatch's Git guard injects it when
 omitted and rejects `--verify`. Pushes must not be force, mirror, prune, delete, empty-source delete-refspec, or `+ref`
 pushes. `git reset --hard` is allowed only when the hard-reset policy allows it for isolated Git branch or Git worktree
 runs; it is blocked for current-branch runs by default.
@@ -392,13 +379,7 @@ rewriting the completed item state unless server policy requires it.
 
 ## Codex Log Maintenance
 
-Dispatch treats oversized managed Codex log storage as an operator warning, not an automation precondition. A
-`logs_*.sqlite` family is oversized only when the database plus `-wal` and `-shm` logical sizes exceed 1 GiB; exactly 1
-GiB remains clean. Startup, pre-run, detailed, and manual readiness probes all include the warning-only storage
-snapshot.
-
-The System-page purge is validation-first and removes only families that are still oversized when cleanup begins. It
-refuses non-destructively while any Codex session is active, holds Codex session admission during deletion, removes
-sidecars before the database, tolerates missing files, and succeeds with zero removals when already clean. Every purge
-attempt forces a detailed status refresh and publishes the Codex-status event so stale warnings are replaced across
-mounted views.
+Dispatch treats oversized managed Codex log storage as an operator warning, not an automation precondition.
+[Managed log storage](architecture.md#managed-codex-log-storage) owns scan scope, thresholds, admission, and deletion
+safety; [UI Design](ui.md#codex-log-storage-maintenance) owns warning and purge controls. Every purge attempt forces a
+detailed status refresh and publishes the Codex-status event so mounted views receive the current outcome.

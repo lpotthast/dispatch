@@ -87,6 +87,7 @@ impl RequestAttribution {
         let mut run_kind = None;
         let mut run_status = None;
         let mut launch_contract = None;
+        let mut knowledge_job_id = None;
         if let Some(run_id) = agent_run_id {
             let project_id = projects::project_id(store, project_name).await?;
             let run = AgentRun::find_by_id(run_id)
@@ -101,6 +102,7 @@ impl RequestAttribution {
                     "request agent id does not match agent run {run_id}; expected {expected_agent_id}"
                 );
             }
+            knowledge_job_id = run.knowledge_job_id;
             trigger_id = run.trigger_id;
             run_kind = Some(
                 run.run_kind
@@ -168,13 +170,16 @@ impl RequestAttribution {
         {
             bail!("knowledge run context is no longer active");
         }
-        if attribution.run_kind == Some(AgentRunKind::KnowledgeAnswer)
+        if (attribution.run_kind == Some(AgentRunKind::KnowledgeAnswer)
             || attribution
                 .launch_contract
                 .as_ref()
-                .is_some_and(|contract| contract.purpose != AgentRunPurposeV1::Ordinary)
+                .is_some_and(|contract| contract.purpose != AgentRunPurposeV1::Ordinary))
+            && (!knowledge_read || knowledge_job_id.is_none())
         {
-            bail!("legacy knowledge runs are retired and cannot issue new requests");
+            bail!(
+                "legacy knowledge runs are retired; active knowledge jobs cannot issue item requests"
+            );
         }
         Ok(attribution)
     }

@@ -33,12 +33,15 @@ GET  /api/projects/{project}/settings
 
 Knowledge transport is project-scoped under `/api/projects/{project}/knowledge/...` and implements the
 [agent interface](knowledge-agents.md), [job behavior](knowledge-automation.md),
-and [user actions](knowledge-ui.md).
+and [user actions](knowledge-ui.md). [Iterative job endpoints](#iterative-knowledge-jobs) define discovery request and
+action payloads; [initialization](knowledge-initialization.md) owns their admission and acceptance rules.
 
-Immediate resources expose the root, documents, graph neighborhoods, lexical search, impact mapping, and structural
-checks. They never start an agent. Document reads bind to a registered working copy; edits, moves, and deletion use
-current-content preconditions and preserve unrelated files. UI document operations update the same Markdown and
-frontmatter that file editors use.
+Immediate resources expose `root`, `node`, `documents`, `graph`, `search`, impact mapping, and `check`. They never start
+an agent. Graph responses contain bounded summaries and typed relationships without document bodies. Document reads
+bind to a registered working copy; edits, moves, and deletion use current-content preconditions and preserve unrelated
+files. Document saves submit a path, original content fingerprint, and complete Markdown under the
+[editing preconditions](knowledge-documents.md#editing-and-document-lifecycle).
+[Knowledge UI](knowledge-ui.md#document-and-graph-workspace) owns conflict and draft presentation.
 
 Job resources support starting and listing jobs, inspecting a job and its result, streamed progress, cancellation,
 retry, agent progress/report submission, and proposal review/application. Starting AI work is asynchronous and returns a
@@ -50,11 +53,6 @@ bounded collections explicitly. Errors distinguish missing context, missing docu
 metadata, excluded content, stale input/destination, denied operation, unavailable agent, and execution failure. They
 preserve an actionable human explanation. A local document error must not turn unrelated reads into a global store
 failure. The service reports the actual publication outcome even if a later index refresh or notification fails.
-
-Shared request and response types live in `dispatch-types`. Immediate knowledge reads expose `root`, `node`,
-`documents`, `graph`, `search`, and `check` resources. Graph responses contain bounded summaries and typed relationships,
-without document bodies. UI saves submit a path, original content fingerprint, and complete Markdown; a stale
-fingerprint rejects the write and preserves the draft. File content is the sole document authority.
 
 Work item endpoints:
 
@@ -171,6 +169,9 @@ rejected before mutation.
 
 ## Workflow Semantics
 
+The [workflow contract](workflows.md) owns transition rules, ownership, release dispositions, and version safety. The API
+maps requests to those server operations:
+
 `claim` chooses an eligible item in the requested state and assigns it to the requesting agent. It does not use
 `DISPATCH_CLAIMED_ITEM_ID` as an implicit input.
 
@@ -193,13 +194,11 @@ feedback has been handled.
 `PATCH /items/{item_id}` is for item field updates and supports version safety. It is separate from workflow
 transitions.
 
-Relationship mutations validate that both work items exist in the same project, the source and target differ, the
-relationship kind is non-empty after trimming, and the exact `(project, source, target, kind)` relationship is not
-already present. Mutations touch both source and target work items, emit item events for both sides, and publish
-item-change notifications for both item detail views.
+Relationship mutations enforce the [data-model invariants](data-model.md#work-items), including same-project endpoints,
+uniqueness, and version/event updates to both items.
 
 The former project-memory routes are not public API. Any retained legacy memory is considered only during an explicit
-migration; it does not silently become accepted knowledge. Historical data handling
+import; it does not silently become accepted knowledge. Historical data handling
 follows [Knowledge integrity](knowledge-integrity.md).
 
 ## CrudKit Endpoints
@@ -238,8 +237,8 @@ operating on the same immutable project id is rejected as in progress.
 Automation rule CRUD exposes the explicit run mutability and selected personality for work-consuming rules. Create and
 update requests validate storage values `mutating` and `read_only`; new custom rules default to `mutating` unless the
 operator chooses read-only. Consume-work create and update requests default a missing personality to the project
-`Default` personality and reject missing or cross-project personality references. Existing rules migrated from older
-schemas remain `mutating` until edited.
+`Default` personality and reject missing or cross-project personality references. Rules remain `mutating` until an
+operator explicitly selects read-only behavior.
 
 Personality CRUD is project-scoped. Create and update requests trim and require `name`, keep `personality_description`
 as free-form text, and enforce unique names within a project. Delete requests reject `Default` and reject any
@@ -264,9 +263,9 @@ The server exposes operator mutation handlers for actions such as:
 - discovering agent tools;
 - picking folders on the local system.
 
-These endpoints are UI integration points, not the stable agent-facing API. The hydrated Leptos frontend does not submit
-HTML forms to them. Dispatch-owned controls call typed methods on focused frontend services, whose production
-implementations use server functions and invoke the same authoritative backend services as the direct handlers.
+These endpoints are UI integration points, not the stable agent-facing API.
+[UI interaction](ui.md#live-updates) uses typed frontend services backed by server functions, which invoke the same
+authoritative backend services as the direct handlers.
 
 Direct automation starts may include an explicit mutability value. Omitted mutability defaults to `mutating`;
 work-producing evaluations ignore run mutability because they do not launch agents. Automation status responses include
@@ -305,7 +304,22 @@ errors from server failures.
 
 ## Knowledge Store Relocation
 
-Knowledge-directory relocation is an explicit user operation with a preview of file moves, collisions, exclusions, and
-affected references. It preserves document IDs and unrelated files, verifies the destination, and updates the project
-setting only after the move succeeds. It is not available to background knowledge workers. The file and recovery rules
-are owned by [Documents and relationships](knowledge-documents.md) and [Knowledge automation](knowledge-automation.md).
+Knowledge-directory relocation is an operator operation enforcing the
+[document location contract](knowledge-documents.md#location-and-discovery).
+[Knowledge UI](knowledge-ui.md#settings-and-degraded-operation) owns its preview and controls.
+
+## Iterative knowledge jobs
+
+Project-scoped `/api/projects/{project}/knowledge/jobs` lists jobs and accepts a typed start request with a stable
+`request_id`, optional predecessor, additional context, active-time budget, reported-token budget, and application mode.
+`/{id}` returns durable details; `/{id}/action` accepts cancel, retry, continue, apply, or reject. Retry/continue retain a
+predecessor link and require a new idempotency key. `/{id}/coverage` accepts an optional aspect filter.
+
+Active knowledge agents use `/{id}/source/{list|search|read}`, `/{id}/progress`, `/{id}/report`, and `/{id}/assess` with
+matching project/run attribution. User controls and extraction history are unavailable to launched readers. Missing,
+terminal, cross-project, or mismatched context fails. Source reads respect current exclusions and retained evidence;
+assessments cannot account for unsupplied ranges. Markdown remains the authored authority.
+
+`/api/projects/{project}/knowledge/job-settings` reads or updates the project's application mode. Job requests may
+explicitly override it; otherwise admission captures the project default. Defaults and recurring admission follow
+[knowledge settings policy](knowledge-automation.md#settings-scheduling-and-triggers).

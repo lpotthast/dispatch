@@ -15,40 +15,36 @@ automatic publication, project lifecycle operations, and changes in supported st
 
 ## File and history ownership
 
-Markdown and frontmatter own document content and relationships. Derived indexes, cached views, and compatibility
-metadata cannot override them. Refresh reflects external edits and current ignore rules. Ignored files are excluded from
-active reading, graph results, search, and model inputs without being modified or deleted.
+Markdown and frontmatter own document content and relationships under
+[Documents and relationships](knowledge-documents.md). Derived indexes, cached views, and compatibility metadata cannot
+override them or modify excluded files.
 
 Job history, logs, findings, proposals, and publication results are durable operational records. Rebuilding the index
 does not reconstruct or erase them. History identifies the inputs and outcomes of its run rather than presenting past
 results as current facts. Historical records cannot authorize new writes or reactivate completed work.
 
-Project deletion removes project-owned operational data and runtime artifacts, while preserving workspace files. The
-immutable project ID prevents history or queued work from attaching to a new project with the same name.
+The [project-deletion lifecycle](workflows.md#project-deletion) preserves workspace files while removing operational
+state. Historical records remain bound to the immutable project ID, never a replacement with the same name.
 
 ## Structural validity and local failure
 
-Visible Markdown stays readable by path when metadata is missing or invalid. Duplicate identities are ambiguous;
-Dispatch never selects an arbitrary winner. Missing relation targets and cycles produce local diagnostics, while valid
-parts of the graph remain navigable. Source and link validation respect participation and filesystem boundaries.
+Document defects remain local under the [indexing and validation contract](knowledge-documents.md#indexing-and-local-failure).
+Discovery resource limits do not redefine the [authoring retention rules](knowledge-pyramid.md#what-to-retain).
 
-Document discovery reads at most 4 MiB per file. Larger files receive a local size diagnostic. This resource limit does
-not redefine semantic quality: length, age, or low query frequency alone cannot justify deleting information.
-
-Reading, graph navigation, lexical search, and structural checks require no AI provider. A model failure affects its job
-and leaves ordinary document operations available. Structural validity does not prove semantic consistency.
+Reading, graph navigation, lexical search, and structural checks require no AI provider. Their
+[degraded UI behavior](knowledge-ui.md#settings-and-degraded-operation) preserves ordinary document access when a model
+job fails. Structural validity does not prove semantic consistency.
+[Source coverage and reading evaluation](knowledge-evaluation.md) records aspect-specific evidence and checks whether
+independent readers can recover consequential behavior and exceptions; document size remains advisory.
 
 ## Checked changes
 
-Editor saves compare the opened content fingerprint with current content before replacing the file. Concurrent edits
-produce a conflict; the user's draft remains available for comparison and deliberate reload. Markdown and unknown
-frontmatter fields survive unchanged unless the user edits them. File access cannot escape the configured knowledge
-directory through absolute paths, traversal, symlinks, or ignore-rule changes.
+Direct saves follow [document lifecycle preconditions](knowledge-documents.md#editing-and-document-lifecycle);
+[the editor](knowledge-ui.md#document-and-graph-workspace) preserves drafts when those checks reject a concurrent write.
 
 Background publication follows the input freshness, write-scope, interruption, and recovery rules in
-[Knowledge automation](knowledge-automation.md). Process success alone cannot establish application success. Retries
-never apply a result twice or overwrite unrelated edits. Applied changes remain identified as applied even if a later
-notification or index refresh fails.
+[Knowledge automation](knowledge-automation.md#publication-cancellation-and-recovery). Its durable outcome distinguishes
+process execution from actual application, including interrupted writes and failures after application.
 
 ## Compatibility and preservation
 
@@ -62,29 +58,29 @@ active writer or public mutation protocol. Rules for historical reserved knowled
 legacy runs cannot resume as ordinary item work. Recorded completed runs remain readable. User-configured label data is
 preserved independently of built-in routing behavior.
 
-Neither initialization nor format conversion enables recurring model calls. Schedule and application policy remain
-explicit user choices. A rollback cannot silently enable retired automation or overwrite independent edits. Schema
-migrations preserve frozen identifiers, ordering, and meaningful history; removal of obsolete records requires an
-explicit preservation policy.
+Format conversion preserves the explicit schedule and application choices defined by
+[Knowledge automation](knowledge-automation.md#settings-scheduling-and-triggers); it never enables recurring model calls.
+Compatibility handling cannot silently enable retired automation or overwrite independent edits. Future schema changes
+preserve frozen identifiers, ordering, and meaningful history; removal of obsolete records requires an explicit
+preservation policy.
 
 ## Observable guarantees
 
 | Situation                                       | Required outcome                                                                                                          |
 |-------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
-| Existing project with substantial code          | Initialize schedules visible, bounded work; detail precedes summaries; existing content and coverage gaps remain visible. |
-| Plain Markdown added in an editor               | Refresh exposes it immediately; missing identity or refinement is a local organization diagnostic.                        |
-| Implementation contradicts an accepted contract | A finding records the evidence; the owning knowledge document retains the intended contract.                              |
-| Accepted design precedes implementation         | Knowledge describes the accepted behavior; task reports and findings outside knowledge retain the implementation gap.     |
-| A detail has several parents                    | Updates inspect every affected parent and preserve summaries that remain correct.                                         |
-| Reorganization repeats on unchanged inputs      | No gratuitous rewriting, oscillating splits, or progressive loss of exceptions occurs.                                    |
-| An ignore rule excludes an open document        | Active views stop exposing its saved content; file bytes remain intact.                                                   |
-| A coding agent uses a worktree                  | Retrieval and impact bind to that worktree and reflect its current edits.                                                 |
-| A user edits while an editor or job is open     | A stale write is rejected, with the draft retained for comparison.                                                        |
-| A subsystem has no source links                 | Inventory review reports uncovered scope instead of declaring a complete clean scan.                                      |
-| An AI provider is unavailable                   | Documents and graph remain usable; affected jobs expose an actionable failure.                                            |
-| A knowledge job has no work item                | Launch, logs, results, cancellation, retry, and recovery work without synthetic items or claim operations.                |
-| The server restarts during publication          | Recovery exposes incomplete application and preserves a single inspectable outcome.                                       |
+| Existing project with substantial code          | [Initialization](knowledge-initialization.md) preserves existing content and records coverage gaps in bounded work. |
+| Plain Markdown added in an editor               | [Discovery](knowledge-documents.md#location-and-discovery) exposes it; missing identity or refinement remains local. |
+| Implementation contradicts an accepted contract | [Drift reporting](knowledge-automation.md#updates-and-drift) records evidence while knowledge retains accepted intent. |
+| Accepted design precedes implementation         | [Authoring](knowledge-pyramid.md#evidence-intent-and-disagreement) keeps implementation gaps outside knowledge. |
+| A detail has several parents                    | [Bottom-up updates](knowledge-pyramid.md#updating-from-the-bottom-upward) inspect all affected parents. |
+| Reorganization repeats on unchanged inputs      | [Stable maintenance](knowledge-pyramid.md#stable-repeated-maintenance) preserves satisfactory wording and meaning. |
+| An ignore rule excludes an open document        | [Exclusion handling](knowledge-ui.md#settings-and-degraded-operation) removes active saved content and preserves bytes. |
+| A coding agent uses a worktree                  | [Working-copy binding](knowledge-agents.md#working-copy-correctness) makes retrieval reflect that worktree's edits. |
+| A user edits while an editor or job is open     | [Editor conflict handling](knowledge-ui.md#document-and-graph-workspace) and [job freshness](knowledge-automation.md#inputs-and-freshness) preserve newer edits and drafts. |
+| A subsystem has no source links                 | [Discovery](knowledge-initialization.md#discovery-and-evidence) reports uncovered scope. |
+| An AI provider is unavailable                   | [Degraded operation](knowledge-ui.md#settings-and-degraded-operation) preserves document access and explains job failures. |
+| A knowledge job has no work item                | [Shared execution](knowledge-automation.md#lifecycle-and-runtime-reuse) operates without item transitions. |
+| The server restarts during publication          | [Publication recovery](knowledge-automation.md#publication-cancellation-and-recovery) preserves one inspectable outcome. |
 
-Semantic quality is evaluated through representative questions, shared-parent documents, conflicting evidence, important
-exceptions, and repeated maintenance. Useful reading and preserved decision value determine success; structural checks
-alone cannot establish that meaning survived.
+The [reading evaluation contract](knowledge-evaluation.md#representative-reading-tasks) checks preserved decision value
+through representative questions; structural checks alone cannot establish that meaning survived.

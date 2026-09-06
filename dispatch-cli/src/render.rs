@@ -488,6 +488,7 @@ mod tests {
         AgentRunView {
             id: 12,
             project_id: 1,
+            knowledge_job_id: None,
             work_item_id: Some(42),
             run_kind: AgentRunKind::Task,
             purpose: None,

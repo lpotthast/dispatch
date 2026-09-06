@@ -9,11 +9,11 @@ refines:
 Dispatch stores project-scoped work coordination data. The database schema lives in `dispatch-server`; shared API shapes
 live in `dispatch-types`.
 
-The server owns database migrations. `Migrator::migrations()` freezes their identities and ordering; each migration
-and helper has one definition. Migration changes preserve durable identities, transformations, and rollback semantics,
-and maintain consistent outcomes for fresh and upgraded databases. Definitions prefer typed SeaQuery builders where
-the library supports the required construct; narrow SQL handles SQLite triggers, FTS5, views, partial indexes, and
-additive foreign-key syntax.
+The server owns database migrations and invokes `Migrator::up` during startup. Each persistent table has one create
+migration; any read-view migration lives beside its owning table and runs after all table migrations. Migration ordering
+follows foreign-key dependencies. Tables, columns, foreign keys, and ordinary indexes use typed SeaQuery builders;
+narrow SQL handles SQLite views and partial indexes that the library cannot express. Schema changes preserve durable
+identities, transformations, and rollback semantics.
 
 ## Projects
 
@@ -66,9 +66,15 @@ and decisions, and actual application outcomes. Retained artifacts contain the r
 and before/after content. These are durable operational history, not facts that can be reconstructed from the current
 Markdown. [Knowledge automation](knowledge-automation.md) owns job fields, statuses, kinds, and lifecycle.
 
+Initialization records and retained evidence follow [iterative discovery](knowledge-initialization.md) and
+[coverage and reading evaluation](knowledge-evaluation.md), while publication journals follow the automation contract.
+Shared agent runs carry an optional knowledge-job ID; operational history does not become frontmatter.
+
 All records use the immutable project ID. Knowledge jobs have no required work-item foreign key and cannot enter
 item-claim code. Their source job and purpose remain visible on agent runs. Project deletion cleans up operational state
-under the normal lifecycle while preserving workspace knowledge. Store UUIDs and signatures do not define canonical file authority.
+under the [project-deletion lifecycle](workflows.md#project-deletion) while preserving workspace knowledge. Store UUIDs
+and signatures do not define canonical file authority. [Knowledge UI](knowledge-ui.md#jobs-and-agent-run-visibility) owns
+job and run presentation.
 
 Historical data remains subject to the preservation guarantees in
 [Knowledge integrity](knowledge-integrity.md). Compatibility records do not define a parallel document authority.
@@ -175,9 +181,9 @@ System prompt history is reconstructable from `SystemPromptChanged` event snapsh
 history. Clearing history removes old system prompt events but does not change the current `projects.system_prompt`
 value.
 
-Historical `MemoryChanged` rows and the legacy project field remain migration data rather than writable project
-knowledge. An explicit migration can review useful content before importing it into documents. No current DTO, API, CLI,
-prompt, or UI exposes writable project memory.
+Historical `MemoryChanged` rows and the legacy project field remain compatibility data rather than writable project
+knowledge. An explicit import can review useful content before adding it to documents. No current DTO, API, CLI, prompt,
+or UI exposes writable project memory.
 
 ## Agent Tools
 
@@ -269,7 +275,7 @@ views, and audit history remain stable even if the automation rule changes later
 default to `mutating` unless the caller explicitly supplies a mutability value. Work-producing automation does not
 launch an agent and has no run mutability or concurrency effect.
 
-Default project automation rules are ordinary editable records. Dispatch creates and migrates these defaults:
+Default project automation rules are ordinary editable records. New projects start with these defaults:
 
 - `Claim open work`: mutating consume-work, selector `state=open` plus absence of `needs-refinement`,
   `needs-verification`, and `dispatch:feedback-requested`.
@@ -279,17 +285,14 @@ Default project automation rules are ordinary editable records. Dispatch creates
 The refiner and verifier prompts instruct agents to update item title, description, comments, and labels, remove the
 triggering label when complete, and leave the underlying implementation work unfinished for later automation or humans.
 
-Migrations default existing automation triggers and existing agent runs to `mutating`. Dispatch must not infer
-`read_only` from trigger names, selectors, labels, or prompt text; operators opt existing custom automation into
-read-only behavior explicitly.
+Persisted automation triggers and agent runs default to `mutating`. Dispatch must not infer `read_only` from trigger
+names, selectors, labels, or prompt text; operators opt custom automation into read-only behavior explicitly.
 
-Migrations create the `personalities` table for existing databases, seed one empty `Default` personality per project,
-and backfill existing automation rules to reference their project default. New project seeding creates the default
-personality before default automation rules so those rules can reference it.
+Every project has one empty `Default` personality. Project creation creates that personality before the default
+automation rules so those rules can reference it.
 
-Knowledge jobs have separate schedules and settings and do not use work-producing or work-consuming rules.
-[Knowledge integrity](knowledge-integrity.md) owns preservation of historical automation data. There is one knowledge
-scheduler per project, and recurring model work requires an explicit user choice.
+[Knowledge automation](knowledge-automation.md) defines separate schedules and settings without work-producing or
+work-consuming rules. [Knowledge integrity](knowledge-integrity.md) owns preservation of historical automation data.
 
 ### Automation provenance, revisions, and bundles
 
@@ -304,8 +307,8 @@ Idle polling checks create no row. `work_item_origins` stores one immutable orig
 producing automation, agent run, or system. Origin snapshots retain run/actor, trigger/revision/evaluation, bundle,
 deduplication, and display names after source objects are deleted or renamed.
 
-Existing rules and personalities receive revision 1 during migration, and existing items receive historical origins.
-Older runs retain null provenance fields where attribution cannot be reconstructed safely.
+Rules and personalities begin at revision 1, and work items have an immutable origin. Runs retain null provenance fields
+where attribution cannot be reconstructed safely.
 
 Produce-work rules may define item title, initial state and labels, item model/effort overrides, and deduplication:
 always create, reuse an unfinished item from the same trigger, or reuse an unfinished item with a project-scoped key.
@@ -327,7 +330,7 @@ policy produces an error identifying the rule before it reaches scheduling, exec
 Effective model and reasoning effort precedence is work-item override, then consuming-rule override, then project
 default. Produced-work overrides are stored on the created item and participate in the same precedence when later
 consumed. For work-item automation, token usage remains observational analytics rather than an enforceable ceiling.
-Knowledge-job budget handling is defined separately in the knowledge automation contract.
+Knowledge-job budget handling follows [Knowledge automation](knowledge-automation.md#settings-scheduling-and-triggers).
 
 Bundle ownership is identified by `(project, bundle_key, object_key)`. `automation_bundle_applies` records canonical
 manifest hashes, applied/removal diffs, actor/status metadata, and timestamps. The latest apply-history status
@@ -360,5 +363,5 @@ Project settings control knowledge location and automation behavior:
 Settings are applied by server services at launch and workflow boundaries, not by the agent-facing CLI. Mutating runs
 are limited by `max_code_edit_agents` after applying workspace-mode safety constraints such as the single mutating run
 cap for current-branch projects. Read-only runs are limited independently by `max_read_only_agents`, default to two
-concurrent runs for new and migrated projects, and may be disabled with zero. Selector/prompt-based automations do not
+concurrent runs per project, and may be disabled with zero. Selector/prompt-based automations do not
 have a separate project-level refinement concurrency exception.

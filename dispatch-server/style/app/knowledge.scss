@@ -1,0 +1,23 @@
+
+.knowledge-activity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  padding: .7em 1em;
+  margin-bottom: .7em;
+  border: 1px solid currentColor;
+  border-radius: .5em;
+  font-size: .9em;
+  div { overflow-wrap: anywhere; }
+  button { flex-shrink: 0; }
+}
+.knowledge-jobs {
+  label { display: grid; gap: .4em; margin: .75em 0; }
+  textarea { min-height: 6em; }
+  details { margin: .7em 0; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 28em; overflow: auto; font-size: .85em; }
+  code { overflow-wrap: anywhere; }
+  .knowledge-job-actions { display: flex; gap: .5em; flex-wrap: wrap; }
+  h4 { margin-top: 1.4em; }
+}

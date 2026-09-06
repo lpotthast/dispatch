@@ -222,6 +222,18 @@ async fn cancel_run(project: String, run_id: i64) -> Result<(), ServerFnError> {
     let run = automation::get_run(&state.store, &project, run_id)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))?;
+    if let Some(job_id) = run.knowledge_job_id {
+        crate::backend::knowledge::jobs::action(
+            &state.store,
+            &state.sessions,
+            &project,
+            job_id,
+            dispatch_types::knowledge::jobs::JobAction::Cancel,
+        )
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+        return Ok(());
+    }
     if run.status != AgentRunStatus::Running {
         return Err(ServerFnError::new(format!(
             "automation run {run_id} is not running"

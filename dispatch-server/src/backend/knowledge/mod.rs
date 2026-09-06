@@ -2,6 +2,7 @@
 mod discovery;
 mod documents;
 mod editing;
+pub(crate) mod jobs;
 pub(crate) use editing::save;
 #[cfg(test)]
 mod tests;
@@ -57,8 +58,14 @@ pub(crate) async fn query(
             .ok_or_else(|| report!("project has no working directory"))?
     };
     let directory = normalize_knowledge_directory(&project.knowledge_directory)?;
-    tokio::task::spawn_blocking(move || read(project.id, &working, &directory, operation, &query))
-        .await?
+    let result = tokio::task::spawn_blocking(move || {
+        read(project.id, &working, &directory, operation, &query)
+    })
+    .await??;
+    if let Some(run_id) = attribution.agent_run_id {
+        jobs::record_read(store, run_id, &serde_json::to_vec(&result)?).await?;
+    }
+    Ok(result)
 }
 
 pub(crate) fn read(

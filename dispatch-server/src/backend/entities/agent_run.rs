@@ -47,6 +47,11 @@ pub struct Model {
 
     pub work_item_id: Option<i64>,
 
+    #[serde(default)]
+    #[ck_create_model(exclude)]
+    #[ck_update_model(exclude)]
+    pub knowledge_job_id: Option<i64>,
+
     #[serde(default = "default_run_kind_storage")]
     #[ck_create_model(exclude)]
     #[ck_update_model(exclude)]

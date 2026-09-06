@@ -90,6 +90,7 @@ static MANAGED_CODEX_HOME_OPERATION: LazyLock<Mutex<()>> = LazyLock::new(|| Mute
 pub(crate) type SharedCodexStatus = Arc<RwLock<CodexAppServerStatusView>>;
 
 struct AppServerProcess {
+    pid: Option<u32>,
     shutdown: Option<oneshot::Sender<()>>,
     monitor: Option<JoinHandle<Result<()>>>,
 }
@@ -134,6 +135,9 @@ pub(crate) struct ManagedCodexAppServer {
 }
 
 impl ManagedCodexAppServer {
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        self.process.pid
+    }
     fn client(&self) -> &CodexClient {
         &self.client
     }
@@ -1368,6 +1372,7 @@ async fn spawn_app_server_process(
         })
         .spawn()
         .context("failed to start Codex app-server process")?;
+    let pid = process.id();
     let stderr_consumer = process
         .stderr()
         .consume_async(WriteChunks::passthrough(
@@ -1417,6 +1422,7 @@ async fn spawn_app_server_process(
     });
 
     Ok(AppServerProcess {
+        pid,
         shutdown: Some(shutdown),
         monitor: Some(monitor),
     })
@@ -1452,8 +1458,16 @@ pub fn codex_project_home_dir(project_id: i64) -> PathBuf {
 /// Returns an error when a managed directory, link, config file, or rules file cannot be created
 /// or inspected.
 pub fn ensure_project_codex_home(settings: &ProjectSettingsView) -> Result<PathBuf> {
+    ensure_isolated_codex_home(settings, &codex_project_home_dir(settings.project_id))
+}
+
+/// Prepared knowledge jobs retain their own runtime configuration and reuse shared authentication.
+pub(crate) fn ensure_isolated_codex_home(
+    settings: &ProjectSettingsView,
+    project_home: &Path,
+) -> Result<PathBuf> {
     let shared_home = ensure_codex_home()?;
-    let project_home = codex_project_home_dir(settings.project_id);
+    let project_home = project_home.to_path_buf();
     fs::create_dir_all(&project_home).context_with(|| {
         format!(
             "failed to create Dispatch project Codex home {}",

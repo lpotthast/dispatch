@@ -16,9 +16,9 @@ operations, or an agent call for each retrieval.
 ## Launch context and instructions
 
 Dispatch provides the task, immutable project and run identity, registered working directory, effective permissions, and
-any knowledge-job identity. The CLI resolves explicit project flags before environment defaults, but the service still
-rejects an override outside the run's allowed project or working copy. The CLI is an HTTP relay and never opens the
-operational database. Arbitrary client-supplied filesystem paths cannot select another workspace.
+any knowledge-job identity. [CLI context resolution](cli.md#context-resolution) selects request context; the service
+rejects an override outside the run's allowed project or working copy. Arbitrary client-supplied filesystem paths cannot
+select another workspace.
 
 The launch input includes the short project root and compact summaries of its immediate children, freshly read from the
 assigned working copy. This satisfies initial root reading. Relevant path matches or job scope can supply a small
@@ -34,6 +34,10 @@ authoring rules and role-specific job procedure. Keep their actual text with the
 understood later. The first version does not require a separate versioned skill registry, prompt-hash protocol, or
 per-query receipts.
 
+Both ordinary coding agents and knowledge-job authors receive the
+[ownership checks](knowledge-pyramid.md#placement-and-information-loss) as explicit before-drafting and before-finishing
+instructions. Review passes evaluate those same rules under the [reading evaluation contract](knowledge-evaluation.md).
+
 ## Navigate progressively
 
 Read the root and open relevant or uncertain child summaries until the task's required precision is reached. Read source
@@ -47,15 +51,7 @@ handoff can summarize what was read, its working copy, and what remains uncertai
 
 ## Immediate CLI contract
 
-The immediate command surface is:
-
-```text
-dispatch knowledge root --json
-dispatch knowledge node show <id-or-path> --json
-dispatch knowledge search --text "claim recovery" --json
-dispatch knowledge impact --json
-dispatch knowledge check [<id-or-path>] --json
-```
+The [CLI command reference](cli.md#commands) owns invocation syntax. Immediate operations return:
 
 | Operation   | Result                                                                                                                             |
 |-------------|------------------------------------------------------------------------------------------------------------------------------------|
@@ -83,8 +79,8 @@ a selected document.
 
 Reading, searching, and checking work without a launched run when `--project` selects a registered project. A document
 path is relative to that project's knowledge directory. An ID/path ambiguity is reported rather than selecting an
-arbitrary file. `node show --id <id>` and `node show --path <path>` explicitly disambiguate and are alternatives to its
-positional argument. Outside a launched run, the registered project working copy is used; the CLI does not silently
+arbitrary file; callers can disambiguate with the CLI's explicit identity or path selectors. Outside a launched run, the
+registered project working copy is used; the CLI does not silently
 treat its current directory as another registered worktree.
 
 ## Working-copy correctness
@@ -117,16 +113,16 @@ Authorized writers use ordinary file-editing tools for Markdown and frontmatter.
 indexes. Coding agents edit documentation alongside code in the same working copy, including local API comments and
 README examples when needed. Background knowledge jobs cannot fix code as a side effect of documenting it.
 
-Background drafts are applied by Dispatch after validation, freshness checks, and the selected application policy. A
+Background drafts
+follow [Knowledge automation's application policy](knowledge-automation.md#reorganization-and-automatic-application). A
 human review mode yields a diff, not a disabled agent editor. Direct edits made by the user or their coding agent remain
 normal project edits and need no separate acceptance ceremony.
 
 ## Ordinary coding workflow
 
-Read relevant knowledge, inspect source, and record intended contract changes before or alongside implementation. After
-editing, use impact mapping, update the lowest affected documents, check all affected broader summaries and relevant
-dependents, and run structural checks. Preserve unchanged prose. Report meaningful changes, verification, and unresolved
-disagreements through the task's ordinary reporting path.
+Use progressive navigation and impact mapping to carry out the
+[bottom-up authoring workflow](knowledge-pyramid.md#updating-from-the-bottom-upward), then run structural checks. Report
+meaningful changes, verification, and unresolved disagreements through the task's ordinary reporting path.
 
 Work-item completion still follows ordinary item rules. Knowledge quality is part of completing the task, but the system
 does not require signed knowledge reviews or per-query receipts as an additional item transition protocol. Later checks
@@ -134,13 +130,9 @@ can detect gaps; a successful item transition alone never resolves a drift findi
 
 ## Knowledge-job reporting
 
-```text
-dispatch knowledge job progress --body "Checking persistence contracts."
-dispatch knowledge job report --file result.json
-```
-
-These commands use the current job/run context and reject missing or mismatched context. They do not select a job by
-guessing a work item. Progress is a short replaceable status plus the normal run log. The report contains a summary,
+[Job reporting and source commands](cli.md#bounded-discovery-commands) use the current job/run context and reject missing
+or mismatched context. They do not select a job by guessing a work item. Progress is a short replaceable status plus the
+normal run log. The report contains a summary,
 reviewed scope and omissions, findings or answer, supporting document/source references, the explanation of proposed
 changes, and unresolved questions. Answer citations identify the actual content read, including whether a conclusion is
 inferred.
@@ -153,3 +145,13 @@ harmless; replacing a terminal accepted result is rejected.
 Agents never recursively launch `knowledge ask` to interpret documents for an existing knowledge job. A user's free
 question starts an answer job through the user surface. If source access is unavailable or the answer exceeds its
 budget, the agent states the limit and provides supported findings rather than inventing completeness.
+
+Scoped source operations read retained job inputs and record returned inclusive line ranges. They require an active
+matching project, job, and run under the [CLI context contract](cli.md#context-resolution). Draft Markdown remains
+editable with ordinary tools. A report is an idempotent pass checkpoint, not permission to apply files.
+
+Discovery and synthesis agents inspect aspect coverage and changed source hunks through
+`dispatch knowledge job coverage`. The independent reader cannot retrieve coverage assessments or extraction history;
+its source fallback remains available.
+[Source coverage and reading evaluation](knowledge-evaluation.md) owns assessment history, reader isolation, and reading
+cost measurement. The [CLI discovery reference](cli.md#bounded-discovery-commands) defines flags and stdin support.

@@ -30,12 +30,13 @@ coherent detailed reference can remain long when readers can locate the needed s
 ## Evidence, intent, and disagreement
 
 Accepted requirements and decisions constrain the implementation. Code demonstrates what exists; tests demonstrate the
-cases they exercise. Neither proves that observed behavior is intended. Comments and README files may be stale. A source
+cases they exercise. Neither alone proves historical intent. Well-supported code-derived behavior can establish an initial descriptive baseline where accepted intent does not conflict. Comments and README files may be stale. A source
 link is a route to evidence, not evidence that the agent actually read it.
 
 Knowledge states accepted behavior, constraints, and consequential rationale in present tense. An accepted design is
 normative even while code is being changed to satisfy it. It does not become a weaker requirement because it is not yet
-implemented. Unsupported observations and disputed interpretations belong in findings until their meaning is resolved.
+implemented. Unsupported observations, unsupported rationale, and disputed consequential interpretations belong in
+findings until their meaning is resolved.
 An inference used as design rationale is labeled with its reasoning and uncertainty.
 
 The knowledge tree contains no implementation status, cleanup narrative, TODO lists, rollout plans, planned work-item
@@ -83,6 +84,24 @@ acceptable to omit the exact timeout from the project root and route to the work
 One document owns the full explanation of a durable fact. Other documents may summarize its consequence and link to the
 owner. This permits useful repetition at different abstraction levels without creating independent specifications that
 must be reconciled sentence by sentence.
+
+Before drafting, group retained material by the question it helps a reader answer. Extend a suitable existing owner;
+create a document for a coherent independently readable subject, never merely for a source file, function, or pass.
+Preserve stable concept IDs, descriptive paths, and satisfactory prose. A useful document explains its responsibility,
+behavior and ownership boundaries, consequential conditions and failures, supported rationale, and routes to detail.
+Empty sections add no value. [Documents and relationships](knowledge-documents.md) owns identity and relation semantics.
+
+Owner selection includes reading the relevant routing summaries and searching for existing explanations before adding a
+section or document. A fact discovered while investigating one subject may belong to another: UI layout and controls
+belong to the relevant UI owner, while a lifecycle's admission and execution rules belong to its workflow owner. Follow
+the project's actual ownership and paths; no fixed document naming scheme is required.
+
+Other documents retain only the consequence needed at their scope and a direct Markdown link to the owning explanation
+or section. State the detailed contract once within its owner instead of repeating it across sections. A link or
+frontmatter relationship does not justify repeating the detailed contract beside it. Consolidating
+duplication preserves every unique requirement, exception, and rationale at the owner and repairs affected routes. Before
+finishing, compare changed sections with their owners, related explanations, and affected summaries for competing
+specifications, misplaced detail, and missing links; structural checks alone cannot establish this.
 
 ## Code comments and README files
 
@@ -164,8 +183,6 @@ classify every sentence. Success is useful reading and preserved decision value,
 
 ## How we evaluate these rules
 
-Use small representative projects and real task questions. Compare whether readers find the right owner, whether a
-summary permits a correct decision, whether bootstrap exposes gaps, and whether repeated maintenance preserves meaning.
-Include shared parents, contradictory comments and code, exceptions to broad rules, and horizontal and vertical splits.
-Run the same unchanged example twice and expect the second pass to justify any further change. Semantic quality needs AI
-or human review; structural validators cannot prove it.
+[Iterative discovery](knowledge-initialization.md) applies these authoring rules to bounded initialization and continuation;
+[reading evaluation](knowledge-evaluation.md) owns representative tasks and measures preserved answers, exceptions, and
+reading cost. Structural validators cannot prove semantic quality.

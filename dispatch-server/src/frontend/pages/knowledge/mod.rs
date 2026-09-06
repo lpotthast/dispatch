@@ -1,4 +1,5 @@
 mod graph;
+mod jobs;
 mod markdown;
 
 use crate::frontend::{
@@ -16,6 +17,7 @@ use leptos_meta::Title;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
+    Jobs,
     Search,
     Edit,
     Create,
@@ -25,6 +27,7 @@ enum Tool {
 impl Tool {
     fn title(self) -> &'static str {
         match self {
+            Self::Jobs => "Knowledge jobs",
             Self::Search => "Search",
             Self::Edit => "Edit document",
             Self::Create => "New document",
@@ -94,11 +97,17 @@ fn KnowledgeWorkspace(project: String) -> impl IntoView {
     let selected = RwSignal::new("README.md".to_owned());
     let document = RwSignal::new(None::<KnowledgeDocument>);
     let editor = Editor::new();
-    let active_tool = RwSignal::new(None::<Tool>);
+    let active_tool = RwSignal::new(
+        leptos_router::hooks::use_query_map()
+            .get_untracked()
+            .get("job")
+            .map(|_| Tool::Jobs),
+    );
     let message = RwSignal::new(None::<String>);
     let error = RwSignal::new(None::<String>);
     let document_error = RwSignal::new(None::<String>);
     let refresh = RwSignal::new(0_u64);
+    let jobs = jobs::Jobs::new(project, service, refresh);
     let viewport = RwSignal::new(Viewport::default());
     let fitted = RwSignal::new(false);
     let list_mode = RwSignal::new(false);
@@ -306,9 +315,10 @@ fn KnowledgeWorkspace(project: String) -> impl IntoView {
                 <button type="button" aria-label="Refresh knowledge" on:click=move |_| refresh.update(|v| *v += 1)>"Refresh"</button>
             </header>
             {move || error.get().map(|error| view! { <p class="callout danger" role="alert">{error}</p> })}
+            <jobs::Activity jobs open initialized=Signal::derive(move ||graph.with(|g|g.as_ref().is_some_and(|g|g.documents.iter().any(|d|d.path=="README.md"))))/>
             <section class="knowledge-workbench" on:keydown=move |event| { if event.key() == "Escape" && active_tool.get_untracked().is_some() { event.stop_propagation(); close.run(()); } }>
                 <nav class="knowledge-tools-rail" aria-label="Knowledge tools"><strong>"Tools"</strong>
-                    {[Tool::Search,Tool::Create,Tool::Edit,Tool::Relationships,Tool::Diagnostics].into_iter().map(|tool| view! {
+                    {[Tool::Jobs,Tool::Search,Tool::Create,Tool::Edit,Tool::Relationships,Tool::Diagnostics].into_iter().map(|tool| view! {
                         <button type="button" class:active=move || active_tool.get() == Some(tool) aria-expanded=move || (active_tool.get() == Some(tool)).to_string() aria-controls="knowledge-tool-drawer" data-knowledge-tool=tool.title()
                             disabled=move || editor.saving.get() || (matches!(tool,Tool::Edit|Tool::Relationships) && document.get().is_none()) on:click=move |_| open.run(tool)>{tool.title()}</button>
                     }).collect_view()}
@@ -347,6 +357,7 @@ fn KnowledgeWorkspace(project: String) -> impl IntoView {
                     <header class="knowledge-tool-drawer-heading"><h2>{move || active_tool.get().map(Tool::title)}</h2><button type="button" aria-label="Close knowledge tool" disabled=move || editor.saving.get() on:click=move |_| close.run(())>"×"</button></header>
                     <div class="knowledge-tool-body">
                         {move || match active_tool.get() {
+                            Some(Tool::Jobs) => view! { <jobs::JobsDrawer project=project.get_value() service=service.get_value() jobs initialized=graph.with(|g|g.as_ref().is_some_and(|g|g.documents.iter().any(|d|d.path=="README.md"))) select/> }.into_any(),
                             Some(Tool::Search) => view! { <SearchDrawer project=project.get_value() service=service.get_value() select selected refresh/> }.into_any(),
                             Some(Tool::Edit|Tool::Create) => view! { <EditDrawer editor document creating=active_tool.get() == Some(Tool::Create) save navigation select/> }.into_any(),
                             Some(Tool::Relationships) => view! { <Relationships document graph select edit=Callback::new(move |()| open.run(Tool::Edit))/> }.into_any(),

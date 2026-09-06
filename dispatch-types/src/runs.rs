@@ -299,6 +299,8 @@ impl FromStr for AgentRunCleanupStatus {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AgentRunView {
+    #[serde(default)]
+    pub knowledge_job_id: Option<i64>,
     pub id: i64,
     pub project_id: i64,
     pub work_item_id: Option<i64>,

@@ -21,6 +21,7 @@ Primary UI routes include:
 /automation                            automation rule administration
 /runs                                  automation run visibility
 /system                                system and Codex administration
+/metrics                               backend performance diagnostics
 /api/docs                              local API reference
 /projects/:project/items/:item_id      item detail
 /projects/:project/automation/runs/:run_id/log
@@ -35,12 +36,8 @@ spacing, type, controls, radii, breakpoints, and major layout dimensions so dens
 centrally. Generated CrudKit and Leptonic styles remain upstream-owned.
 
 The Knowledge page follows [Knowledge User Interface](knowledge-ui.md): readable and editable Markdown, graph/list
-navigation, immediate search, AI answers, proposals, findings, and visible knowledge jobs and agent runs. It has
-independent recurring-work controls and reuses shared run details/logs.
-The graph occupies the left pane, the selected document the right pane, and actions open in a side drawer.
-
-Local document errors remain local. Missing initialization or an unavailable model does not disable ordinary repository
-work or unrelated document reading. No signer-trust workflow or synthetic maintenance work item is required.
+navigation, immediate search, AI answers, and maintenance. Its document workspace remains available independently of AI
+and work-item automation; the owning document defines layout, controls, run visibility, and local-error handling.
 
 ## Workflow Surface
 
@@ -119,13 +116,14 @@ item drawer reuses the full item-detail workflow, and successful item deletion c
 run metadata, prompts, actions, and compact output timeline and exposes `Back to item`, `Open full run`, and close
 actions. Human-authored rich prose fields such as work item descriptions and automation prompts should use the
 Tiptap-backed editor in create and edit flows, while structured multiline fields such as selectors, writable-root lists,
-and commit policy text stay plain text controls. Canonical knowledge intentionally uses raw Markdown editing and
-preview. Ordinary work item create and edit fields may be embedded CrudKit forms, including the Board new-item modal and
-item-detail editor, so those flows share field configuration and CrudKit dirty guards while Dispatch workflow controls
-remain custom. Item detail pages show the work item id in the top heading as `#{id}` with the title, so the item-detail
-editor does not repeat the id as a disabled input field. The Board new-item modal lets operators add zero or more
-initial labels before saving. The state selector remains the canonical source for the `state=<value>` label;
-initial-label rows must not create their own `state` label, and CrudKit dirty guards cover edits to those rows.
+and commit policy text stay plain text controls. [Knowledge editing](knowledge-ui.md#document-and-graph-workspace) has
+its own Markdown editor contract. Ordinary work item create and edit fields may be embedded CrudKit forms, including the
+Board new-item modal and item-detail editor, so those flows share field configuration and CrudKit dirty guards while
+Dispatch workflow controls remain custom. Item detail pages show the work item id in the top heading as `#{id}` with the
+title, so the item-detail editor does not repeat the id as a disabled input field. The Board new-item modal lets
+operators add zero or more initial labels before saving. The state selector remains the canonical source for the
+`state=<value>` label; initial-label rows must not create their own `state` label, and CrudKit dirty guards cover edits
+to those rows.
 
 Embedded CrudKit surfaces use `CrudNavigation` for all view changes, returns, and application-owned actions that could
 discard edited data. Navigation retains its accepted view while a URL change, drawer selection, modal close, or
@@ -144,8 +142,9 @@ and modified-click behavior remains unchanged because opening another tab does n
 Return callbacks are explicit navigation configuration, not component lifecycle callbacks. Closing or unmounting a
 route, modal, drawer, or whole CrudKit instance never invokes its configured return callback by itself.
 
-Item detail pages show a relationships panel for every directed relationship touching the current work item. The panel
-distinguishes outgoing links where the current item is the source from incoming links where the current item is the
+Item detail shows the work group's key and name when assigned. It shows a relationships panel for every directed
+relationship touching the current work item. The panel distinguishes outgoing links where the current item is the
+source from incoming links where the current item is the
 target, shows the free-form relationship kind, shows source and target item id/title/state summaries, and links to the
 related item. Relationship add, update-kind, and delete controls call the typed item service, which uses the custom
 relationship service rather than CrudKit routes.
@@ -172,9 +171,9 @@ not duplicate.
 The Projects page stands on its own as collection administration for creating, listing, editing, and deleting projects.
 Selected-project administration lives on the singular Project page. That page owns the selected project's system prompt,
 full Work items administration, known label keys, work item states, swim-lanes, and maintenance actions such as worktree
-cleanup. The Knowledge page owns document editing, graph navigation, answers, proposals, findings, knowledge schedules,
-and job/run visibility. The Automation page owns project automation policy alongside automation rules and personalities.
-System-wide Codex readiness and app-server tool configuration live on the System page rather than Projects.
+cleanup. The [Knowledge page](knowledge-ui.md) owns knowledge work and its job visibility. The Automation page owns
+project automation policy alongside automation rules and personalities. System-wide Codex readiness and app-server tool
+configuration live on the System page rather than Projects.
 
 Project selection is explicit URL-owned state. Pages and the workspace dock do not silently select the first project
 when the URL has no project. When the selected project is deleted, the live project-deleted event clears its typed
@@ -209,10 +208,10 @@ in a separate section at the bottom. Tool discovery is exposed as the agent-tool
 rather than a standalone section action. Codex readiness outside `/system` is a server-startup or pre-run snapshot
 rather than a globally polled value. Mounting `/system` performs a detailed status check and keeps that page current
 with a five-minute refresh while it remains mounted; server-side single-flight caching prevents duplicate tabs or
-live-event refetches from multiplying detailed probes. The operator-triggered Refresh action bypasses that cache and
-performs a new detailed check immediately. Detailed checks include token-activity usage; ordinary readiness checks omit
-that optional usage request. After completing browser login, the operator uses Refresh to update the displayed account
-state immediately.
+live-event refetches within four minutes from multiplying detailed probes. The operator-triggered Refresh action
+bypasses that cache and performs a new detailed check immediately. Detailed checks include token-activity usage;
+ordinary readiness checks omit that optional usage request. After completing browser login, the operator uses Refresh to
+update the displayed account state immediately.
 
 ## Project Settings
 
@@ -310,21 +309,22 @@ the server's existing readiness result; detailed checks remain owned by System. 
 events arriving after subscription and do not replay the last event on navigation. Changing a query's project or item
 input clears the former input's data before a new response can render.
 
-The Knowledge service caches typed document, graph, diagnostic, job, proposal, and settings data per project and working
-copy. It checks current content/index generation before treating cached data as current. Local metadata errors
-invalidate affected projections, not the whole workbench. Excluded content is removed from active caches. Refreshes
-preserve selection, viewport, and dirty drafts; historical artifacts load only when
-requested. [Knowledge User Interface](knowledge-ui.md) owns the detailed refresh and editing behavior.
+The [Knowledge UI](knowledge-ui.md#settings-and-degraded-operation) defines how these cache and refresh rules apply to
+working-copy content, exclusions, historical artifacts, and editor state.
 
-Each operator route has its own module under `dispatch-server/src/frontend/pages/`. Route modules own their page
-response type, cached query signal, and page-specific reactive rendering, but the query does not gate the route shell or
-top bar. View-bearing route sections and shared controls are Leptos `#[component]`s; Dispatch-owned mutation controls
-are reactive buttons, toggles, and editors rather than HTML form submissions. Focused, context-provided services own
-server functions, browser request clients, local-storage caches, and transport details; pages load or mutate backend
-state only through typed service methods. Service request implementations are replaceable for component and page tests.
+The [frontend architecture](architecture.md#dispatch-server) defines route and service ownership. View-bearing route
+sections and shared controls are Leptos `#[component]`s; Dispatch-owned mutation controls are reactive buttons, toggles,
+and editors that invoke typed service methods rather than submitting HTML forms.
 
-The application module owns only the shell and root providers. Genuinely shared UI behavior is split into focused
-modules under `dispatch-server/src/frontend/components/` rather than accumulating in the application module.
+## Metrics
+
+The `/metrics` page displays cumulative repository timings, SQL timings, supporting counters and gauges, and the
+snapshot timestamp. It refreshes every two seconds and offers manual refresh through a focused typed frontend service
+and server function. Duration values may be formatted as microseconds, milliseconds, or seconds for readability.
+[Backend Metrics](metrics.md) owns collection, snapshot access, aggregation, and percentile interpretation.
+
+The page presents diagnostics for one server process, with measurements reset at restart. It does not offer historical
+comparisons or cross-process alerting.
 
 ## Browser Coverage
 

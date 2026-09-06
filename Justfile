@@ -114,3 +114,14 @@ recover-stale-claims:
 
 cleanup-worktrees:
     cargo run --manifest-path "{{server_manifest}}" -- --database "{{database}}" automation cleanup-worktrees --project "{{project}}"
+
+# Deterministic knowledge orchestration and explicitly requested provider smoke coverage.
+knowledge-test:
+    cargo test --manifest-path "{{server_manifest}}" --lib backend::knowledge::jobs -- --nocapture
+
+knowledge-smoke-test:
+    DISPATCH_DEVELOPMENT=1 cargo test --manifest-path "{{server_manifest}}" --lib real_agent_smoke_test -- --ignored --nocapture
+
+# Validate the browser-only Leptos code without launching a browser.
+check-hydrate:
+    cargo check --manifest-path "{{server_manifest}}" --lib --target wasm32-unknown-unknown --no-default-features --features hydrate

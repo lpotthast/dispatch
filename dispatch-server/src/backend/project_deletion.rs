@@ -92,6 +92,8 @@ impl ProjectDeletionService {
     }
 
     async fn delete_after_admission_closed(&self, project: &ProjectModel) -> Result<()> {
+        let _publication = self.store.lock_runtime_admission().await;
+        crate::backend::knowledge::jobs::stop_project(&self.store, project.id).await?;
         self.automation_controller
             .stop_project(project.id, &project.name, &self.sessions)
             .await?;
@@ -107,6 +109,10 @@ impl ProjectDeletionService {
         self.cleanup_run_artifacts(&runs)?;
         remove_path_if_exists(&self.codex_projects_dir.join(project.id.to_string()))?;
         remove_path_if_exists(&self.knowledge_projects_dir.join(project.id.to_string()))?;
+        remove_path_if_exists(&crate::backend::knowledge::jobs::project_artifacts(
+            &self.store,
+            project.id,
+        ))?;
         let deleted = Project::delete_by_id(project.id)
             .exec(self.store.db().as_ref())
             .await
@@ -174,6 +180,7 @@ fn cleanup_run_artifacts(
             "developer-instructions.md",
             "user-prompt.md",
             "output.json",
+            "incremental.jsonl",
             "codex-stderr.log",
             "git-policy.json",
         ] {
@@ -506,6 +513,7 @@ mod tests {
             "developer-instructions.md",
             "user-prompt.md",
             "output.json",
+            "incremental.jsonl",
             "codex-stderr.log",
             "git-policy.json",
         ] {

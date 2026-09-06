@@ -54,7 +54,11 @@ pub(crate) fn write_run_output_log(path: &Path, pieces: &[AgentRunOutputPiece]) 
         pieces: pieces.to_vec(),
     };
     let body = serde_json::to_string_pretty(&log).context("failed to encode automation output")?;
-    Ok(fs::write(path, body).context_with(|| format!("failed to write {}", path.display()))?)
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    fs::write(&temporary, body)
+        .context_with(|| format!("failed to write {}", temporary.display()))?;
+    Ok(fs::rename(&temporary, path)
+        .context_with(|| format!("failed to replace {}", path.display()))?)
 }
 
 pub(crate) async fn push_codex_output_piece(

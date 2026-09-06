@@ -18,10 +18,10 @@ satisfy those statements. Tests, schemas, configuration, code comments, and READ
 explanation.
 
 When implementation and accepted design disagree, there is a contradiction to resolve. An agent must not silently
-rewrite a requirement to match a bug. An intentional design change can update knowledge before implementation;
-knowledge states that accepted contract in present tense. Implementation gaps, progress, and unresolved contradictions
-are recorded in task reports or findings outside the knowledge documents. Evidence and rationale support
-the design without turning its owning explanation into a record of the implementation effort.
+rewrite a requirement to match a bug. An intentional design change can update knowledge before implementation; knowledge
+states that accepted contract in present tense. Implementation gaps, progress, and unresolved contradictions are
+recorded in task reports or findings outside the knowledge documents. Evidence and rationale support the design without
+turning its owning explanation into a record of the implementation effort.
 
 Knowledge is living documentation. It is neither an append-only activity log nor an exhaustive prose translation of
 code. Its value is helping a reader make a correct decision with the least necessary reading.
@@ -60,14 +60,16 @@ reset, or push the project.
 
 ## Read progressively
 
-| Document                                              | Owns                                                                                                          |
-|-------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| [Documents and relationships](knowledge-documents.md) | File layout, frontmatter, root selection, relation semantics, ignore rules, indexing, and document lifecycle. |
-| [Pyramid and authoring](knowledge-pyramid.md)         | Retention, placement, summarization, source documentation, bottom-up updates, and stable reorganization.      |
-| [Agent interface](knowledge-agents.md)                | Launch context, working-copy reads, CLI operations, permissions, editing, and job reporting.                  |
-| [Automation](knowledge-automation.md)                 | Initialization, updates, drift, reorganization, scheduling, publication, and recovery.                        |
-| [User interface](knowledge-ui.md)                     | User actions, document and graph views, answers, proposals, findings, and visible jobs and runs.              |
-| [Integrity and preservation](knowledge-integrity.md)  | Validation, content preservation, compatibility guarantees, and observable acceptance criteria.               |
+| Document                                                              | Owns                                                                                                          |
+|-----------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| [Documents and relationships](knowledge-documents.md)                 | File layout, frontmatter, root selection, relation semantics, ignore rules, indexing, and document lifecycle. |
+| [Pyramid and authoring](knowledge-pyramid.md)                         | Retention, placement, summarization, source documentation, bottom-up updates, and stable reorganization.      |
+| [Agent interface](knowledge-agents.md)                                | Launch context, working-copy reads, CLI operations, permissions, editing, and job reporting.                  |
+| [Automation](knowledge-automation.md)                                 | Shared job lifecycle, updates, drift, reorganization, scheduling, publication, and recovery.                  |
+| [Initialization and continued discovery](knowledge-initialization.md) | Discovery admission, bounded passes and budgets, investigation, synthesis, and candidate acceptance.          |
+| [Coverage and reading evaluation](knowledge-evaluation.md)            | Aspect-specific evidence consideration, representative reading tasks, correctness, and reading cost.          |
+| [User interface](knowledge-ui.md)                                     | User actions, document and graph views, answers, proposals, findings, and visible jobs and runs.              |
+| [Integrity and preservation](knowledge-integrity.md)                  | Validation, content preservation, compatibility guarantees, and observable acceptance criteria.               |
 
 Detailed rules live with the document that owns them. The general architecture, API, CLI, data-model, workflow, and UI
 documents link into this branch rather than maintaining a second specification of knowledge behavior.

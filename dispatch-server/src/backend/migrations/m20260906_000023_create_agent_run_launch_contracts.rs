@@ -1,0 +1,163 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveIden)]
+enum AgentRunLaunchContracts {
+    Table,
+    RunId,
+    ProjectId,
+    Purpose,
+    State,
+    TargetSchemaVersion,
+    TargetJson,
+    TargetSha256,
+    ResolutionSchemaVersion,
+    ResolutionJson,
+    ResolutionSha256,
+    CapabilitySchemaVersion,
+    CapabilityJson,
+    CapabilitySha256,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(AgentRunLaunchContracts::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::RunId)
+                            .big_integer()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::ProjectId)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::Purpose)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::State)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::TargetSchemaVersion)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::TargetJson)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::TargetSha256)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::ResolutionSchemaVersion)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::ResolutionJson)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::ResolutionSha256)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::CapabilitySchemaVersion)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::CapabilityJson)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::CapabilitySha256)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::CreatedAt)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentRunLaunchContracts::UpdatedAt)
+                            .text()
+                            .not_null(),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_agent_run_launch_contracts_run")
+                            .from(
+                                AgentRunLaunchContracts::Table,
+                                (
+                                    AgentRunLaunchContracts::ProjectId,
+                                    AgentRunLaunchContracts::RunId,
+                                ),
+                            )
+                            .to(
+                                Alias::new("agent_runs"),
+                                (Alias::new("project_id"), Alias::new("id")),
+                            )
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_agent_run_launch_contracts_project_run")
+                    .table(AgentRunLaunchContracts::Table)
+                    .col(AgentRunLaunchContracts::ProjectId)
+                    .col(AgentRunLaunchContracts::RunId)
+                    .unique()
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_agent_run_launch_state")
+                    .table(AgentRunLaunchContracts::Table)
+                    .col(AgentRunLaunchContracts::ProjectId)
+                    .col(AgentRunLaunchContracts::State)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(AgentRunLaunchContracts::Table)
+                    .to_owned(),
+            )
+            .await
+    }
+}

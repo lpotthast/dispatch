@@ -103,7 +103,9 @@ claimed-item context must fail instead of creating implicit data.
 
 Organize modules by domain behavior rather than generic buckets.
 
-Always use the <module-name>/mod.rs style for defining modules having other submodules.
+Use `<module-name>/mod.rs` for modules with child module files. Use `<module-name>.rs` for modules without child module
+files. Do not create a directory just to hold `mod.rs`. Inline modules such as `mod tests { ... }` do not require a
+directory.
 
 ## Frontend Styling
 

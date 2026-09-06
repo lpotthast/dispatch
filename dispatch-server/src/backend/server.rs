@@ -54,6 +54,12 @@ pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
     let mut leptos_options = get_configuration(None)?.leptos_options;
     leptos_options.site_addr = bind;
 
+    crate::backend::knowledge::jobs::runtime::recover(&store).await?;
+    crate::backend::knowledge::jobs::runtime::spawn_until(
+        store.clone(),
+        sessions.clone(),
+        shutdown_rx.clone(),
+    );
     projects::spawn_path_status_checker_until(store.clone(), shutdown_rx.clone());
     automation_triggers::spawn_scheduler_until(
         store.clone(),

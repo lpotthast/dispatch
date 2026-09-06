@@ -16,7 +16,9 @@ pub(crate) use automation::{
 pub(crate) use comments::CommentCommand;
 pub(crate) use common::ItemIdArgs;
 pub(crate) use items::{ItemCommand, ItemCreateArgs};
-pub(crate) use knowledge::{KnowledgeCommand, KnowledgeNodeCommand};
+pub(crate) use knowledge::{
+    KnowledgeCommand, KnowledgeJobCommand, KnowledgeNodeCommand, KnowledgeSourceCommand,
+};
 pub(crate) use labels::LabelCommand;
 pub(crate) use relationships::RelationshipCommand;
 pub(crate) use work_groups::GroupCommand;
@@ -153,6 +155,20 @@ mod tests {
             assert_command_tree_has_help(subcommand, path);
             path.pop();
         }
+    }
+
+    #[test]
+    fn knowledge_coverage_accepts_active_job_context_without_a_positional_id() {
+        let cli = Cli::try_parse_from([
+            "dispatch",
+            "knowledge",
+            "job",
+            "coverage",
+            "--aspect",
+            "recovery",
+            "--json",
+        ]);
+        assert_that!(&cli.is_ok()).is_true();
     }
 
     #[test]

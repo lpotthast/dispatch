@@ -22,9 +22,8 @@ HTTP relay to the server; they do not open SQLite or write Dispatch state direct
   implementation must satisfy it. Derived graph/search indexes are rebuildable, while knowledge-job history and retained
   run artifacts are durable operational data.
 - Agents read the project overview and relevant detail, then edit knowledge alongside code in their assigned working
-  copy. Knowledge jobs use separate project-scoped workflows and shared agent execution; they never require work-item
-  claims.
-
+  copy. Knowledge initialization and continued discovery use bounded, durable project-scoped jobs and shared agent
+  execution; they never require work-item claims.
 
 ## Document Map
 

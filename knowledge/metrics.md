@@ -12,7 +12,8 @@ execution, and client transport or rendering costs. Metrics are operational obse
 ## Architecture
 
 The server uses the `metrics` facade as the instrumentation boundary. Startup installs one Dispatch-owned recorder
-before opening the database, so migrations, repository operations, and later requests use the same capture path.
+before opening the database, so database startup, future migrations, repository operations, and later requests use the
+same capture path.
 Business and repository code emits measurements through the facade and does not depend on the recorder or the UI
 representation.
 
@@ -53,24 +54,18 @@ diagnostically useful.
 ## Histograms and interpretation
 
 Duration histograms retain count, sum, minimum, maximum, and cumulative fixed buckets from 100 microseconds through 10
-seconds, plus an overflow bucket. The UI derives averages from sum and count. Its p95 value is the upper bound of the
+seconds, plus an overflow bucket. Averages derive from sum and count. The p95 value is the upper bound of the
 first bucket containing at least 95 percent of observations, so it is an approximation rather than an exact percentile.
 
-All duration values use seconds at the instrumentation and transport boundaries. The UI may format them as microseconds,
-milliseconds, or seconds for readability. New metrics should use stable names, explicit units, and low-cardinality
-labels.
+All duration values use seconds at the instrumentation and transport boundaries. New metrics should use stable names,
+explicit units, and low-cardinality labels.
 
-## Metrics UI
+## Snapshot access
 
-The `/metrics` route is an operator-facing page loaded through a focused typed frontend service and server function. It
-displays cumulative repository timings, SQL timings, supporting counters and gauges, and the snapshot timestamp. It
-refreshes every two seconds and also offers manual refresh. The page reads the in-process recorder directly through the
-backend snapshot API; it does not query SQLite for captured metrics.
-
-The page is diagnostic rather than a durable monitoring system. Restarting Dispatch clears it, multiple Dispatch
-processes have independent measurements, and the fixed in-process aggregation does not provide historical comparisons or
-cross-process alerting. A future external exporter should reuse the `metrics` facade rather than introduce a second
-instrumentation path.
+The backend snapshot API reads the in-process recorder directly; it does not query SQLite for captured metrics.
+[UI Design](ui.md#metrics) owns the metrics page, refresh controls, and formatting. Multiple Dispatch processes have
+independent measurements; fixed in-process aggregation provides neither historical comparisons nor cross-process
+alerting. An external exporter should reuse the `metrics` facade rather than introduce a second instrumentation path.
 
 ## Board loading
 

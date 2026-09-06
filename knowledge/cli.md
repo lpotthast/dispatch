@@ -25,19 +25,10 @@ dispatch item progress --body "..."
 dispatch item finish --report "..."
 dispatch item release --comment "..."
 dispatch item request-feedback --body "..."
-dispatch knowledge root --json
-dispatch knowledge node show <node-id> --json
-dispatch knowledge search --text "..." --json
-dispatch knowledge impact --json
-dispatch knowledge check --json
 ```
 
-[Knowledge Agent Interface](knowledge-agents.md) owns knowledge command behavior and working-copy binding.
-
-Root/document reads, lexical search, impact mapping, and structural checks are immediate operations and never launch
-agents. Agents edit Markdown and frontmatter using ordinary file tools in their assigned working copy. Background
-knowledge jobs report results through their own job interface and do not claim work items. No signed-change or
-knowledge-review receipt protocol is required.
+Knowledge commands provide navigation, checks, and job reporting under
+[Knowledge Agent Interface](knowledge-agents.md). Markdown authoring uses ordinary file tools in the assigned working copy.
 
 For follow-up items or explicit cross-item work, item ids remain available:
 
@@ -63,6 +54,8 @@ The standalone CLI resolves context in this order:
 - Project: `--project`, then `DISPATCH_PROJECT`.
 - Agent: `--agent`, then `DISPATCH_AGENT_ID`.
 - Agent run: `--agent-run`, then `DISPATCH_AGENT_RUN_ID`.
+- Knowledge job: `--knowledge-job`, then `DISPATCH_KNOWLEDGE_JOB_ID`; `knowledge job coverage` first accepts an explicit
+  positional job ID. User job controls require an explicit job ID and never infer one from a claim.
 - Claimed item: explicit positional item id, then `DISPATCH_CLAIMED_ITEM_ID`.
 
 `project list` is server-scoped and requires only API URL context; it does not require a project.
@@ -150,6 +143,8 @@ Knowledge commands:
 ```text
 dispatch knowledge root [--json]
 dispatch knowledge node show <id-or-path> [--json]
+dispatch knowledge node show --id <id> [--json]
+dispatch knowledge node show --path <path> [--json]
 dispatch knowledge search --text "..." [--json]
 dispatch knowledge impact [--path <path> ... | --base <git-base>] [--json]
 dispatch knowledge check [<id-or-path>] [--json]
@@ -157,15 +152,10 @@ dispatch knowledge job progress --body "..."
 dispatch knowledge job report --file <result.json>
 ```
 
-Project-level reading and checking work with explicit project context outside a launched run. Impact uses the run
-baseline by default; explicit changed paths or a supported Git baseline override it. Without a run, one of those
-explicit inputs is required. Job reporting requires matching job/run context. The service derives the registered working
-copy and permitted scope instead of trusting a client-provided arbitrary path. Documents, related summaries, and
-diagnostics are bounded and have explicit continuation when needed.
-
-A user's free question starts an answer job through the user surface. Agents already doing knowledge work do not
-recursively launch answer agents. UI edits and proposals use checked file differences; agents need no command for each
-paragraph or relationship edit.
+[Knowledge Agent Interface](knowledge-agents.md#immediate-cli-contract) owns operation results, impact baselines,
+working-copy binding, pagination, and permissions. `node show --id` and `--path` disambiguate identity and path and are
+alternatives to the positional argument. [Bounded discovery commands](#bounded-discovery-commands) add user job
+controls and scoped evidence operations; [Knowledge UI](knowledge-ui.md) owns interactive edits, proposals, and questions.
 
 Internal automation command:
 
@@ -201,6 +191,7 @@ Global flags:
 --project <project>
 --agent <agent-id>
 --agent-run <run-id>
+--knowledge-job <job-id>
 ```
 
 The API client sends resolved agent and run attribution headers on every request. Missing required context fails instead
@@ -250,4 +241,19 @@ The agent CLI intentionally has no trigger create, schedule, bundle, restore, or
 ## Knowledge Location
 
 Knowledge location and explicit relocation follow [Documents and relationships](knowledge-documents.md). Relocation is
-a user-requested checked file move, independent of signing or canonical metadata sidecars.
+exposed through the [user interface](knowledge-ui.md#settings-and-degraded-operation).
+
+## Bounded discovery commands
+
+`knowledge job start --request-id <key>` authorizes a bounded discovery job; `--previous-job`, `--context`,
+`--budget-seconds`, and `--token-budget` refine the request. `knowledge job list`, `inspect <id>`,
+`coverage <id> [--aspect <subject>]`, `cancel <id>`, `apply <id>`, and `reject <id>` inspect or resolve jobs.
+`continue <id> --request-id <key>` and `retry <id> --request-id <key>` authorize another linked bounded job.
+[Initialization](knowledge-initialization.md#admission-and-bounded-execution) owns admission, budget defaults, and
+continuation behavior.
+
+Agents read captured evidence with `knowledge source list`, `search --text <text>`, and
+`read --path <path> --start <line> --end <line>`. `knowledge job assess --file <json>` submits aspect assessments;
+`knowledge job report --file <json>` checkpoints a pass; `--file -` reads stdin. Progress accepts optional `--area` and
+`--aspect`. [Knowledge Agent Interface](knowledge-agents.md#knowledge-job-reporting) owns scope and reporting semantics;
+context follows the resolution rules above. All discovery commands and arguments expose their purpose through CLI help.

@@ -14,17 +14,21 @@ search, and diagnostics; no separate index owns their meaning.
 
 The directory is relative to the configured project workspace. The first version supports one directory per project and
 one project root, always the directory's `README.md`. Location is a project setting; relocation is a user-requested file
-move with collision and reference checks, never an implicit response to a missing folder. Copying the complete directory
-preserves its text and relationships. Deleting a project from Dispatch preserves the directory.
+move with destination, collision, exclusion, and reference checks, never an implicit response to a missing folder. It
+preserves document IDs and unrelated files and updates the setting only after the move succeeds. Background knowledge
+workers cannot relocate the directory. [Knowledge UI](knowledge-ui.md#settings-and-degraded-operation) owns the preview;
+file writes use the [publication and recovery rules](knowledge-automation.md#publication-cancellation-and-recovery).
+Copying the complete directory preserves its text and relationships. Deleting a project from Dispatch preserves the
+directory.
 
 Every non-ignored `.md` file beneath the directory is discoverable. A file without Dispatch metadata remains readable
 and searchable by path. It is shown as unorganized until it has a unique identity and a refinement route to the root.
 Absence of a root is an uninitialized knowledge structure, not permission to discard existing documents or to prevent
 ordinary code work.
 
-The root contains purpose, major boundaries, essential invariants, and routes to narrower subjects. Directory nesting is
-useful organization for humans; it does not define refinement. Relative Markdown links work in ordinary editors and
-repository viewers.
+The root's content follows [Pyramid and authoring](knowledge-pyramid.md#layers-and-useful-summaries). Directory nesting
+is useful organization for humans; it does not define refinement. Relative Markdown links work in ordinary editors and
+repository viewers. Document discovery reads at most 4 MiB per file; larger files receive a local size diagnostic.
 
 ## Minimal frontmatter
 
@@ -125,11 +129,12 @@ without an import ceremony.
 In-flight jobs recheck exclusions before reading additional input and before publishing. A changed exclusion affecting
 their inputs makes them stale. Discard future-use caches or drafts containing newly excluded material and rerun with
 permitted inputs. Exclusion cannot undo a past model request or erase text already copied into other documents or
-historical logs; the UI must not claim retroactive erasure.
+historical logs.
 
 Unreadable controls or traversal errors must not silently broaden access. Stop discovery in the affected scope and
-report the problem. Independent valid scopes remain accessible. The UI can explain the matching control and rule for a
-user-supplied path without reading the target body.
+report the problem. Independent valid scopes remain accessible.
+[Knowledge UI](knowledge-ui.md#settings-and-degraded-operation) owns exclusion explanations and degraded-operation
+messages.
 
 ## Editing and document lifecycle
 
@@ -137,14 +142,20 @@ People and authorized coding agents can create and edit files with normal tools.
 signing requirement, or reconciliation ceremony. New files become discoverable on the next refresh. A missing ID or
 parent produces an organization task, not fabricated metadata or an unreadable file.
 
+Dispatch editor saves compare the opened content fingerprint with current content before replacing the file; concurrent
+edits reject the write. Markdown and unknown frontmatter fields survive unchanged unless edited. File access cannot
+escape the configured knowledge directory through absolute paths, traversal, symlinks, or ignore-rule changes.
+[Knowledge UI](knowledge-ui.md#document-and-graph-workspace) owns draft retention, conflict comparison, and navigation
+guards.
+
 A rename or move preserves the ID. Dispatch-assisted moves update incoming Markdown links and affected relative links in
 the same reviewed change. Ordinary external moves are rediscovered by ID; unresolved path links are diagnosed. Changing
 an ID is an explicit reference migration, never a side effect of changing the heading.
 
 Splits keep the existing ID for the concept that continues and give new concepts new IDs. Merges choose one surviving
-identity and migrate inbound references. Delete only after checking unique content and incoming references. Automatic
-reorganization cannot silently abandon those references. A short, ordinary redirect document can temporarily preserve a
-useful old route; it is not mandatory permanent history.
+identity and migrate inbound references. [Authoring rules](knowledge-pyramid.md#splits-merges-and-removals) determine
+when splits, merges, and deletion are justified. A short, ordinary redirect document can temporarily preserve a useful
+old route; it is not mandatory permanent history.
 
 ## Indexing and local failure
 
