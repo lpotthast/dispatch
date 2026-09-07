@@ -1,3 +1,4 @@
+use crate::shared::page_data::ProjectPage;
 use crate::{
     frontend::{
         components::{cached_query, selected_project_signal},
@@ -5,15 +6,12 @@ use crate::{
         live_events::{project_page_event_matches, refetch_on_live_event},
         services::project_service,
     },
-    shared::view_models::{
-        CodexAppServerStatusView, ProjectSystemPromptEventView, ProjectView, WorkspaceEditorView,
-    },
+    shared::view_models::{ProjectSystemPromptEventView, ProjectView},
 };
 use leptonic::components::prelude::{Modal, ModalBody, ModalFooter, ModalHeader, ModalTitle};
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::hooks::use_query_map;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectHistoryClearTarget {
@@ -93,23 +91,6 @@ fn sync_saved_text(draft: RwSignal<String>, baseline: RwSignal<String>, saved: &
     if was_clean || draft_value == saved {
         draft.set(saved.to_owned());
     }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct ProjectPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub selected_project: Option<String>,
-    pub selected_project_view: Option<ProjectView>,
-    pub system_prompt_events: Vec<ProjectSystemPromptEventView>,
-    pub api_base_url: String,
-    pub codex_status: CodexAppServerStatusView,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct WorkspaceBarData {
-    pub project: Option<ProjectView>,
-    pub workspace_editors: Vec<WorkspaceEditorView>,
 }
 
 #[component]

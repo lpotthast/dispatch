@@ -1,3 +1,4 @@
+use crate::shared::page_data::RunSummaryView;
 mod selection;
 
 use selection::RunSelection;
@@ -20,7 +21,6 @@ use super::{
 use crate::frontend::{
     components::{cached_query, encode_path},
     live_events::{refetch_on_live_event, run_detail_event_matches},
-    pages::RunSummaryView,
     services::run_service,
 };
 

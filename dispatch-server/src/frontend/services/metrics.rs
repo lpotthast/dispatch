@@ -1,12 +1,10 @@
 #[cfg(feature = "ssr")]
-use crate::backend::{app_state, page_data};
-use crate::frontend::{
-    pages::MetricsPageData,
-    services::{
-        cache::LocalStorageCache,
-        request::{ServiceFuture, ServiceRequest},
-    },
+use crate::backend::app_state;
+use crate::frontend::services::{
+    cache::LocalStorageCache,
+    request::{ServiceFuture, ServiceRequest},
 };
+use crate::shared::page_data::MetricsPageData;
 use leptos::prelude::*;
 
 #[derive(Clone)]
@@ -65,16 +63,12 @@ impl MetricsService {
 async fn load_metrics_page(
     selected_project: Option<String>,
 ) -> Result<MetricsPageData, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     crate::backend::metrics::time_repository(
         "metrics.page",
-        page_data::metrics_page_data(
-            &state.store,
-            &state.automation_controller,
-            codex_status,
-            selected_project.as_deref(),
-        ),
+        state
+            .operator_queries
+            .metrics_page(selected_project.as_deref()),
     )
     .await
     .map_err(|err| ServerFnError::new(err.to_string()))

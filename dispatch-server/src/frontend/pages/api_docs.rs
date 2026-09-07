@@ -5,21 +5,12 @@ use crate::{
         services::api_docs_service,
     },
     shared::view_models::{
-        AUTOMATION_BLOCKED_LABEL_KEY, CLAIMED_FROM_STATE_LABEL_KEY, CodexAppServerStatusView,
-        FEEDBACK_REQUESTED_LABEL_KEY, ProjectView, STATE_LABEL_KEY,
+        AUTOMATION_BLOCKED_LABEL_KEY, CLAIMED_FROM_STATE_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY,
+        STATE_LABEL_KEY,
     },
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct ApiDocsPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub selected_project: Option<String>,
-    pub codex_status: CodexAppServerStatusView,
-}
 
 #[component]
 pub fn PageApiDocs() -> impl IntoView {

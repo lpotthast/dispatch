@@ -1,28 +1,16 @@
-use crate::{
-    frontend::{
-        components::{
-            RunOutput, cached_query, encode_path, recorded_field, run_commit_outcome_label,
-            run_origin_label, run_result_summary, run_status_class, run_token_usage_text,
-            run_work_item_link,
-        },
-        live_events::{refetch_on_live_event, run_log_event_matches},
-        services::run_service,
+use crate::frontend::{
+    components::{
+        RunOutput, cached_query, encode_path, recorded_field, run_commit_outcome_label,
+        run_origin_label, run_result_summary, run_status_class, run_token_usage_text,
+        run_work_item_link,
     },
-    shared::view_models::{CodexAppServerStatusView, ProjectView, RunLogView},
+    live_events::{refetch_on_live_event, run_log_event_matches},
+    services::run_service,
 };
+use crate::shared::page_data::RunLogPage;
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct RunLogPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub project: String,
-    pub run_log: RunLogView,
-    pub codex_status: CodexAppServerStatusView,
-}
 
 #[component]
 pub fn PageRunLog() -> impl IntoView {

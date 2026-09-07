@@ -1,3 +1,4 @@
+use crate::shared::page_data::CodexStatusPage;
 use crate::{
     frontend::{
         components::{cached_query, copy_workspace_text, selected_project_signal},
@@ -7,23 +8,14 @@ use crate::{
     },
     shared::view_models::{
         CodexAppServerStatusView, CodexAuthSetupView, CodexLogPurgeResultView,
-        CodexLogStorageStatusView, CodexRateLimitView, CodexUsageSummaryView, ProjectView,
+        CodexLogStorageStatusView, CodexRateLimitView, CodexUsageSummaryView,
     },
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_use::use_interval_fn;
-use serde::{Deserialize, Serialize};
 
 const CODEX_STATUS_PAGE_REFRESH_INTERVAL_MS: u64 = 5 * 60 * 1000;
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CodexStatusPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub selected_project: Option<String>,
-    pub codex_status: CodexAppServerStatusView,
-}
 
 #[component]
 pub fn PageSystem() -> impl IntoView {

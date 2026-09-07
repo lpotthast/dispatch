@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crudkit-core = { path = "../crudkit/crudkit-core" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+crudkit-core = { path = "../crudkit/crudkit-core", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-assertr = "0.6.0"
+assertr = { version = "0.6.0", default-features = false, features = ["std"] }

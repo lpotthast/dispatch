@@ -8,16 +8,16 @@ name = "dispatch"
 path = "src/main.rs"
 
 [dependencies]
-crudkit-core = { path = "../crudkit/crudkit-core" }
-clap = { version = "4", features = ["derive", "env"] }
-dispatch-api-client = { path = "../dispatch-api-client" }
-dispatch-types = { path = "../dispatch-types" }
-rootcause = "0.13.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+crudkit-core = { path = "../crudkit/crudkit-core", default-features = false }
+clap = { version = "4", default-features = false, features = ["color", "derive", "error-context", "help", "std", "suggestions", "usage"] }
+dispatch-api-client = { path = "../dispatch-api-client", default-features = false }
+dispatch-types = { path = "../dispatch-types", default-features = false }
+rootcause = { version = "0.13.0", default-features = false }
+serde = { version = "1", default-features = false, features = ["std"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
 tabled = { version = "0.20.0", default-features = false, features = ["std", "derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-uuid = { version = "1.19", features = ["v4"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+uuid = { version = "1.19", default-features = false, features = ["v4"] }
 
 [dev-dependencies]
-assertr = "0.6.0"
+assertr = { version = "0.6.0", default-features = false, features = ["std"] }

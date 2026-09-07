@@ -1,6 +1,5 @@
 //! Checked ordinary-file saves. No metadata sidecars or alternative content authority.
-use super::{discovery::Discovery, normalize_knowledge_directory};
-use crate::backend::{projects, storage::Store};
+use super::{discovery::Discovery, policy::normalize_knowledge_directory};
 use dispatch_types::knowledge::{KnowledgeSaveRequest, KnowledgeSaveResult};
 use rootcause::{Result, prelude::*};
 use sha2::{Digest, Sha256};
@@ -11,22 +10,27 @@ use std::{
     sync::Mutex,
 };
 
-// Serialize Dispatch's short file publications; external editors are checked by fingerprint.
-pub(crate) static WRITES: Mutex<()> = Mutex::new(());
-
-pub(crate) async fn save(
-    store: &Store,
-    project: &str,
-    request: KnowledgeSaveRequest,
-) -> Result<KnowledgeSaveResult> {
-    let project = projects::find_project_by_name(store, project).await?;
-    let working = project
-        .path
-        .ok_or_else(|| report!("project has no working directory"))?;
-    tokio::task::spawn_blocking(move || {
-        save_file(Path::new(&working), &project.knowledge_directory, &request)
-    })
-    .await?
+/// Serializes this application's ordinary saves and journaled multi-file publications.
+#[derive(Default)]
+pub(crate) struct DocumentWriter {
+    writes: Mutex<()>,
+}
+impl DocumentWriter {
+    pub(crate) fn with_write<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _write = self
+            .writes
+            .lock()
+            .map_err(|_| report!("knowledge writer is unavailable"))?;
+        operation()
+    }
+    pub(crate) fn save(
+        &self,
+        workspace: &Path,
+        directory: &str,
+        request: &KnowledgeSaveRequest,
+    ) -> Result<KnowledgeSaveResult> {
+        self.with_write(|| save_file_locked(workspace, directory, request))
+    }
 }
 
 fn fingerprint(bytes: &[u8]) -> String {
@@ -54,18 +58,7 @@ impl Drop for TemporaryFile {
     }
 }
 
-pub(super) fn save_file(
-    workspace: &Path,
-    directory: &str,
-    request: &KnowledgeSaveRequest,
-) -> Result<KnowledgeSaveResult> {
-    let _write = WRITES
-        .lock()
-        .map_err(|_| report!("knowledge writer is unavailable"))?;
-    save_file_locked(workspace, directory, request)
-}
-
-pub(crate) fn save_file_locked(
+pub(super) fn save_file_locked(
     workspace: &Path,
     directory: &str,
     request: &KnowledgeSaveRequest,
@@ -107,4 +100,54 @@ pub(crate) fn save_file_locked(
     Ok(KnowledgeSaveResult {
         fingerprint: fingerprint(request.markdown.as_bytes()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assertr::prelude::*;
+    #[tokio::test]
+    async fn ordinary_saves_and_publication_share_one_writer_without_global_coordination() {
+        let writer = std::sync::Arc::new(DocumentWriter::default());
+        let held = writer.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = tokio::task::spawn_blocking(move || {
+            held.with_write(|| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        entered_rx.await.unwrap();
+        let other = DocumentWriter::default();
+        assert_that!(&other.with_write(|| Ok(42)).unwrap()).is_equal_to(42);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().to_path_buf();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut save = tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            writer.save(
+                &path,
+                "knowledge",
+                &KnowledgeSaveRequest {
+                    path: "README.md".into(),
+                    expected_fingerprint: None,
+                    markdown: "# Current files".into(),
+                },
+            )
+        });
+        started_rx.await.unwrap();
+        assert_that!(
+            &tokio::time::timeout(std::time::Duration::from_millis(30), &mut save)
+                .await
+                .is_err()
+        )
+        .is_true();
+        release_tx.send(()).unwrap();
+        holder.await.unwrap().unwrap();
+        save.await.unwrap().unwrap();
+        assert_that!(&fs::read_to_string(temp.path().join("knowledge/README.md")).unwrap())
+            .is_equal_to("# Current files");
+    }
 }

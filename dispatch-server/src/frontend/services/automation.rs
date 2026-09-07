@@ -1,13 +1,11 @@
 #[cfg(feature = "ssr")]
-use crate::backend::{
-    app_state, automation, automation_bundles, automation_revisions, automation_routing,
-    automation_triggers, page_data, personalities, projects,
+use crate::backend::app_state;
+use crate::frontend::services::{
+    cache::LocalStorageCache, origin::api_base_url, request::ServiceRequest,
 };
-use crate::frontend::{
-    pages::{AutomationRuleInspectorView, RunSummaryView, TriggersPage},
-    services::{cache::LocalStorageCache, origin::api_base_url, request::ServiceRequest},
-    types::AutomationPersonalityInspectorView,
-};
+use crate::shared::page_data::AutomationPersonalityInspectorView;
+use crate::shared::page_data::AutomationRuleInspectorView;
+use crate::shared::page_data::{RunSummaryView, TriggersPage};
 use dispatch_types::{
     AutomationBundleApplyView, AutomationBundleDiffView, AutomationBundleExportView,
     AutomationBundleValidationView, AutomationTriggerView, InstalledAutomationBundleView,
@@ -381,17 +379,12 @@ async fn load_triggers_page(
     selected_project: Option<String>,
     api_base_url: String,
 ) -> Result<TriggersPage, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
-    page_data::triggers_page_data(
-        &state.store,
-        &state.automation_controller,
-        codex_status,
-        selected_project.as_deref(),
-        api_base_url,
-    )
-    .await
-    .map_err(|err| ServerFnError::new(err.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .automation_page(selected_project.as_deref(), api_base_url)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
@@ -399,32 +392,21 @@ async fn load_trigger_run_summaries(
     project: String,
     trigger_id: i64,
 ) -> Result<Vec<RunSummaryView>, ServerFnError> {
-    let state = app_state::app_state();
-    page_data::trigger_run_summaries(&state.store, &state.sessions, &project, trigger_id)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .rule_runs(&project, trigger_id)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn set_automation_running(project: String, running: bool) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     let result = if running {
-        state
-            .automation_controller
-            .start_project(&state.store, project, &state.sessions)
-            .await
+        state.automation_supervisor.start_project(project).await
     } else {
-        let project_id = projects::project_id(&state.store, &project)
-            .await
-            .map_err(|err| ServerFnError::new(err.to_string()))?;
-        state
-            .automation_controller
-            .stop_project(project_id, &project, &state.sessions)
-            .await
-            .map_err(|err| ServerFnError::new(err.to_string()))?;
-        automation::stop_automation(&state.store, project_id, &project)
-            .await
-            .map(|_| ())
+        state.automation_supervisor.stop_project(&project).await
     };
     result.map_err(|err| ServerFnError::new(err.to_string()))
 }
@@ -434,8 +416,10 @@ async fn schedule_trigger_evaluation(
     project: String,
     trigger_id: i64,
 ) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    automation_triggers::schedule_trigger_evaluation(&state.store, &project, trigger_id)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .rules
+        .schedule(&project, trigger_id)
         .await
         .map(|_| ())
         .map_err(|error| ServerFnError::new(error.to_string()))
@@ -445,7 +429,7 @@ async fn schedule_trigger_evaluation(
 async fn validate_bundle_yaml(
     yaml: String,
 ) -> Result<AutomationBundleValidationView, ServerFnError> {
-    let bundle = automation_bundles::validate_yaml(&yaml)
+    let bundle = crate::backend::automation::bundles::policy::validate_yaml(&yaml)
         .map_err(|error| ServerFnError::new(error.to_string()))?;
     Ok(AutomationBundleValidationView {
         manifest: bundle.manifest,
@@ -458,8 +442,10 @@ async fn diff_bundle_yaml(
     project: String,
     yaml: String,
 ) -> Result<AutomationBundleDiffView, ServerFnError> {
-    let state = app_state::app_state();
-    automation_bundles::diff_yaml(&state.store, &project, &yaml)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .bundles
+        .diff(&project, &yaml)
         .await
         .map_err(|error| ServerFnError::new(error.to_string()))
 }
@@ -470,16 +456,10 @@ async fn apply_bundle_yaml(
     yaml: String,
     allow_deletions: bool,
 ) -> Result<AutomationBundleApplyView, ServerFnError> {
-    let state = app_state::app_state();
-    let diff = automation_bundles::diff_yaml(&state.store, &project, &yaml)
-        .await
-        .map_err(|error| ServerFnError::new(error.to_string()))?;
-    if diff.has_deletions && !allow_deletions {
-        return Err(ServerFnError::new(
-            "bundle diff deletes managed objects; confirm deletions before applying".to_owned(),
-        ));
-    }
-    automation_bundles::apply_yaml(&state.store, &project, &yaml, diff.current_hash.as_deref())
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .bundles
+        .apply_current(&project, &yaml, allow_deletions)
         .await
         .map_err(|error| ServerFnError::new(error.to_string()))
 }
@@ -489,8 +469,10 @@ async fn export_bundle_yaml(
     project: String,
     bundle_key: String,
 ) -> Result<AutomationBundleExportView, ServerFnError> {
-    let state = app_state::app_state();
-    automation_bundles::export_yaml(&state.store, &project, &bundle_key)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .bundles
+        .export(&project, &bundle_key)
         .await
         .map(|yaml| AutomationBundleExportView { yaml })
         .map_err(|error| ServerFnError::new(error.to_string()))
@@ -500,8 +482,10 @@ async fn export_bundle_yaml(
 async fn list_installed_bundles(
     project: String,
 ) -> Result<Vec<InstalledAutomationBundleView>, ServerFnError> {
-    let state = app_state::app_state();
-    automation_bundles::list_installed(&state.store, &project)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .bundles
+        .list_installed(&project)
         .await
         .map_err(|error| ServerFnError::new(error.to_string()))
 }
@@ -512,15 +496,12 @@ async fn remove_installed_bundle(
     bundle_key: String,
     expected_current_hash: String,
 ) -> Result<AutomationBundleApplyView, ServerFnError> {
-    let state = app_state::app_state();
-    automation_bundles::remove_bundle(
-        &state.store,
-        &project,
-        &bundle_key,
-        Some(&expected_current_hash),
-    )
-    .await
-    .map_err(|error| ServerFnError::new(error.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .bundles
+        .remove(&project, &bundle_key, Some(&expected_current_hash))
+        .await
+        .map_err(|error| ServerFnError::new(error.to_string()))
 }
 
 #[server(prefix = "/leptos")]
@@ -528,35 +509,12 @@ async fn load_automation_rule_inspector(
     project: String,
     trigger_id: i64,
 ) -> Result<AutomationRuleInspectorView, ServerFnError> {
-    let state = app_state::app_state();
-    let project_id = projects::project_id(&state.store, &project)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .revision_queries
+        .inspect_rule(&project, trigger_id)
         .await
-        .map_err(|error| ServerFnError::new(error.to_string()))?;
-    let trigger = automation_triggers::get_trigger(&state.store, &project, &trigger_id.to_string())
-        .await
-        .map_err(|error| ServerFnError::new(error.to_string()))?;
-    let revisions =
-        automation_revisions::list_trigger_revisions(&state.store, project_id, trigger_id)
-            .await
-            .map_err(|error| ServerFnError::new(error.to_string()))?;
-    let evaluations =
-        automation_revisions::list_evaluations(&state.store, &project, Some(trigger_id), 100)
-            .await
-            .map_err(|error| ServerFnError::new(error.to_string()))?;
-    let current_revision_analytics = match trigger.current_revision_id {
-        Some(revision_id) => Some(
-            automation_revisions::trigger_revision_analytics(&state.store, &project, revision_id)
-                .await
-                .map_err(|error| ServerFnError::new(error.to_string()))?,
-        ),
-        None => None,
-    };
-    Ok(AutomationRuleInspectorView {
-        trigger,
-        revisions,
-        evaluations,
-        current_revision_analytics,
-    })
+        .map_err(|error| ServerFnError::new(error.to_string()))
 }
 
 #[server(prefix = "/leptos")]
@@ -565,11 +523,10 @@ async fn restore_automation_rule_revision(
     trigger_id: i64,
     revision_id: i64,
 ) -> Result<AutomationTriggerView, ServerFnError> {
-    let state = app_state::app_state();
-    automation_revisions::restore_trigger_revision(&state.store, &project, trigger_id, revision_id)
-        .await
-        .map_err(|error| ServerFnError::new(error.to_string()))?;
-    automation_triggers::get_trigger(&state.store, &project, &trigger_id.to_string())
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .rules
+        .restore(&project, trigger_id, revision_id)
         .await
         .map_err(|error| ServerFnError::new(error.to_string()))
 }
@@ -579,8 +536,10 @@ async fn detach_automation_rule(
     project: String,
     trigger_id: i64,
 ) -> Result<AutomationTriggerView, ServerFnError> {
-    let state = app_state::app_state();
-    automation_triggers::detach_trigger(&state.store, &project, trigger_id)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .rules
+        .detach(&project, trigger_id)
         .await
         .map_err(|error| ServerFnError::new(error.to_string()))
 }
@@ -590,22 +549,12 @@ async fn load_automation_personality_inspector(
     project: String,
     personality_id: i64,
 ) -> Result<AutomationPersonalityInspectorView, ServerFnError> {
-    let state = app_state::app_state();
-    let project_id = projects::project_id(&state.store, &project)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .personalities
+        .inspect(&project, personality_id)
         .await
-        .map_err(|error| ServerFnError::new(error.to_string()))?;
-    let personality =
-        personalities::get_personality(&state.store, &project, &personality_id.to_string())
-            .await
-            .map_err(|error| ServerFnError::new(error.to_string()))?;
-    let revisions =
-        automation_revisions::list_personality_revisions(&state.store, project_id, personality_id)
-            .await
-            .map_err(|error| ServerFnError::new(error.to_string()))?;
-    Ok(AutomationPersonalityInspectorView {
-        personality,
-        revisions,
-    })
+        .map_err(|error| ServerFnError::new(error.to_string()))
 }
 
 #[server(prefix = "/leptos")]
@@ -614,16 +563,12 @@ async fn restore_automation_personality_revision(
     personality_id: i64,
     revision_id: i64,
 ) -> Result<dispatch_types::PersonalityView, ServerFnError> {
-    let state = app_state::app_state();
-    automation_revisions::restore_personality_revision(
-        &state.store,
-        &project,
-        personality_id,
-        revision_id,
-    )
-    .await
-    .map(dispatch_types::PersonalityView::from)
-    .map_err(|error| ServerFnError::new(error.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .personalities
+        .restore(&project, personality_id, revision_id)
+        .await
+        .map_err(|error| ServerFnError::new(error.to_string()))
 }
 
 #[server(prefix = "/leptos")]
@@ -631,8 +576,10 @@ async fn detach_automation_personality(
     project: String,
     personality_id: i64,
 ) -> Result<dispatch_types::PersonalityView, ServerFnError> {
-    let state = app_state::app_state();
-    personalities::detach_personality(&state.store, &project, personality_id)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .personalities
+        .detach(&project, personality_id)
         .await
         .map_err(|error| ServerFnError::new(error.to_string()))
 }
@@ -642,15 +589,248 @@ async fn explain_automation_route(
     project: String,
     item_id: i64,
 ) -> Result<RoutingExplanationView, ServerFnError> {
-    let state = app_state::app_state();
-    automation_routing::explain(
-        &state.store,
-        &project,
-        dispatch_types::RoutingExplainRequest {
-            item_id: Some(item_id),
-            rule: None,
-        },
-    )
-    .await
-    .map_err(|error| ServerFnError::new(error.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .routing
+        .explain(
+            &project,
+            dispatch_types::RoutingExplainRequest {
+                item_id: Some(item_id),
+                rule: None,
+            },
+        )
+        .await
+        .map_err(|error| ServerFnError::new(error.to_string()))
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod automation_adapter_tests {
+    use super::*;
+    use crate::backend::projects::ProjectReference;
+    use assertr::prelude::*;
+    use leptos::prelude::{Owner, ScopedFuture, provide_context};
+
+    #[tokio::test]
+    async fn personality_restore_uses_request_service_and_retains_revision_history() {
+        let (_temp, first, _, _) = crate::backend::comments::tests::application().await;
+        let (_other_temp, second, _, _) = crate::backend::comments::tests::application().await;
+        let mut records = Vec::new();
+        for app in [&first, &second] {
+            let record = app
+                .state
+                .personalities
+                .create(
+                    ProjectReference::Name("demo"),
+                    dispatch_types::AutomationPersonalityInput {
+                        key: String::new(),
+                        name: "Review".into(),
+                        description: "first".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            app.state
+                .personalities
+                .update(
+                    ProjectReference::Name("demo"),
+                    record.id,
+                    dispatch_types::AutomationPersonalityInput {
+                        key: String::new(),
+                        name: "Review".into(),
+                        description: "second".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            records.push(record);
+        }
+        let owner = Owner::new();
+        owner.with(|| provide_context(first.state.clone()));
+        let mut events = first.state.events.subscribe();
+        let mut other_events = second.state.events.subscribe();
+        let restored = owner
+            .with(|| {
+                ScopedFuture::new(restore_automation_personality_revision(
+                    "demo".into(),
+                    records[0].id,
+                    records[0].current_revision_id.unwrap(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert_that!(&restored.personality_description).is_equal_to("first");
+        let inspector = owner
+            .with(|| {
+                ScopedFuture::new(load_automation_personality_inspector(
+                    "demo".into(),
+                    records[0].id,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_that!(&inspector.revisions.len()).is_equal_to(3);
+        assert_that!(&inspector.revisions[0].operation)
+            .is_equal_to(dispatch_types::RevisionChangeOperation::Restore);
+        assert_that!(
+            &second
+                .state
+                .personalities
+                .get("demo", "Review")
+                .await
+                .unwrap()
+                .personality_description
+        )
+        .is_equal_to("second");
+        assert_that!(&matches!(
+            events.try_recv().unwrap(),
+            dispatch_types::UiEvent::AutomationChanged { .. }
+        ))
+        .is_true();
+        assert_that!(&events.try_recv().is_err()).is_true();
+        assert_that!(&other_events.try_recv().is_err()).is_true();
+    }
+    #[tokio::test]
+    async fn rule_restore_and_inspector_use_the_request_service_and_share_committed_history() {
+        let (_temp, first, _, _) = crate::backend::comments::tests::application().await;
+        let (_other_temp, second, _, _) = crate::backend::comments::tests::application().await;
+        let mut records = Vec::new();
+        for app in [&first, &second] {
+            let input: dispatch_types::AutomationRuleInput = serde_json::from_value(serde_json::json!({"name":"Rule","enabled":true,"activation":"work_item","effect":"consume_work","schedule":"15s","prompt_markdown":"first"})).unwrap();
+            let record = app
+                .state
+                .rules
+                .create_from_input("demo", input.clone())
+                .await
+                .unwrap();
+            let mut changed = input;
+            changed.prompt_markdown = "second".into();
+            app.state
+                .rules
+                .update_from_input("demo", record.id, changed)
+                .await
+                .unwrap();
+            records.push(record);
+        }
+        let owner = Owner::new();
+        owner.with(|| provide_context(first.state.clone()));
+        let mut events = first.state.events.subscribe();
+        let mut other_events = second.state.events.subscribe();
+        let restored = owner
+            .with(|| {
+                ScopedFuture::new(restore_automation_rule_revision(
+                    "demo".into(),
+                    records[0].id,
+                    records[0].current_revision_id.unwrap(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert_that!(&restored.prompt).is_equal_to(records[0].prompt.clone());
+        let inspector = owner
+            .with(|| {
+                ScopedFuture::new(load_automation_rule_inspector("demo".into(), records[0].id))
+            })
+            .await
+            .unwrap();
+        assert_that!(&inspector.trigger.current_revision_id)
+            .is_equal_to(restored.current_revision_id);
+        assert_that!(&inspector.revisions.len()).is_equal_to(3);
+        assert_that!(&inspector.revisions[0].operation)
+            .is_equal_to(dispatch_types::RevisionChangeOperation::Restore);
+        assert_that!(&inspector.current_revision_analytics.unwrap().revision_id)
+            .is_equal_to(restored.current_revision_id.unwrap());
+        assert_that!(&second.state.rules.get("demo", "Rule").await.unwrap().prompt)
+            .contains("second");
+        assert_that!(&matches!(
+            events.try_recv().unwrap(),
+            dispatch_types::UiEvent::AutomationChanged { .. }
+        ))
+        .is_true();
+        assert_that!(&events.try_recv().is_err()).is_true();
+        assert_that!(&other_events.try_recv().is_err()).is_true();
+    }
+    #[tokio::test]
+    async fn bundles_share_service_history_through_json_and_leptos_without_cross_instance_events() {
+        use axum::{Extension, http::StatusCode};
+        let (_temp, first, _, _) = crate::backend::comments::tests::application().await;
+        let (_other, second, _, _) = crate::backend::comments::tests::application().await;
+        let yaml = include_str!("../../../../examples/automation/engineering-review.yaml");
+        let mut events = first.state.events.subscribe();
+        let mut other_events = second.state.events.subscribe();
+        let router = crate::backend::automation::bundles::transport::routes::<()>()
+            .layer(Extension(first.state.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!(
+                "{url}/operator/api/projects/demo/automation/bundles/apply"
+            ))
+            .json(&dispatch_types::BundleYamlRequest {
+                yaml: yaml.into(),
+                expected_current_hash: None,
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_that!(&response.status()).is_equal_to(StatusCode::OK);
+        let applied: AutomationBundleApplyView = response.json().await.unwrap();
+        assert_that!(&applied.status).is_equal_to("applied");
+        assert_that!(&events.try_recv().is_ok()).is_true();
+        assert_that!(&events.try_recv().is_err()).is_true();
+        assert_that!(&other_events.try_recv().is_err()).is_true();
+        assert_that!(&second.state.bundles.list_installed("demo").await.unwrap()).is_empty();
+        let owner = Owner::new();
+        owner.with(|| provide_context(first.state.clone()));
+        let exported = owner
+            .with(|| {
+                ScopedFuture::new(export_bundle_yaml(
+                    "demo".into(),
+                    "engineering-review".into(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert_that!(
+            &crate::backend::automation::bundles::policy::validate_yaml(&exported.yaml)
+                .unwrap()
+                .manifest_hash
+        )
+        .is_equal_to(applied.diff.manifest_hash);
+        let empty = "schema_version: 1\nbundle_key: engineering-review\ndisplay_name: Empty\npersonalities: []\nautomations: []\n";
+        assert_that!(
+            &owner
+                .with(|| ScopedFuture::new(apply_bundle_yaml("demo".into(), empty.into(), false)))
+                .await
+                .is_err()
+        )
+        .is_true();
+        assert_that!(&events.try_recv().is_err()).is_true();
+        let changed = owner
+            .with(|| ScopedFuture::new(apply_bundle_yaml("demo".into(), empty.into(), true)))
+            .await
+            .unwrap();
+        assert_that!(&changed.diff.has_deletions).is_true();
+        assert_that!(&events.try_recv().is_ok()).is_true();
+        assert_that!(&events.try_recv().is_err()).is_true();
+        let installed = first.state.bundles.list_installed("demo").await.unwrap();
+        assert_that!(&installed[0].manifest_hash).is_equal_to(changed.diff.manifest_hash.clone());
+        let response = client
+            .delete(format!(
+                "{url}/operator/api/projects/demo/automation/bundles/engineering-review"
+            ))
+            .json(&dispatch_types::RemoveAutomationBundleRequest {
+                expected_current_hash: Some(changed.diff.manifest_hash),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_that!(&response.status()).is_equal_to(StatusCode::OK);
+        assert_that!(&first.state.bundles.list_installed("demo").await.unwrap()).is_empty();
+        assert_that!(&events.try_recv().is_ok()).is_true();
+        assert_that!(&events.try_recv().is_err()).is_true();
+        assert_that!(&other_events.try_recv().is_err()).is_true();
+        server.abort();
+    }
 }

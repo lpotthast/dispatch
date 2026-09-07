@@ -132,16 +132,17 @@ async fn read_knowledge(
     operation: KnowledgeOperation,
     query: KnowledgeQuery,
 ) -> Result<KnowledgeView, ServerFnError> {
-    let state = crate::backend::app_state::app_state();
-    crate::backend::knowledge::query(
-        &state.store,
-        &project,
-        &crate::backend::request_attribution::RequestAttribution::default(),
-        operation,
-        query,
-    )
-    .await
-    .map_err(|error| ServerFnError::new(error.as_ref().format_current_context().to_string()))
+    let state = leptos::prelude::expect_context::<crate::backend::app_state::AppState>();
+    state
+        .knowledge_queries
+        .query(
+            &project,
+            crate::backend::attribution::model::AttributionInput::default(),
+            operation,
+            query,
+        )
+        .await
+        .map_err(|error| ServerFnError::new(error.as_ref().format_current_context().to_string()))
 }
 
 #[server(prefix = "/leptos")]
@@ -149,8 +150,64 @@ async fn save_knowledge(
     project: String,
     request: KnowledgeSaveRequest,
 ) -> Result<KnowledgeSaveResult, ServerFnError> {
-    let state = crate::backend::app_state::app_state();
-    crate::backend::knowledge::save(&state.store, &project, request)
+    let state = leptos::prelude::expect_context::<crate::backend::app_state::AppState>();
+    state
+        .knowledge
+        .save(&project, request)
         .await
         .map_err(|error| ServerFnError::new(error.as_ref().format_current_context().to_string()))
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod backend_adapter_tests {
+    use super::*;
+    use assertr::prelude::*;
+    use leptos::reactive::computed::ScopedFuture;
+    #[tokio::test]
+    async fn document_adapters_share_current_files_and_checked_saves_without_jobs() {
+        let (_temp, app, _, _) = crate::backend::comments::tests::application().await;
+        let owner = Owner::new();
+        owner.with(|| provide_context(app.state.clone()));
+        let request = KnowledgeSaveRequest {
+            path: "README.md".into(),
+            expected_fingerprint: None,
+            markdown: "---\nid: example\n---\n# Example\n\nAccepted contract.\n".into(),
+        };
+        let saved = owner
+            .with(|| ScopedFuture::new(save_knowledge("demo".into(), request.clone())))
+            .await
+            .unwrap();
+        assert_that!(&saved.fingerprint.is_empty()).is_false();
+        let read = owner
+            .with(|| {
+                ScopedFuture::new(read_knowledge(
+                    "demo".into(),
+                    KnowledgeOperation::Root,
+                    KnowledgeQuery::default(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert_that!(&read).is_equal_to(
+            app.state
+                .knowledge
+                .query(
+                    "demo",
+                    Default::default(),
+                    KnowledgeOperation::Root,
+                    KnowledgeQuery::default(),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_that!(&read.document.unwrap().markdown).is_equal_to(request.markdown.clone());
+        assert_that!(
+            &owner
+                .with(|| ScopedFuture::new(save_knowledge("demo".into(), request)))
+                .await
+                .is_err()
+        )
+        .is_true();
+        assert_that!(&app.state.jobs.list("demo").await.unwrap()).is_empty();
+    }
 }

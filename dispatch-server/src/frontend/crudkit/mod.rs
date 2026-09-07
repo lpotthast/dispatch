@@ -1,3 +1,4 @@
+use crate::shared::page_data::AutomationPersonalityInspectorView;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
@@ -5,7 +6,6 @@ use crate::{
         live_events::{event_scopes_named_project, reload_crudkit_on_live_event},
         rich_text::{normalize_tiptap_storage_value, rich_text_editor_html, rich_text_plain_text},
         types::{
-            AutomationPersonalityInspectorView,
             agent_tool::{
                 AgentTool, AgentToolField, CreateAgentTool, CreateAgentToolField,
                 CrudAgentToolResource, ReadAgentTool, ReadAgentToolField,

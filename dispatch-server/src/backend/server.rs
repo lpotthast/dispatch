@@ -1,88 +1,37 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-    time::Duration,
-};
+use std::net::{IpAddr, SocketAddr};
 
 use leptos::prelude::get_configuration;
 use rootcause::Result;
 
 use crate::backend::{
-    app_state::{AppState, install_app_state},
-    automation,
-    automation_controller::AutomationController,
-    automation_triggers, codex_app_server, crudkit_resources, events, http,
-    process_sessions::ProcessSessionRegistry,
-    project_deletion::ProjectDeletionService,
-    projects,
-    storage::Store,
+    automation::supervisor::AutomationSupervisor, execution::sessions::ProcessSessionRegistry, http,
 };
 
-const ACTIVE_SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
-
-pub async fn serve(store: Store, bind: SocketAddr) -> Result<()> {
-    automation::set_server_api_url(local_api_url(bind));
-    events::install();
-
-    let sessions = ProcessSessionRegistry::new();
-    let automation_controller = AutomationController::new();
-    let project_deletion = ProjectDeletionService::new(
-        store.clone(),
-        automation_controller.clone(),
-        sessions.clone(),
-    );
-    let contexts = crudkit_resources::build_contexts(store.clone(), project_deletion.clone());
-    let codex_status = codex_app_server::app_server_readiness(&store).await;
-    if !codex_status.usable {
-        tracing::warn!(
-            "{}",
-            codex_app_server::operator_guidance(&codex_status).join("\n")
-        );
-    }
-    let codex_status = Arc::new(tokio::sync::RwLock::new(codex_status));
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let state = AppState {
-        store: store.clone(),
-        sessions: sessions.clone(),
-        automation_controller: automation_controller.clone(),
-        project_deletion,
-        codex_status: codex_status.clone(),
-        codex_status_refresh: codex_app_server::CodexStatusRefresh::default(),
-    };
-    install_app_state(state.clone());
-
+pub(crate) async fn serve(
+    mut application: crate::backend::application::Application,
+    bind: SocketAddr,
+) -> Result<()> {
     let mut leptos_options = get_configuration(None)?.leptos_options;
     leptos_options.site_addr = bind;
-
-    crate::backend::knowledge::jobs::runtime::recover(&store).await?;
-    crate::backend::knowledge::jobs::runtime::spawn_until(
-        store.clone(),
-        sessions.clone(),
-        shutdown_rx.clone(),
-    );
-    projects::spawn_path_status_checker_until(store.clone(), shutdown_rx.clone());
-    automation_triggers::spawn_scheduler_until(
-        store.clone(),
-        Some(sessions.clone()),
-        Some(codex_status),
-        automation_controller.clone(),
-        shutdown_rx.clone(),
-    );
-    let app = http::router(state, contexts, leptos_options);
     let listener = tokio::net::TcpListener::bind(bind).await?;
+    application.start_workers().await?;
+    let state = application.state.clone();
+    let app = http::router(state.clone(), application.contexts.clone(), leptos_options);
     tracing::info!(url = %format_args!("http://{bind}"), "Serving Dispatch");
-    axum::serve(listener, app)
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(
-            store,
-            sessions,
-            automation_controller,
-            shutdown_tx,
+            state.runs,
+            state.sessions,
+            state.automation_supervisor,
+            application.shutdown_sender(),
         ))
-        .await?;
-    Ok(())
+        .await;
+    let workers = application.finish_workers().await;
+    result?;
+    workers
 }
 
-fn local_api_url(bind: SocketAddr) -> String {
+pub(crate) fn local_api_url(bind: SocketAddr) -> String {
     let host = match bind.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_owned(),
         IpAddr::V4(ip) => ip.to_string(),
@@ -93,15 +42,15 @@ fn local_api_url(bind: SocketAddr) -> String {
 }
 
 async fn shutdown_signal(
-    store: Store,
+    runs: std::sync::Arc<crate::backend::runs::service::RunService>,
     sessions: ProcessSessionRegistry,
-    automation_controller: AutomationController,
+    automation_supervisor: AutomationSupervisor,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
 ) {
     wait_for_shutdown_signal().await;
     let _ = shutdown_tx.send(true);
-    automation_controller.shutdown_all(&sessions).await;
-    cancel_active_sessions(&store, &sessions).await;
+    automation_supervisor.shutdown_all().await;
+    crate::backend::application::cancel_active_sessions(runs, &sessions).await;
 }
 
 async fn wait_for_shutdown_signal() {
@@ -136,39 +85,5 @@ async fn wait_for_shutdown_signal() {
     #[cfg(not(unix))]
     {
         ctrl_c.await;
-    }
-}
-
-async fn cancel_active_sessions(store: &Store, sessions: &ProcessSessionRegistry) {
-    let active = sessions.list_all();
-    let mut projects = active
-        .into_iter()
-        .map(|session| (session.project_id, session.project_name))
-        .collect::<Vec<_>>();
-    projects.sort();
-    projects.dedup();
-
-    sessions.cancel_all();
-    if let Err(_elapsed) = tokio::time::timeout(ACTIVE_SESSION_SHUTDOWN_TIMEOUT, async {
-        loop {
-            if sessions.list_all().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    {
-        tracing::warn!("timed out waiting for active automation sessions to stop");
-    }
-
-    for (project_id, project_name) in projects {
-        if let Err(err) = automation::stop_automation(store, project_id, &project_name).await {
-            tracing::error!(
-                project = %project_name,
-                error = %format_args!("{err:#}"),
-                "failed to mark running automation cancelled"
-            );
-        }
     }
 }

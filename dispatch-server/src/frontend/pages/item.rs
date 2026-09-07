@@ -1,33 +1,11 @@
-use crate::{
-    frontend::{
-        components::{cached_query, encode_path},
-        live_events::{item_event_matches, refetch_on_live_event},
-        services::item_service,
-    },
-    shared::view_models::{
-        AgentRunView, CodexAppServerStatusView, CommentView, ProjectLabelView, ProjectView,
-        WorkItemRelationshipListEntry, WorkItemStateView, WorkItemView,
-    },
+use crate::frontend::{
+    components::{cached_query, encode_path},
+    live_events::{item_event_matches, refetch_on_live_event},
+    services::item_service,
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct ItemPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub project: String,
-    pub item: WorkItemView,
-    pub comments: Vec<CommentView>,
-    pub relationships: Vec<WorkItemRelationshipListEntry>,
-    pub label_suggestions: Vec<ProjectLabelView>,
-    pub work_item_states: Vec<WorkItemStateView>,
-    pub automation_runs: Vec<AgentRunView>,
-    pub api_base_url: String,
-    pub codex_status: CodexAppServerStatusView,
-}
 
 #[component]
 pub fn PageItem() -> impl IntoView {
@@ -102,7 +80,6 @@ mod content {
 
     use crate::{
         frontend::{
-            ItemPage,
             components::{
                 WorkItemStatesContext, claim_badge, encode_path, item_href,
                 provide_work_item_states_context, run_token_usage_label, state_label,
@@ -110,6 +87,7 @@ mod content {
             crudkit::{crudkit_i64_id, work_items_crudkit_config_for_view},
             services::item_service,
         },
+        shared::page_data::ItemPage,
         shared::view_models::{
             AUTOMATION_BLOCKED_LABEL_KEY, AddCommentRequest, AgentRunView, AuthorType,
             CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest, DEFAULT_STATE_LABEL,

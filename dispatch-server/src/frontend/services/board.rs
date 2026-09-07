@@ -1,13 +1,11 @@
 #[cfg(feature = "ssr")]
-use crate::backend::{app_state, page_data};
-use crate::frontend::{
-    pages::{BoardItemsSection, BoardPage},
-    services::{
-        cache::LocalStorageCache,
-        origin::api_base_url,
-        request::{ServiceFuture, ServiceRequest},
-    },
+use crate::backend::app_state;
+use crate::frontend::services::{
+    cache::LocalStorageCache,
+    origin::api_base_url,
+    request::{ServiceFuture, ServiceRequest},
 };
+use crate::shared::page_data::{BoardItemsSection, BoardPage};
 use leptos::prelude::*;
 
 #[derive(Clone)]
@@ -152,17 +150,12 @@ async fn load_board_page(
     selected_project: Option<String>,
     api_base_url: String,
 ) -> Result<BoardPage, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     crate::backend::metrics::time_repository(
         "board.page",
-        page_data::board_page_data(
-            &state.store,
-            &state.automation_controller,
-            codex_status,
-            selected_project.as_deref(),
-            api_base_url,
-        ),
+        state
+            .board_queries
+            .page(selected_project.as_deref(), api_base_url),
     )
     .await
     .map_err(|err| ServerFnError::new(err.to_string()))
@@ -170,11 +163,70 @@ async fn load_board_page(
 
 #[server(prefix = "/leptos")]
 async fn load_board_items_section(project: String) -> Result<BoardItemsSection, ServerFnError> {
-    let state = app_state::app_state();
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     crate::backend::metrics::time_repository(
         "board.items_section",
-        page_data::board_items_section(&state.store, &project),
+        state.board_queries.items_section(&project),
     )
     .await
     .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod backend_query_tests {
+    use super::*;
+    use assertr::prelude::*;
+    use leptos::reactive::computed::ScopedFuture;
+    #[tokio::test]
+    async fn page_and_section_adapters_share_typed_queries_and_keep_request_instances_separate() {
+        let (_temp, app, _, _) = crate::backend::comments::tests::application().await;
+        let other_temp = tempfile::tempdir().unwrap();
+        let other = crate::backend::application::Application::open(
+            other_temp.path().join("other.sqlite3"),
+            "http://127.0.0.1:4102".into(),
+        )
+        .await
+        .unwrap();
+        let owner = Owner::new();
+        owner.with(|| provide_context(app.state.clone()));
+        let other_owner = Owner::new();
+        other_owner.with(|| provide_context(other.state.clone()));
+        let expected = app
+            .state
+            .board_queries
+            .page(Some("demo"), "http://example.test".into())
+            .await
+            .unwrap();
+        let page = owner
+            .with(|| {
+                ScopedFuture::new(load_board_page(
+                    Some("demo".into()),
+                    "http://example.test".into(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert_that!(&page).is_equal_to(expected);
+        let section = owner
+            .with(|| ScopedFuture::new(load_board_items_section("demo".into())))
+            .await
+            .unwrap();
+        assert_that!(&section.items).is_equal_to(page.items);
+        assert_that!(&section.swim_lanes).is_equal_to(page.swim_lanes);
+        assert_that!(&section.work_item_states).is_equal_to(page.work_item_states);
+        assert_that!(&section.label_accent_colors).is_equal_to(page.label_accent_colors);
+        let empty = other_owner
+            .with(|| {
+                ScopedFuture::new(load_board_page(
+                    Some("demo".into()),
+                    "http://other.test".into(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert_that!(&empty.projects).is_empty();
+        assert_that!(&empty.selected_project).is_none();
+        assert_that!(&empty.items).is_empty();
+        assert_that!(&empty.api_base_url.as_str()).is_equal_to("http://other.test");
+    }
 }

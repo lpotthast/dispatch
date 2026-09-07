@@ -44,6 +44,10 @@ becomes running when admitted, and either completes, fails, is cancelled, or ret
 reviewed proposal completes with an applied or rejected result. Stale proposals are marked as such and require a fresh
 attempt before application. Awaiting-review jobs consume no active agent slot.
 
+Admission resolves project settings and allocates the underlying run and its job checkpoint in one transaction. A
+failed checkpoint leaves no allocated run or success notification. Continuations inherit retained history in their
+allocation transaction. Source preparation and process execution happen outside these short database transactions.
+
 Results distinguish an answer, no change needed, applied changes, proposed changes, drift findings, incomplete coverage,
 and an unresolved question. A scan that found drift can complete successfully: the finding remains unresolved. An
 operational failure is distinct from a successful scan with findings; completed does not imply consistent. A result

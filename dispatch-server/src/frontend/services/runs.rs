@@ -1,15 +1,11 @@
 #[cfg(feature = "ssr")]
-use crate::backend::{app_state, automation, page_data};
-use crate::frontend::{
-    pages::{RunLogPage, RunsSection},
-    services::{
-        cache::{LocalStorageCache, QueryCache},
-        request::{ServiceFuture, ServiceRequest},
-    },
+use crate::backend::app_state;
+use crate::frontend::services::{
+    cache::{LocalStorageCache, QueryCache},
+    request::{ServiceFuture, ServiceRequest},
 };
+use crate::shared::page_data::{RunLogPage, RunsSection};
 use crate::shared::view_models::RunLogView;
-#[cfg(feature = "ssr")]
-use dispatch_types::AgentRunStatus;
 use leptos::prelude::*;
 
 #[derive(Clone)]
@@ -175,21 +171,20 @@ impl RunService {
 
 #[server(prefix = "/leptos")]
 async fn load_runs_section(project: String) -> Result<RunsSection, ServerFnError> {
-    let state = app_state::app_state();
-    page_data::runs_section(
-        &state.store,
-        &state.sessions,
-        &state.automation_controller,
-        &project,
-    )
-    .await
-    .map_err(|err| ServerFnError::new(err.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .runs_section(&project)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn load_run_detail(project: String, run_id: i64) -> Result<RunLogView, ServerFnError> {
-    let state = app_state::app_state();
-    automation::read_run_log_with_active_session(&state.store, &state.sessions, &project, run_id)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .run_queries
+        .log(&project, run_id)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
@@ -199,50 +194,23 @@ async fn load_run_log_page(
     project: Option<String>,
     run_id: Option<i64>,
 ) -> Result<RunLogPage, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     match (project, run_id) {
-        (Some(project), Some(run_id)) => page_data::run_log_page_data(
-            &state.store,
-            &state.sessions,
-            &state.automation_controller,
-            &project,
-            run_id,
-            codex_status,
-        )
-        .await
-        .map_err(|err| ServerFnError::new(err.to_string())),
+        (Some(project), Some(run_id)) => state
+            .operator_queries
+            .run_log_page(&project, run_id)
+            .await
+            .map_err(|err| ServerFnError::new(err.to_string())),
         _ => Err(ServerFnError::new("Missing run log route parameters")),
     }
 }
 
 #[server(prefix = "/leptos")]
 async fn cancel_run(project: String, run_id: i64) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    let run = automation::get_run(&state.store, &project, run_id)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .run_control
+        .cancel(&project, run_id)
         .await
-        .map_err(|err| ServerFnError::new(err.to_string()))?;
-    if let Some(job_id) = run.knowledge_job_id {
-        crate::backend::knowledge::jobs::action(
-            &state.store,
-            &state.sessions,
-            &project,
-            job_id,
-            dispatch_types::knowledge::jobs::JobAction::Cancel,
-        )
-        .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?;
-        return Ok(());
-    }
-    if run.status != AgentRunStatus::Running {
-        return Err(ServerFnError::new(format!(
-            "automation run {run_id} is not running"
-        )));
-    }
-    if !state.sessions.cancel_run(&project, run_id) {
-        return Err(ServerFnError::new(format!(
-            "automation run {run_id} does not have an active session"
-        )));
-    }
-    Ok(())
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }

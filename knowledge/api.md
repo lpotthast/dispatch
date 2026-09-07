@@ -216,8 +216,9 @@ CrudKit-generated routes are mounted under `/api` for ordinary admin resources:
 - label keys;
 - swim-lanes.
 
-CrudKit is not used for custom workflow authority. Admin CRUD can inspect and maintain records, but workflow transitions
-should use the custom endpoints so server services apply Dispatch rules consistently.
+CrudKit adapters call the same domain services as custom endpoints for Dispatch-owned mutations. Generic reads and
+validation persistence remain CrudKit responsibilities; hooks adapt validation without owning workflow writes. Claim,
+progress, finish, release, and automation launch use the custom workflow endpoints.
 
 Label-key CRUD is project-scoped configuration. Create accepts a key, optional `accent_color`, and requires
 `persistent=true` because a newly configured key may have zero usage. Update can change the accent and persistence flag,
@@ -233,6 +234,13 @@ delegate to the authoritative project-deletion lifecycle. A successful response 
 runs have been cancelled and reaped, Dispatch-owned runtime artifacts have been removed, and the database cascade has
 completed. Cleanup or shutdown failure rejects deletion without removing the project row. A concurrent deletion already
 operating on the same immutable project id is rejected as in progress.
+
+Run administration updates typed tool metadata and project-scoped item references. An existing launch contract binds its
+item attribution, and running legacy records retain their current attribution. Run creation requires prepared launch
+inputs through automation; the generic admin create form cannot allocate an executable run. Run deletion closes
+registration, persists knowledge-job cancellation when applicable, cancels and drains the process, and cleans owned
+workspace and runtime artifacts. Final run deletion and automatic claim-release history commit together. Cleanup or
+database failure keeps the run record available for retry.
 
 Automation rule CRUD exposes the explicit run mutability and selected personality for work-consuming rules. Create and
 update requests validate storage values `mutating` and `read_only`; new custom rules default to `mutating` unless the

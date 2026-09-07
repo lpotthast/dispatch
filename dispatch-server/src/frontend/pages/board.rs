@@ -1,3 +1,5 @@
+use crate::shared::page_data::{BoardItemView, BoardItemsSection, BoardPage, BoardRunPreview};
+use crate::shared::page_data::{ItemPage, RunLogPage};
 mod view;
 
 use view::BoardView;
@@ -13,17 +15,14 @@ use crate::{
             board_items_event_matches, item_event_matches, refetch_on_live_event,
             run_log_event_matches,
         },
-        pages::{ItemDetailContent, ItemPage, RunLogContent, RunLogPage},
+        pages::{ItemDetailContent, RunLogContent},
         services::{board_service, item_service, run_service},
         work_item_creation::{
             CreateItemOpenRequest, CreateItemStateOption, default_state_identifier,
             state_options_for_open_request, state_options_from_project_states,
         },
     },
-    shared::view_models::{
-        AgentRunStatus, AutomationStatusView, BoardWorkItemView, CodexAppServerStatusView,
-        ProjectLabelView, ProjectView, SwimLaneView, UiEvent, WorkItemStateView,
-    },
+    shared::view_models::{ProjectLabelView, UiEvent},
 };
 use crudkit_leptos::{
     crud_instance::CrudInstanceContext,
@@ -45,8 +44,6 @@ use leptos_router::{
     hooks::{use_navigate, use_query_map},
 };
 use leptos_use::{use_interval_fn, use_media_query};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 #[cfg(not(feature = "ssr"))]
 use time::OffsetDateTime;
 #[cfg(not(feature = "ssr"))]
@@ -281,48 +278,6 @@ fn focus_board_item(item_id: i64) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn focus_board_item(_item_id: i64) {}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct BoardPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub selected_project: Option<String>,
-    pub selected_project_view: Option<ProjectView>,
-    pub automation_status: Option<AutomationStatusView>,
-    pub automation_running: bool,
-    pub items: Vec<BoardItemView>,
-    pub swim_lanes: Vec<SwimLaneView>,
-    pub work_item_states: Vec<WorkItemStateView>,
-    pub label_suggestions: Vec<ProjectLabelView>,
-    pub label_accent_colors: BTreeMap<String, String>,
-    pub misconfigured_item_count: i64,
-    pub api_base_url: String,
-    pub codex_status: CodexAppServerStatusView,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct BoardItemsSection {
-    pub items: Vec<BoardItemView>,
-    pub swim_lanes: Vec<SwimLaneView>,
-    pub work_item_states: Vec<WorkItemStateView>,
-    pub label_accent_colors: BTreeMap<String, String>,
-    pub misconfigured_item_count: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct BoardItemView {
-    pub item: BoardWorkItemView,
-    pub run_count: usize,
-    pub recent_runs: Vec<BoardRunPreview>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct BoardRunPreview {
-    pub id: i64,
-    pub status: AgentRunStatus,
-    pub result_summary: String,
-    pub created_at: String,
-}
 
 #[component]
 pub fn PageBoard() -> impl IntoView {

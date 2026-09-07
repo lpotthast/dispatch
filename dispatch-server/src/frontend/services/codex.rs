@@ -1,22 +1,15 @@
-#[cfg(feature = "ssr")]
-use std::time::Duration;
+use crate::shared::page_data::CodexStatusPage;
 
 #[cfg(feature = "ssr")]
-use crate::backend::{agent_tools, app_state, codex_app_server, events, page_data};
-use crate::frontend::{
-    pages::CodexStatusPage,
-    services::{
-        cache::LocalStorageCache,
-        origin::api_base_url,
-        request::{ServiceFuture, ServiceRequest},
-    },
+use crate::backend::app_state;
+use crate::frontend::services::{
+    cache::LocalStorageCache,
+    origin::api_base_url,
+    request::{ServiceFuture, ServiceRequest},
 };
 use leptos::prelude::*;
 
 use crate::shared::view_models::{CodexAppServerStatusView, CodexLogPurgeResultView};
-
-#[cfg(feature = "ssr")]
-const CODEX_STATUS_PAGE_MINIMUM_REFRESH_AGE: Duration = Duration::from_secs(4 * 60);
 
 #[derive(Clone)]
 pub(crate) struct CodexService {
@@ -149,71 +142,53 @@ impl CodexService {
 #[server(prefix = "/leptos")]
 async fn load_codex_status() -> Result<CodexAppServerStatusView, ServerFnError> {
     // Reading the already computed status never starts an app-server readiness probe.
-    Ok(app_state::app_state().codex_status.read().await.clone())
+    Ok(leptos::prelude::expect_context::<app_state::AppState>()
+        .codex_status
+        .read()
+        .await
+        .clone())
 }
 
 #[server(prefix = "/leptos")]
 async fn load_codex_status_page(
     selected_project: Option<String>,
 ) -> Result<CodexStatusPage, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state
-        .codex_status_refresh
-        .refresh_if_stale(
-            &state.store,
-            &state.codex_status,
-            CODEX_STATUS_PAGE_MINIMUM_REFRESH_AGE,
-        )
-        .await;
-    page_data::codex_status_page_data(
-        &state.store,
-        &state.automation_controller,
-        codex_status,
-        selected_project.as_deref(),
-    )
-    .await
-    .map_err(|err| ServerFnError::new(err.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .codex_page(selected_project.as_deref())
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn discover_agent_tools() -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    agent_tools::discover_tools(&state.store)
-        .await
-        .map_err(|err| ServerFnError::new(err.to_string()))?;
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     state
-        .codex_status_refresh
-        .refresh_now(&state.store, &state.codex_status)
-        .await;
-    events::publish_agent_tool_changed();
-    events::publish_codex_status_changed();
-    Ok(())
+        .codex
+        .discover_tools(&state.codex_status)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn logout() -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    let status = codex_app_server::logout_current_account(&state.store)
-        .await
-        .map_err(|err| ServerFnError::new(err.to_string()))?;
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     state
-        .codex_status_refresh
-        .store_detailed(&state.codex_status, status)
-        .await;
-    events::publish_codex_status_changed();
-    Ok(())
+        .codex
+        .logout(&state.codex_status)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn purge_oversized_logs() -> Result<CodexLogPurgeResultView, ServerFnError> {
-    let state = app_state::app_state();
-    let purge_result = codex_app_server::purge_oversized_logs(&state.sessions).await;
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     state
-        .codex_status_refresh
-        .refresh_now(&state.store, &state.codex_status)
-        .await;
-    events::publish_codex_status_changed();
-    purge_result.map_err(|error| ServerFnError::new(format!("{error:#}")))
+        .codex
+        .purge_logs(&state.codex_status)
+        .await
+        .map_err(|error| ServerFnError::new(format!("{error:#}")))
 }
 
 #[cfg(test)]

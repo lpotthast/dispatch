@@ -163,6 +163,11 @@ and discussion.
 Comment authors include user, agent, and system author types. The server records author name, body, work item, and
 creation time.
 
+Comment additions validate a nonempty body, increment the item's version, and record a `CommentAdded` event in the same
+transaction. This applies to custom endpoints, server functions, and administrative creation. Administrative edits
+preserve the comment's item and creation timestamp; edits and deletion maintain the existing record without creating
+another addition event or changing the item workflow version. Comment notifications follow committed changes.
+
 ## Events
 
 Dispatch records workflow and automation events for live UI updates and auditability. Event streams are project-scoped

@@ -4,25 +4,15 @@ use crate::{
         services::metrics_service,
     },
     shared::view_models::{
-        BackendMetricsSnapshot, CodexAppServerStatusView, MetricLabelView, MetricSeriesView,
-        MetricValueView, ProjectView, REPOSITORY_DURATION_METRIC, SQL_DURATION_METRIC,
+        BackendMetricsSnapshot, MetricLabelView, MetricSeriesView, MetricValueView,
+        REPOSITORY_DURATION_METRIC, SQL_DURATION_METRIC,
     },
 };
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_use::use_interval_fn;
-use serde::{Deserialize, Serialize};
 
 const METRICS_REFRESH_INTERVAL_MS: u64 = 2_000;
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct MetricsPageData {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub selected_project: Option<String>,
-    pub codex_status: CodexAppServerStatusView,
-    pub metrics: BackendMetricsSnapshot,
-}
 
 #[component]
 pub fn PageMetrics() -> impl IntoView {

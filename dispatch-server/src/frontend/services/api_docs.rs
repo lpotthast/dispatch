@@ -1,12 +1,10 @@
 #[cfg(feature = "ssr")]
-use crate::backend::{app_state, page_data};
-use crate::frontend::{
-    pages::ApiDocsPage,
-    services::{
-        cache::LocalStorageCache,
-        request::{ServiceFuture, ServiceRequest},
-    },
+use crate::backend::app_state;
+use crate::frontend::services::{
+    cache::LocalStorageCache,
+    request::{ServiceFuture, ServiceRequest},
 };
+use crate::shared::page_data::ApiDocsPage;
 use leptos::prelude::*;
 
 #[derive(Clone)]
@@ -72,14 +70,10 @@ impl ApiDocsService {
 async fn load_api_docs_page(
     selected_project: Option<String>,
 ) -> Result<ApiDocsPage, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
-    page_data::api_docs_page_data(
-        &state.store,
-        &state.automation_controller,
-        codex_status,
-        selected_project.as_deref(),
-    )
-    .await
-    .map_err(|err| ServerFnError::new(err.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .api_docs_page(selected_project.as_deref())
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }

@@ -1,14 +1,10 @@
 #[cfg(feature = "ssr")]
 use crate::backend::{
-    app_state, automation, page_data,
-    projects::{self, UpdateProjectSettings},
-    workspace::{self, WorkspaceOpenTarget},
+    app_state, execution::workspaces::model::WorkspaceOpenTarget, projects::UpdateProjectSettings,
 };
+use crate::shared::page_data::{ProjectPage, ProjectsPage, WorkspaceBarData};
 use crate::{
-    frontend::{
-        pages::{ProjectPage, ProjectsPage, WorkspaceBarData},
-        services::{cache::LocalStorageCache, origin::api_base_url, request::ServiceRequest},
-    },
+    frontend::services::{cache::LocalStorageCache, origin::api_base_url, request::ServiceRequest},
     shared::view_models::{AgentGitCommandPolicy, HistoryClearResult, ProjectView, RevertStrategy},
 };
 use codee::string::JsonSerdeCodec;
@@ -297,9 +293,10 @@ pub(crate) struct ProjectCache {
 
 #[server(prefix = "/leptos")]
 async fn load_projects_page() -> Result<ProjectsPage, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
-    page_data::projects_page_data(&state.store, &state.automation_controller, codex_status)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .projects_page()
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
@@ -309,57 +306,59 @@ async fn load_project_page(
     selected_project: Option<String>,
     api_base_url: String,
 ) -> Result<ProjectPage, ServerFnError> {
-    let state = app_state::app_state();
-    let codex_status = state.codex_status.read().await.clone();
-    page_data::project_page_data(
-        &state.store,
-        &state.automation_controller,
-        codex_status,
-        selected_project.as_deref(),
-        api_base_url,
-    )
-    .await
-    .map_err(|err| ServerFnError::new(err.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .project_page(selected_project.as_deref(), api_base_url)
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn load_workspace_bar(
     selected_project: Option<String>,
 ) -> Result<WorkspaceBarData, ServerFnError> {
-    let state = app_state::app_state();
-    page_data::workspace_bar_data(&state.store, selected_project.as_deref())
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .operator_queries
+        .workspace_bar(selected_project.as_deref())
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn current_project_id(project: String) -> Result<Option<i64>, ServerFnError> {
-    let state = app_state::app_state();
-    projects::find_project_id_by_name(&state.store, &project)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .projects
+        .find_id(&project)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn update_auto_commit(project: String, enabled: bool) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    projects::update_settings(
-        &state.store,
-        &project,
-        UpdateProjectSettings {
-            auto_commit: Some(enabled),
-            ..Default::default()
-        },
-    )
-    .await
-    .map(|_| ())
-    .map_err(|err| ServerFnError::new(err.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .projects
+        .update_settings(
+            &project,
+            UpdateProjectSettings {
+                auto_commit: Some(enabled),
+                ..Default::default()
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn update_system_prompt(project: String, body: String) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    projects::update_system_prompt(&state.store, &project, body)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .projects
+        .update_system_prompt(&project, body)
         .await
         .map(|_| ())
         .map_err(|err| ServerFnError::new(err.to_string()))
@@ -367,8 +366,10 @@ async fn update_system_prompt(project: String, body: String) -> Result<(), Serve
 
 #[server(prefix = "/leptos")]
 async fn clear_system_prompt_history(project: String) -> Result<HistoryClearResult, ServerFnError> {
-    let state = app_state::app_state();
-    projects::clear_system_prompt_history(&state.store, &project)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .projects
+        .clear_system_prompt_history(&project)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
@@ -378,41 +379,43 @@ async fn update_commit_policy(
     project: String,
     update: CommitPolicyUpdate,
 ) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    projects::update_settings(
-        &state.store,
-        &project,
-        UpdateProjectSettings {
-            max_read_only_agents: Some(update.max_read_only_agents),
-            auto_commit: Some(update.auto_commit),
-            commit_standard: Some(update.commit_standard),
-            revert_strategy: Some(update.revert_strategy),
-            agent_git_command_policy: Some(update.agent_git_command_policy),
-            ..Default::default()
-        },
-    )
-    .await
-    .map(|_| ())
-    .map_err(|err| ServerFnError::new(err.to_string()))
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .projects
+        .update_settings(
+            &project,
+            UpdateProjectSettings {
+                max_read_only_agents: Some(update.max_read_only_agents),
+                auto_commit: Some(update.auto_commit),
+                commit_standard: Some(update.commit_standard),
+                revert_strategy: Some(update.revert_strategy),
+                agent_git_command_policy: Some(update.agent_git_command_policy),
+                ..Default::default()
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn open_workspace(project: String, target: String) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
     let target =
         WorkspaceOpenTarget::parse(&target).map_err(|err| ServerFnError::new(err.to_string()))?;
-    let path = workspace::project_workspace_path(&state.store, &project)
-        .await
-        .map_err(|err| ServerFnError::new(err.to_string()))?;
-    workspace::open_workspace_path(target, path)
+    state
+        .workspaces
+        .open_project(&project, target)
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server(prefix = "/leptos")]
 async fn cleanup_worktrees(project: String) -> Result<(), ServerFnError> {
-    let state = app_state::app_state();
-    automation::cleanup_worktrees(&state.store, &project, None)
+    let state = leptos::prelude::expect_context::<app_state::AppState>();
+    state
+        .launch
+        .cleanup_worktrees(&project, None)
         .await
         .map(|_| ())
         .map_err(|error| ServerFnError::new(error.to_string()))
@@ -551,6 +554,206 @@ mod tests {
             agent_git_command_policy: AgentGitCommandPolicy::default(),
             created_at: String::new(),
             updated_at: String::new(),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod backend_adapter_tests {
+    use super::*;
+    use crate::backend::{application::Application, projects::CreateProject, storage::Store};
+    use assertr::prelude::*;
+    use leptos::reactive::computed::ScopedFuture;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn project_server_functions_use_request_services_for_prompt_history_and_settings() {
+        let temp = TempDir::new().unwrap();
+        let mut apps = vec![];
+        let mut owners = vec![];
+        for index in 0..2 {
+            let store = Store::open_with_max_connections(
+                temp.path().join(format!("app-{index}.sqlite3")),
+                1,
+            )
+            .await
+            .unwrap();
+            let app = Application::from_store(store, format!("http://127.0.0.1:{}", 4400 + index));
+            app.state
+                .projects
+                .create(CreateProject {
+                    name: "demo".into(),
+                    display_name: None,
+                    path: temp.path().to_owned(),
+                    default_agent_model: None,
+                    default_agent_reasoning_effort: None,
+                    system_prompt: Some("Initial prompt".into()),
+                    memory: None,
+                })
+                .await
+                .unwrap();
+            let owner = Owner::new();
+            owner.with(|| provide_context(app.state.clone()));
+            owners.push(owner);
+            apps.push(app);
+        }
+        let mut events = apps[0].state.events.subscribe();
+        owners[0]
+            .with(|| ScopedFuture::new(update_system_prompt("demo".into(), "New prompt".into())))
+            .await
+            .unwrap();
+        let history = apps[0]
+            .state
+            .projects
+            .system_prompt_events("demo")
+            .await
+            .unwrap();
+        assert_that!(&history.len()).is_equal_to(2);
+        assert_that!(&history[0].system_prompt).is_equal_to("New prompt");
+        assert_that!(&history[0].actor_type.as_deref()).is_equal_to(Some("user"));
+        assert_that!(&matches!(
+            events.try_recv().unwrap(),
+            dispatch_types::UiEvent::SystemPromptChanged { .. }
+        ))
+        .is_true();
+        assert_that!(&events.try_recv().is_err()).is_true();
+        assert_that!(
+            &apps[1]
+                .state
+                .projects
+                .get("demo")
+                .await
+                .unwrap()
+                .system_prompt
+        )
+        .is_equal_to("Initial prompt");
+        owners[1]
+            .with(|| ScopedFuture::new(update_auto_commit("demo".into(), false)))
+            .await
+            .unwrap();
+        assert_that!(
+            &apps[0]
+                .state
+                .projects
+                .settings("demo")
+                .await
+                .unwrap()
+                .auto_commit
+        )
+        .is_true();
+        assert_that!(
+            &apps[1]
+                .state
+                .projects
+                .settings("demo")
+                .await
+                .unwrap()
+                .auto_commit
+        )
+        .is_false();
+        let cleared = owners[0]
+            .with(|| ScopedFuture::new(clear_system_prompt_history("demo".into())))
+            .await
+            .unwrap();
+        assert_that!(&cleared.deleted_events).is_equal_to(2);
+        assert_that!(
+            &apps[0]
+                .state
+                .projects
+                .get("demo")
+                .await
+                .unwrap()
+                .system_prompt
+        )
+        .is_equal_to("New prompt");
+        assert_that!(
+            &apps[1]
+                .state
+                .projects
+                .system_prompt_events("demo")
+                .await
+                .unwrap()
+                .len()
+        )
+        .is_equal_to(1);
+    }
+    #[tokio::test]
+    async fn initial_ssr_preserves_the_shell_and_http_server_functions_use_each_context() {
+        use leptos::server_fn::ServerFn;
+        let temp = TempDir::new().unwrap();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap();
+        let mut apps = Vec::new();
+        let mut servers = Vec::new();
+        for name in ["ssr-first", "ssr-second"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let url = format!("http://{address}");
+            let store =
+                Store::open_with_max_connections(temp.path().join(format!("{name}.sqlite3")), 1)
+                    .await
+                    .unwrap();
+            let app = Application::from_store(store, url.clone());
+            app.state
+                .projects
+                .create(CreateProject {
+                    name: name.into(),
+                    display_name: None,
+                    path: temp.path().to_owned(),
+                    default_agent_model: None,
+                    default_agent_reasoning_effort: None,
+                    system_prompt: None,
+                    memory: None,
+                })
+                .await
+                .unwrap();
+            let options = leptos::prelude::LeptosOptions::builder()
+                .output_name("dispatch-server")
+                .site_addr(address)
+                .build();
+            let router =
+                crate::backend::http::router(app.state.clone(), app.contexts.clone(), options);
+            servers.push(tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap()
+            }));
+            apps.push((name, url, app));
+        }
+        for (name, url, app) in &apps {
+            let response = client.get(format!("{url}/projects")).send().await.unwrap();
+            assert_that!(&response.status()).is_equal_to(reqwest::StatusCode::OK);
+            let html = response.text().await.unwrap();
+            assert_that!(&html.contains("Projects")).is_true();
+            assert_that!(&html.contains("dispatch-server")).is_true();
+            let response = client
+                .post(format!("{url}{}", LoadProjectsPage::PATH))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Accept", "application/json")
+                .body("")
+                .send()
+                .await
+                .unwrap();
+            assert_that!(&response.status()).is_equal_to(reqwest::StatusCode::OK);
+            let page = response.json::<ProjectsPage>().await.unwrap();
+            assert_that!(&page.projects.len()).is_equal_to(1);
+            assert_that!(&page.projects[0].name).is_equal_to(*name);
+            let mut events = app.state.events.subscribe();
+            let response = client
+                .post(format!("{url}{}", UpdateSystemPrompt::PATH))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Accept", "application/json")
+                .body(format!("project={name}&body=HTTP%20prompt"))
+                .send()
+                .await
+                .unwrap();
+            assert_that!(&response.status()).is_equal_to(reqwest::StatusCode::OK);
+            assert_that!(&app.state.projects.get(name).await.unwrap().system_prompt)
+                .is_equal_to("HTTP prompt");
+            assert_that!(&events.try_recv().is_ok()).is_true();
+        }
+        for server in servers {
+            server.abort();
         }
     }
 }

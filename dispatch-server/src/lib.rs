@@ -18,3 +18,9 @@ pub mod shared;
 pub fn hydrate() {
     leptos::mount::hydrate_body(frontend::App);
 }
+
+#[cfg(feature = "ssr")]
+mod tracing_init;
+
+#[cfg(feature = "ssr")]
+pub use backend::entry::run;

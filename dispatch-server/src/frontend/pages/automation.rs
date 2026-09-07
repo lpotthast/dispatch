@@ -1,3 +1,4 @@
+use crate::shared::page_data::TriggersPage;
 use crate::{
     frontend::{
         components::{TriggerRunsPanel, cached_query, encode_path, selected_project_signal},
@@ -7,37 +8,14 @@ use crate::{
         },
         services::{CommitPolicyUpdate, automation_service, project_service},
     },
-    shared::view_models::{
-        AgentGitCommandPolicy, AutomationEvaluationView, AutomationRevisionView,
-        AutomationTriggerView, CodexAppServerStatusView, PersonalityView, ProjectSettingsView,
-        ProjectView, RevisionAnalyticsView,
-    },
+    shared::view_models::{AgentGitCommandPolicy, ProjectSettingsView},
 };
 use crudkit_leptos::crud_instance::CrudInstanceContext;
 use leptonic::components::prelude::Toggle;
 use leptos::prelude::*;
 use leptos_meta::Title;
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct TriggersPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub selected_project: Option<String>,
-    pub selected_project_view: Option<ProjectView>,
-    pub settings: Option<ProjectSettingsView>,
-    pub personalities: Vec<PersonalityView>,
-    pub api_base_url: String,
-    pub codex_status: CodexAppServerStatusView,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AutomationRuleInspectorView {
-    pub trigger: AutomationTriggerView,
-    pub revisions: Vec<AutomationRevisionView>,
-    pub evaluations: Vec<AutomationEvaluationView>,
-    pub current_revision_analytics: Option<RevisionAnalyticsView>,
-}
+use crate::shared::page_data::AutomationRuleInspectorView;
 
 #[component]
 pub fn PageTriggers() -> impl IntoView {

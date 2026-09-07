@@ -1,12 +1,3 @@
-use dispatch_types::{PersonalityRevisionView, PersonalityView};
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct AutomationPersonalityInspectorView {
-    pub personality: PersonalityView,
-    pub revisions: Vec<PersonalityRevisionView>,
-}
-
 pub mod automation_trigger {
     use crudkit_leptos::prelude::*;
     use serde::{Deserialize, Serialize};

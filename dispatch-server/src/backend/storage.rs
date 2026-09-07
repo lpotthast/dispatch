@@ -17,9 +17,6 @@ use crate::backend::migrations::Migrator;
 pub struct Store {
     db: Arc<DatabaseConnection>,
     path: Arc<PathBuf>,
-    knowledge_jobs_lock: Arc<tokio::sync::Mutex<()>>,
-    runtime_admission_lock: Arc<tokio::sync::Mutex<()>>,
-    automation_production_lock: Arc<tokio::sync::Mutex<()>>,
 }
 impl Store {
     pub async fn open(path: PathBuf) -> Result<Self> {
@@ -67,17 +64,7 @@ impl Store {
         Ok(Self {
             db: Arc::new(db),
             path: Arc::new(path),
-            knowledge_jobs_lock: Arc::new(tokio::sync::Mutex::new(())),
-            runtime_admission_lock: Arc::new(tokio::sync::Mutex::new(())),
-            automation_production_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
-    }
-
-    pub(crate) async fn lock_knowledge_jobs(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.knowledge_jobs_lock.lock().await
-    }
-    pub(crate) async fn lock_runtime_admission(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.runtime_admission_lock.lock().await
     }
 
     pub fn db(&self) -> Arc<DatabaseConnection> {
@@ -86,15 +73,6 @@ impl Store {
 
     pub fn path(&self) -> &Path {
         self.path.as_ref().as_path()
-    }
-
-    /// Serializes the producer deduplication read and item creation transaction.
-    ///
-    /// Dispatch has one owning server process for a database. SQLite deferred transactions do not
-    /// acquire a write lock until the first write, so concurrent producer evaluations otherwise
-    /// could both observe no unfinished item before either inserts its origin row.
-    pub(crate) async fn lock_automation_production(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.automation_production_lock.lock().await
     }
 }
 
@@ -127,4 +105,54 @@ fn absolute_path(path: PathBuf) -> Result<PathBuf> {
     Ok(env::current_dir()
         .context("failed to read current directory for database path")?
         .join(path))
+}
+
+/// Starts service-owned transactions. Repositories receive only the transaction handle for scoped work.
+#[derive(Clone)]
+pub(crate) struct TransactionManager {
+    db: Arc<DatabaseConnection>,
+}
+
+impl TransactionManager {
+    pub(crate) fn new(store: &Store) -> Self {
+        Self { db: store.db() }
+    }
+
+    pub(crate) async fn begin(&self) -> Result<Transaction> {
+        use sea_orm::TransactionTrait;
+        Ok(Transaction {
+            inner: self
+                .db
+                .begin()
+                .await
+                .context("failed to begin database transaction")?,
+        })
+    }
+}
+
+/// Opaque outside persistence adapters. Dropping an uncommitted handle rolls its transaction back.
+pub(crate) struct Transaction {
+    inner: sea_orm::DatabaseTransaction,
+}
+
+impl Transaction {
+    pub(crate) fn connection(&self) -> &sea_orm::DatabaseTransaction {
+        &self.inner
+    }
+
+    pub(crate) async fn commit(self) -> Result<()> {
+        self.inner
+            .commit()
+            .await
+            .context("failed to commit database transaction")?;
+        Ok(())
+    }
+
+    pub(crate) async fn rollback(self) -> Result<()> {
+        self.inner
+            .rollback()
+            .await
+            .context("failed to roll back database transaction")?;
+        Ok(())
+    }
 }

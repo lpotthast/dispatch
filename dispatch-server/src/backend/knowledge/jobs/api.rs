@@ -1,5 +1,5 @@
-use super::*;
 use crate::backend::app_state::AppState;
+use crate::backend::knowledge::jobs::controller::KnowledgeJobController;
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query},
@@ -7,6 +7,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use dispatch_types::knowledge::jobs::*;
+use rootcause::{Result, prelude::*};
+use serde::{Deserialize, Serialize};
 fn response<T: Serialize>(result: Result<T>) -> Response {
     match result {
         Ok(value) => Json(value).into_response(),
@@ -56,6 +59,7 @@ pub(crate) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
             "/api/projects/{project}/knowledge/jobs/{id}/assess",
             post(job_assessment),
         )
+        .layer(axum::middleware::from_fn(controller_context))
 }
 fn operator(headers: &HeaderMap) -> Result<()> {
     if headers.contains_key("x-dispatch-agent-id")
@@ -68,172 +72,269 @@ fn operator(headers: &HeaderMap) -> Result<()> {
     Ok(())
 }
 async fn jobs(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path(project): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    response(
-        async {
-            operator(&headers)?;
-            list(&state.store, &project).await
-        }
-        .await,
-    )
+    controller.jobs(project, headers).await
 }
 async fn start_job(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path(project): Path<String>,
     headers: HeaderMap,
     Json(request): Json<StartKnowledgeJob>,
 ) -> Response {
-    response(
-        async {
-            operator(&headers)?;
-            start(&state.store, &project, request).await
-        }
-        .await,
-    )
+    controller.start_job(project, headers, request).await
 }
 async fn job(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path((project, id)): Path<(String, i64)>,
     headers: HeaderMap,
 ) -> Response {
-    response(
-        async {
-            operator(&headers)?;
-            detail(&state.store, &project, id).await
-        }
-        .await,
-    )
+    controller.job((project, id), headers).await
 }
 async fn job_action(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path((project, id)): Path<(String, i64)>,
     headers: HeaderMap,
     Json(request): Json<JobAction>,
 ) -> Response {
-    response(
-        async {
-            operator(&headers)?;
-            action(&state.store, &state.sessions, &project, id, request).await
-        }
-        .await,
-    )
+    controller.job_action((project, id), headers, request).await
 }
 #[derive(Default, Deserialize)]
 struct CoverageQuery {
     aspect: Option<String>,
 }
 async fn job_coverage(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path((project, id)): Path<(String, i64)>,
     headers: HeaderMap,
     Query(query): Query<CoverageQuery>,
 ) -> Response {
-    response(
-        async {
-            if headers.contains_key("x-dispatch-agent-id")
-                || headers.contains_key("x-dispatch-agent-run-id")
-            {
-                let attribution =
-                    RequestAttribution::from_knowledge_headers(&state.store, &project, &headers)
-                        .await?;
-                let (record, _) = active_record(&state.store, &project, id, &attribution).await?;
-                if record.job().stage == JobStage::Reader {
-                    bail!("independent readers cannot inspect extraction assessments");
-                }
-            }
-            coverage(&state.store, &project, id, query.aspect).await
-        }
-        .await,
-    )
+    controller.job_coverage((project, id), headers, query).await
 }
 async fn source(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path((project, id, operation)): Path<(String, i64, String)>,
     headers: HeaderMap,
     Query(query): Query<SourceQuery>,
 ) -> Response {
-    response(
-        async {
-            let a = RequestAttribution::from_knowledge_headers(&state.store, &project, &headers)
-                .await?;
-            source_query(&state.store, &project, id, &a, operation, query).await
-        }
-        .await,
-    )
+    controller
+        .source((project, id, operation), headers, query)
+        .await
 }
 async fn job_progress(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path((project, id)): Path<(String, i64)>,
     headers: HeaderMap,
     Json(request): Json<JobProgress>,
 ) -> Response {
-    response(
-        async {
-            let a = RequestAttribution::from_knowledge_headers(&state.store, &project, &headers)
-                .await?;
-            progress(&state.store, &project, id, &a, request).await
-        }
-        .await,
-    )
+    controller
+        .job_progress((project, id), headers, request)
+        .await
 }
 async fn job_report(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path((project, id)): Path<(String, i64)>,
     headers: HeaderMap,
     Json(request): Json<JobReport>,
 ) -> Response {
-    response(
-        async {
-            let a = RequestAttribution::from_knowledge_headers(&state.store, &project, &headers)
-                .await?;
-            report(&state.store, &project, id, &a, request).await
-        }
-        .await,
-    )
+    controller.job_report((project, id), headers, request).await
 }
 async fn job_assessment(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path((project, id)): Path<(String, i64)>,
     headers: HeaderMap,
     Json(request): Json<AspectAssessment>,
 ) -> Response {
-    response(
-        async {
-            let a = RequestAttribution::from_knowledge_headers(&state.store, &project, &headers)
-                .await?;
-            assessment(&state.store, &project, id, &a, request).await
-        }
-        .await,
-    )
+    controller
+        .job_assessment((project, id), headers, request)
+        .await
 }
 
 async fn get_settings(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path(project): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    response(
-        async {
-            operator(&headers)?;
-            settings(&state.store, &project).await
-        }
-        .await,
-    )
+    controller.get_settings(project, headers).await
 }
 async fn set_settings(
-    Extension(state): Extension<AppState>,
+    Extension(controller): Extension<std::sync::Arc<KnowledgeJobController>>,
     Path(project): Path<String>,
     headers: HeaderMap,
     Json(request): Json<KnowledgeSettings>,
 ) -> Response {
-    response(
-        async {
-            operator(&headers)?;
-            save_settings(&state.store, &project, request).await
-        }
-        .await,
-    )
+    controller.set_settings(project, headers, request).await
+}
+
+impl KnowledgeJobController {
+    async fn jobs(self: std::sync::Arc<Self>, project: String, headers: HeaderMap) -> Response {
+        response(
+            async {
+                operator(&headers)?;
+                self.jobs.list(&project).await
+            }
+            .await,
+        )
+    }
+    async fn start_job(
+        self: std::sync::Arc<Self>,
+        project: String,
+        headers: HeaderMap,
+        request: StartKnowledgeJob,
+    ) -> Response {
+        response(
+            async {
+                operator(&headers)?;
+                self.jobs.start(&project, request).await
+            }
+            .await,
+        )
+    }
+    async fn job(
+        self: std::sync::Arc<Self>,
+        (project, id): (String, i64),
+        headers: HeaderMap,
+    ) -> Response {
+        response(
+            async {
+                operator(&headers)?;
+                self.jobs.detail(&project, id).await
+            }
+            .await,
+        )
+    }
+    async fn job_action(
+        self: std::sync::Arc<Self>,
+        (project, id): (String, i64),
+        headers: HeaderMap,
+        request: JobAction,
+    ) -> Response {
+        response(
+            async {
+                operator(&headers)?;
+                self.jobs.action(&project, id, request).await
+            }
+            .await,
+        )
+    }
+    async fn job_coverage(
+        self: std::sync::Arc<Self>,
+        (project, id): (String, i64),
+        headers: HeaderMap,
+        query: CoverageQuery,
+    ) -> Response {
+        response(
+            async {
+                let attribution = if headers.contains_key("x-dispatch-agent-id")
+                    || headers.contains_key("x-dispatch-agent-run-id")
+                {
+                    Some(crate::backend::attribution::transport::parse(&headers)?)
+                } else {
+                    None
+                };
+                self.jobs
+                    .coverage(&project, id, query.aspect, attribution)
+                    .await
+            }
+            .await,
+        )
+    }
+    async fn source(
+        self: std::sync::Arc<Self>,
+        (project, id, operation): (String, i64, String),
+        headers: HeaderMap,
+        query: SourceQuery,
+    ) -> Response {
+        response(
+            async {
+                let a = crate::backend::attribution::transport::parse(&headers)?;
+                self.jobs
+                    .source_query(&project, id, a, operation, query)
+                    .await
+            }
+            .await,
+        )
+    }
+    async fn job_progress(
+        self: std::sync::Arc<Self>,
+        (project, id): (String, i64),
+        headers: HeaderMap,
+        request: JobProgress,
+    ) -> Response {
+        response(
+            async {
+                let a = crate::backend::attribution::transport::parse(&headers)?;
+                self.jobs.progress(&project, id, a, request).await
+            }
+            .await,
+        )
+    }
+    async fn job_report(
+        self: std::sync::Arc<Self>,
+        (project, id): (String, i64),
+        headers: HeaderMap,
+        request: JobReport,
+    ) -> Response {
+        response(
+            async {
+                let a = crate::backend::attribution::transport::parse(&headers)?;
+                self.jobs.report(&project, id, a, request).await
+            }
+            .await,
+        )
+    }
+    async fn job_assessment(
+        self: std::sync::Arc<Self>,
+        (project, id): (String, i64),
+        headers: HeaderMap,
+        request: AspectAssessment,
+    ) -> Response {
+        response(
+            async {
+                let a = crate::backend::attribution::transport::parse(&headers)?;
+                self.jobs.assessment(&project, id, a, request).await
+            }
+            .await,
+        )
+    }
+    async fn get_settings(
+        self: std::sync::Arc<Self>,
+        project: String,
+        headers: HeaderMap,
+    ) -> Response {
+        response(
+            async {
+                operator(&headers)?;
+                self.jobs.settings(&project).await
+            }
+            .await,
+        )
+    }
+    async fn set_settings(
+        self: std::sync::Arc<Self>,
+        project: String,
+        headers: HeaderMap,
+        request: KnowledgeSettings,
+    ) -> Response {
+        response(
+            async {
+                operator(&headers)?;
+                self.jobs.save_settings(&project, request).await
+            }
+            .await,
+        )
+    }
+}
+
+async fn controller_context(
+    Extension(state): Extension<AppState>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    request
+        .extensions_mut()
+        .insert(state.knowledge_job_controller.clone());
+    next.run(request).await
 }

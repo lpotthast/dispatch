@@ -1,17 +1,6 @@
-use crate::{
-    frontend::{crudkit::ProjectsPanel, services::project_service},
-    shared::view_models::{CodexAppServerStatusView, ProjectView},
-};
+use crate::frontend::{crudkit::ProjectsPanel, services::project_service};
 use leptos::prelude::*;
 use leptos_meta::Title;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct ProjectsPage {
-    pub projects: Vec<ProjectView>,
-    pub active_project_names: Vec<String>,
-    pub codex_status: CodexAppServerStatusView,
-}
 
 #[component]
 pub fn PageProjects() -> impl IntoView {

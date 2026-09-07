@@ -49,8 +49,9 @@ focused modules under `frontend/components/`.
 Backend interaction is owned by focused service objects under `frontend/services/`. Production services wrap server
 functions and other transport details, are provided once from the root layout through Leptos context, and expose typed
 domain-oriented methods to pages and shared components. Their request callbacks are replaceable so consumers can be
-tested with in-process mocks. Route modules may own their page response types, resources, and rendering, but they do not
-define or invoke server functions or browser request clients directly. [UI Design](ui.md) owns layout, controls,
+tested with in-process mocks. Page response types belong to the application's shared types so backend queries have no
+rendering dependency. Route modules own resources and rendering, but they do not define or invoke server functions or
+browser request clients directly. [UI Design](ui.md) owns layout, controls,
 navigation, and refresh behavior, with [Knowledge UI](knowledge-ui.md) owning the knowledge workspace.
 
 Cross-route browser caches are focused services provided through Leptos context and contain typed backend DTOs, not
@@ -82,6 +83,81 @@ context from flags and environment variables, call the typed API client, and pri
 This crate builds the operator-only automation administration client. It consumes YAML files for rule and personality
 writes and manages bundles, revisions, scheduling, routing diagnostics, and analytics through HTTP.
 
+## Backend Composition and Domain Ownership
+
+Dispatch follows an Axum handler → controller → service → repository dependency direction. REST handlers forward to
+constructor-injected `*Controller` types. Workflow collaborators use `*Service` names, and database-query abstractions
+use `*Repository` names consistently in every domain. Concrete services and repositories
+receive their specific dependencies through constructors, with `Arc` for shared ownership. Services never receive or
+look up the entire application state. Stateless policy and algorithms remain pure functions; there is no general
+purpose dependency-injection framework.
+
+One application constructor composes configuration, database access, repositories, services, live event delivery,
+runtime coordination, and workers. The binary is a thin caller of the SSR-only library entry point. Axum requests and
+Leptos rendering receive that application's dependencies through request context, including initial SSR and subsequent
+server-function requests. Application state, event sequences, server API URLs, and workflow locks belong to an
+application instance. CLI resolution and Git runtime setup receive configuration captured during construction. The
+process-wide metrics facade retains its independent instrumentation role.
+
+Each domain owns the controller, service, repository, model, and relevant policy, transport, runtime, or worker modules
+it needs. Domains reuse each other’s types when their meaning matches; they do not duplicate identical records:
+
+- Projects own configuration, settings, system-prompt history, path health, and deletion coordination.
+- Work items contain focused services for item editing and search, claims, comments, labels and their catalog,
+  relationships, groups, and durable item events.
+- Automation owns rules, personalities, revisions, bundles, routing, production, and scheduling. Its supervisor owns
+  scheduler activation and shutdown rather than HTTP controller responsibilities.
+- Runs and execution own run persistence, launch contracts, admission, sessions, logs, cancellation, and shared agent
+  execution. Agent-tool discovery and workspace operations are focused injected services.
+- Knowledge document operations remain deterministic and independent of execution. Knowledge-job services own
+  admission, persistence, evaluation, publication, and recovery, and use shared execution through typed launch inputs.
+- Board and operator query services compose typed results using compact projections and bounded batch loading.
+
+Transport adapters extract HTTP and form inputs and forward them to their injected domain controllers. Controllers and
+Leptos adapters invoke services and map contextual `rootcause` errors
+into the established response formats. They parse attribution headers; an injected attribution service validates the
+project, run, and agent relationship. Services enforce scope, ownership, version safety, and workflow policy, coordinate
+transactions, and request external effects. Repositories encapsulate SeaORM entities, active models, queries, and
+storage encoding. Their service-facing records contain validated enums and structured values, reusing shared types
+when the meaning is identical. ORM records do not cross into services or presentation code.
+
+Runtime and filesystem adapters execute process, workspace, and file operations requested by services. Workers schedule
+and supervise service operations with explicit cancellation and shutdown ownership. Shared execution receives prepared
+inputs and returns execution outcomes; it does not call back into item or knowledge-job workflows.
+
+### Transactions and Coordination
+
+Services own transaction boundaries through a small opaque transaction handle. Transaction-scoped repository and
+service methods require that exact handle explicitly and cannot acquire another pooled connection. Project resolution,
+ownership checks, mutations, and durable history for an operation use the same transaction. Success notifications are
+published only after commit; rollback leaves neither partial history nor success notifications. A single pooled
+connection is a supported configuration.
+
+Project creation commits its required label catalog, personality, item states, swim lanes, automation defaults, and
+initial prompt history with the project row. Configuration and prompt writes resolve their project inside the mutation
+transaction. An administrative edit bound to an immutable project ID cannot affect a replacement project with the same
+name. Path health updates record a filesystem observation only when the stored path still matches the inspected path.
+Deletion uses a minimal lifecycle scope so invalid configuration does not prevent cleanup. It revalidates the inspected
+working-copy scope inside the final deletion transaction; a changed scope retains the row for another cleanup attempt.
+
+Comment and relationship mutations validate project and run attribution within their mutation transaction.
+Relationships update both endpoint versions and durable events atomically. Their repository batches endpoint summaries
+and labels for list responses. Comment administration shares the comment service, and lifecycle hooks only adapt typed
+author and body validation.
+
+Automation launch coordinates item claiming and run-target resolution in their shared transaction. Project deletion
+has one authoritative coordinator over automation, knowledge jobs, runtime cleanup, and database deletion. Workflow
+locks belong to their owning coordinators, not database storage. File preparation and process execution remain outside
+short database transactions. Knowledge publication retains its journaled application and recovery guarantees.
+
+### CrudKit Integration
+
+Domain transport modules own their custom routes and CrudKit resources; central routing only assembles them.
+Dispatch-owned CrudKit mutations invoke the same authoritative services as JSON endpoints and Leptos server functions,
+preserving each resource's permitted operations. Generic CrudKit reads and validation persistence remain appropriate
+persistence adapters. Lifecycle hooks adapt validation results but do not perform workflow writes, revision writes, or
+destructive cleanup. Response conversion stays in transport adapters.
+
 ## Knowledge Storage Boundary
 
 Canonical knowledge is ordinary UTF-8 Markdown and small YAML frontmatter in a configured project directory, normally
@@ -100,15 +176,16 @@ settings. [Knowledge automation](knowledge-automation.md) owns scheduling, publi
 and background knowledge jobs do not stage, commit, reset, or push.
 
 Deterministic knowledge operations live in `dispatch-server/src/backend/knowledge/`: `discovery` owns filesystem
-participation, `documents` parses Markdown/frontmatter and derives relationships, and the parent module binds queries to
-registered working copies. There is one production consumer, the server, so a separate `dispatch-knowledge-core` crate
+participation, `documents` parses Markdown/frontmatter and derives relationships, and the knowledge service binds
+queries to registered working copies. There is one production consumer, the server, so a separate `dispatch-knowledge-core` crate
 adds no useful boundary. These modules have no model execution dependency. Extract a library only
 when a real second consumer needs the same behavior; do not introduce a family of speculative knowledge crates.
 
 `dispatch-types` owns the transport DTOs, and `dispatch-api-client` and `dispatch-cli` relay them. Knowledge jobs
 belong to a separate server service using the shared agent runtime. The `knowledge/jobs` modules own durable admission,
-source snapshots and aspect assessments, reading evaluation, sequential execution, and journaled publication. Shared
-execution allocates no-item knowledge passes with normal run logs and purpose/job links. Deterministic file operations have no dependency on
+source snapshots and aspect assessments, reading evaluation, sequential execution, and journaled publication. The job
+service allocates no-item passes atomically with their job checkpoint, and the pass service invokes shared execution with
+prepared inputs, normal run logs, and purpose/job links. Deterministic file operations have no dependency on
 agent execution.
 
 ## Storage
@@ -121,18 +198,18 @@ relationships, and provenance; they never reconstruct or discard that state from
 Database writes must flow through server services. This keeps workflow checks in one process and prevents launched
 agents from bypassing ownership, state, project, or version rules.
 
-A server service that holds a database transaction must pass that exact connection through every project and path-scope
-lookup instead of reacquiring the pool. Knowledge publication validates the project, working-copy scope, exclusions, and
+A server service that holds a database transaction passes that exact opaque transaction handle through every project
+and path-scope lookup instead of reacquiring the pool. Knowledge publication validates the project, working-copy scope, exclusions, and
 current destination content before writing. File analysis and draft preparation stay outside short SQL transactions;
 operational history and derived indexes follow the publication outcome described in the knowledge contract. The
 supported SQLite configuration includes a single pooled connection; increasing the pool is not a correctness mechanism.
 
 SeaORM and CrudKit persistence records mirror the current operational database and may represent enums or structured
-configuration as text. These records are storage types, not workflow-domain types. Server services decode and validate
+configuration as text. These records are storage types, not workflow-domain types. Repositories decode and validate
 them at the persistence boundary before applying policy, starting automation, rendering UI data, or returning API views.
 Invalid persisted values produce contextual service errors rather than panics or implicit fallback behavior.
 
-Automation rule policy is owned by `backend/automation_triggers/policy.rs`. Operator requests and bundle imports share
+Automation rule policy is owned by `backend/automation/rules/policy.rs`. Operator requests and bundle imports share
 its typed validation, while CrudKit writes and persisted-rule reads share its storage decoder and the same validation.
 Postcondition structure is validated by the postcondition domain. Bundle handling owns portable manifest structure and
 references; ordinary automation validation has no dependency on bundle validation or database lookups. Project-scoped
@@ -176,8 +253,8 @@ The server exposes four classes of routes:
 - CrudKit-generated API routes under `/api` for ordinary admin resources.
 
 The operator prefix is an intentional supported-interface boundary, not an authentication boundary in this local-first
-release. Custom Dispatch workflow endpoints are not CrudKit endpoints. CrudKit remains an admin accelerator, but its
-automation and personality hooks use the same revision service as operator writes.
+release. Custom Dispatch workflow endpoints are not CrudKit endpoints. CrudKit remains an admin accelerator; its
+automation and personality mutations use the same services and revision transactions as operator writes.
 
 ## Development Commands
 

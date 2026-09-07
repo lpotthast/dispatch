@@ -1,25 +1,6 @@
-use crate::{
-    frontend::components::{LiveRunsSection, selected_project_signal},
-    shared::view_models::AgentRunView,
-};
+use crate::frontend::components::{LiveRunsSection, selected_project_signal};
 use leptos::prelude::*;
 use leptos_meta::Title;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct RunsSection {
-    pub automation_running: bool,
-    pub running_runs: i64,
-    pub running_mutating_runs: i64,
-    pub running_read_only_runs: i64,
-    pub runs: Vec<RunSummaryView>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct RunSummaryView {
-    pub run: AgentRunView,
-    pub active: bool,
-}
 
 #[component]
 pub fn PageRuns() -> impl IntoView {

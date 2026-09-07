@@ -1,4 +1,5 @@
-use crate::frontend::{pages::WorkspaceBarData, services::project_service};
+use crate::frontend::services::project_service;
+use crate::shared::page_data::WorkspaceBarData;
 use crate::shared::view_models::{ProjectGitStatusView, ProjectView, WorkspaceEditorView};
 use leptos::prelude::*;
 use leptos_use::{UseElementSizeReturn, use_element_size};

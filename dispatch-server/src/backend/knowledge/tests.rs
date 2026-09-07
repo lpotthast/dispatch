@@ -1,5 +1,9 @@
+use super::runtime::read;
 use super::*;
+use crate::backend::projects::repository::ProjectRepository;
+use crate::backend::storage::Store;
 use assertr::prelude::*;
+use dispatch_types::knowledge::*;
 use std::{fs, path::Path};
 use tempfile::TempDir;
 
@@ -317,9 +321,11 @@ fn pagination_and_unicode_body_continuation_are_explicit() {
 
 #[tokio::test]
 async fn server_reads_registered_run_working_copy_and_rejects_other_projects() {
+    let event_bus = crate::backend::events::UiEventBus::new();
+
     use crate::backend::{
-        agent_ids, entities::agent_run::AgentRunActiveModel, projects::CreateProject,
-        storage::utc_now,
+        entities::agent_run::AgentRunActiveModel, execution::identity as agent_ids,
+        projects::CreateProject, storage::utc_now,
     };
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
     let temp = TempDir::new().unwrap();
@@ -338,9 +344,8 @@ async fn server_reads_registered_run_working_copy_and_rejects_other_projects() {
     );
     let store = Store::open(root.join("test.sqlite3")).await.unwrap();
     for name in ["demo", "other"] {
-        projects::create_project(
-            &store,
-            CreateProject {
+        crate::backend::projects::tests::service(&store, event_bus.clone())
+            .create(CreateProject {
                 name: name.into(),
                 display_name: None,
                 path: main.clone(),
@@ -348,12 +353,11 @@ async fn server_reads_registered_run_working_copy_and_rejects_other_projects() {
                 default_agent_reasoning_effort: None,
                 system_prompt: None,
                 memory: None,
-            },
-        )
-        .await
-        .unwrap();
+            })
+            .await
+            .unwrap();
     }
-    let project_id = projects::project_id(&store, "demo").await.unwrap();
+    let project_id = ProjectRepository::new(store.db()).id("demo").await.unwrap();
     let run = AgentRunActiveModel {
         project_id: Set(project_id),
         run_kind: Set("task".into()),
@@ -378,13 +382,16 @@ async fn server_reads_registered_run_working_copy_and_rejects_other_projects() {
         "x-dispatch-agent-run-id",
         run.id.to_string().parse().unwrap(),
     );
-    let attribution = RequestAttribution::from_knowledge_headers(&store, "demo", &headers)
-        .await
-        .unwrap();
-    let result = query(
-        &store,
+    let attribution = crate::backend::attribution::transport::parse(&headers).unwrap();
+    let result = crate::backend::application::Application::from_store(
+        store.clone(),
+        "http://127.0.0.1:4000".into(),
+    )
+    .state
+    .knowledge
+    .query(
         "demo",
-        &attribution,
+        attribution.clone(),
         KnowledgeOperation::Root,
         KnowledgeQuery::default(),
     )
@@ -392,16 +399,25 @@ async fn server_reads_registered_run_working_copy_and_rejects_other_projects() {
     .unwrap();
     assert_that!(&result.document.unwrap().markdown).contains("Assigned working copy");
     assert_that!(
-        &RequestAttribution::from_knowledge_headers(&store, "other", &headers)
-            .await
-            .is_err()
+        &crate::backend::attribution::transport::from_knowledge_headers(
+            &crate::backend::attribution::tests_service(&store),
+            "other",
+            &headers
+        )
+        .await
+        .is_err()
     )
     .is_true();
     write(&worktree, ".dispatchignore", "knowledge/README.md\n");
-    let result = query(
-        &store,
+    let result = crate::backend::application::Application::from_store(
+        store.clone(),
+        "http://127.0.0.1:4000".into(),
+    )
+    .state
+    .knowledge
+    .query(
         "demo",
-        &attribution,
+        attribution.clone(),
         KnowledgeOperation::Root,
         KnowledgeQuery::default(),
     )
@@ -480,23 +496,42 @@ fn editor_saves_preserve_bytes_and_reject_stale_or_excluded_writes() {
         expected_fingerprint: None,
         markdown: text.into(),
     };
-    let saved = editing::save_file(root, "knowledge", &create).unwrap();
+    let saved = editing::DocumentWriter::default()
+        .save(root, "knowledge", &create)
+        .unwrap();
     assert_that!(&fs::read_to_string(root.join("knowledge/README.md")).unwrap()).is_equal_to(text);
-    assert_that!(&editing::save_file(root, "knowledge", &create).is_err()).is_true();
+    assert_that!(
+        &editing::DocumentWriter::default()
+            .save(root, "knowledge", &create)
+            .is_err()
+    )
+    .is_true();
     let edit = KnowledgeSaveRequest {
         expected_fingerprint: Some(saved.fingerprint),
         markdown: text.replace("An overview.", "The accepted contract."),
         ..create
     };
     write(root, "knowledge/README.md", "# Concurrent edit\n");
-    assert_that!(&editing::save_file(root, "knowledge", &edit).is_err()).is_true();
+    assert_that!(
+        &editing::DocumentWriter::default()
+            .save(root, "knowledge", &edit)
+            .is_err()
+    )
+    .is_true();
     assert_that!(&fs::read_to_string(root.join("knowledge/README.md")).unwrap())
         .is_equal_to("# Concurrent edit\n");
     write(root, "knowledge/README.md", text);
     write(root, ".gitignore", "knowledge/README.md\n");
-    assert_that!(&editing::save_file(root, "knowledge", &edit).is_err()).is_true();
+    assert_that!(
+        &editing::DocumentWriter::default()
+            .save(root, "knowledge", &edit)
+            .is_err()
+    )
+    .is_true();
     fs::remove_file(root.join(".gitignore")).unwrap();
-    editing::save_file(root, "knowledge", &edit).unwrap();
+    editing::DocumentWriter::default()
+        .save(root, "knowledge", &edit)
+        .unwrap();
     assert_that!(&fs::read_to_string(root.join("knowledge/README.md")).unwrap())
         .contains("custom: keep this\r\n");
 }
@@ -522,7 +557,12 @@ fn editor_cannot_create_through_exclusions_or_escape_the_knowledge_directory() {
             expected_fingerprint: None,
             markdown: "# Document\n".into(),
         };
-        assert_that!(&editing::save_file(root, "knowledge", &request).is_err()).is_true();
+        assert_that!(
+            &editing::DocumentWriter::default()
+                .save(root, "knowledge", &request)
+                .is_err()
+        )
+        .is_true();
     }
     assert_that!(&root.join("knowledge").exists()).is_false();
     #[cfg(unix)]
@@ -534,7 +574,12 @@ fn editor_cannot_create_through_exclusions_or_escape_the_knowledge_directory() {
             expected_fingerprint: None,
             markdown: "# Document\n".into(),
         };
-        assert_that!(&editing::save_file(root, "knowledge", &request).is_err()).is_true();
+        assert_that!(
+            &editing::DocumentWriter::default()
+                .save(root, "knowledge", &request)
+                .is_err()
+        )
+        .is_true();
         assert_that!(&root.join("new.md").exists()).is_false();
     }
 }

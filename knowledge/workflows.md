@@ -219,6 +219,10 @@ continue. Recovery is bounded by an explicit retry limit. Explicit operator canc
 server shutdown cancellation, the automation timeout, and non-retryable Codex turn failures remain terminal and continue
 to use the existing cancellation or failure release behavior.
 
+Run termination commits its status, launch-contract state, automatic claim release, and durable item history together.
+Project cancellation commits the entire affected batch together. Live notifications follow commit. Once a run reaches a
+terminal status, later execution completion preserves that status and does not publish another terminal notification.
+
 Dispatch repairs stale shared-asset symlinks in a project Codex home before launch. During each app-server run, Dispatch
 captures a bounded stderr diagnostic alongside the structured run log. When launch or execution fails, the run summary
 and automatic claim-release comment put the root cause reported by Codex first, followed by the SDK and transport
@@ -227,7 +231,8 @@ details; a generic transport closure must not hide an available process error.
 ### Produced work
 
 Before production, Dispatch validates the complete produced-work specification and records an evaluation at the current
-trigger revision. Deduplication and item creation occur in the same transaction. A duplicate evaluation records
+trigger revision. Deduplication, item creation, evaluation history, and the scheduler’s evaluation counter and next check
+commit in the same transaction. Live notifications follow commit. A duplicate evaluation records
 `skipped_duplicate` and the reused unfinished item without modifying it. New items atomically receive state, labels,
 item execution overrides, immutable origin, and `ItemCreated` attribution.
 
@@ -262,8 +267,8 @@ assignment; Dispatch itself does not understand review lenses or candidate seman
 
 Project deletion is an ordered server lifecycle, not a raw project-row delete. Dispatch first closes run admission for
 the immutable project id, stops its automation scheduler, cancels every registered run including runs that have not
-spawned a child process yet, and waits for all sessions to finish. Session registration, automation-controller
-activation, and deletion admission share one atomic synchronous boundary. A session or controller start attempted after
+spawned a child process yet, and waits for all sessions to finish. Session registration, automation-supervisor
+activation, and deletion admission share one atomic synchronous boundary. A session or supervisor start attempted after
 deletion begins is rejected without entering active state, while a start admitted first is visible to deletion and is
 stopped. Scheduler activation and cancellation snapshots carry immutable project ids rather than names, so an in-flight
 snapshot from the deleted lifetime cannot route work into a same-name replacement. Deletion is single-flight per project
@@ -279,13 +284,20 @@ worktrees, `dispatch/*` run branches, and the project's managed Codex home. Miss
 cleaned; any other cleanup failure aborts the database deletion so the operator can correct the problem and retry.
 Dispatch never deletes the configured source workspace itself.
 
-Only after cleanup succeeds does Dispatch delete the project row and its cascading project data. Both custom operator
-handlers and CrudKit deletion use this same lifecycle. Completion publishes a project-deleted live event containing both
+Only after cleanup succeeds does Dispatch revalidate the inspected working-copy scope and delete the project row and
+its cascading project data in the same transaction. A changed scope keeps the row available for another cleanup
+attempt. Both custom operator handlers and CrudKit deletion use this same lifecycle. Completion publishes a project-deleted live event containing both
 the deleted id and name, so a same-name replacement is never confused with the deleted project. Persisted run and claim
 cleanup use the captured project id; the reusable name is retained only for messages and event routing. A replacement
 with that name has a new id and is unaffected by the old id's session-admission tombstone. CrudKit validates the project
 before entering this lifecycle, and the lifecycle's row delete fulfills CrudKit's repository delete without a second
 row-delete attempt.
+
+Administrative run deletion follows the same runtime ownership rules for one immutable run id. It closes session
+registration, persists cancellation of an associated knowledge job, and waits for the process to stop before removing
+owned workspace and runtime artifacts. Final row deletion, launch-contract removal, automatic claim release, and
+durable item history commit together. A failed cleanup or transaction retains the run record and reopens admission for
+retry; a completed deletion rejects delayed registration. Knowledge passes do not perform item-claim cleanup.
 
 ## Automation Concurrency
 
