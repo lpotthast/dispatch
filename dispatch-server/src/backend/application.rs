@@ -11,12 +11,13 @@ use crate::backend::{
 };
 use rootcause::{Result, prelude::*};
 use std::{path::PathBuf, sync::Arc};
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) struct Application {
     pub(crate) state: AppState,
     pub(crate) contexts: CrudContexts,
-    shutdown_tx: watch::Sender<bool>,
+    shutdown: CancellationToken,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -442,7 +443,7 @@ impl Application {
             codex_status.clone(),
             operator_queries.clone(),
         ));
-        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+        let shutdown = CancellationToken::new();
         let project_controller = Arc::new(
             crate::backend::projects::controller::ProjectController::new(
                 project_deletion.clone(),
@@ -594,7 +595,7 @@ impl Application {
         Self {
             state,
             contexts,
-            shutdown_tx,
+            shutdown,
             workers: Vec::new(),
         }
     }
@@ -611,15 +612,15 @@ impl Application {
             );
         }
         *self.state.codex_status.write().await = codex_status;
-        let shutdown_rx = self.shutdown_tx.subscribe();
+        let shutdown = self.shutdown.child_token();
         self.state.jobs.recover().await?;
         self.workers.push(
             crate::backend::knowledge::jobs::worker::JobWorker::new(self.state.jobs.clone())
-                .spawn_until(shutdown_rx.clone()),
+                .spawn_until(shutdown.clone()),
         );
         self.workers.push(projects::spawn_path_status_checker_until(
             self.state.projects.clone(),
-            shutdown_rx.clone(),
+            shutdown.clone(),
         ));
         self.workers.push(
             crate::backend::automation::scheduling::worker::SchedulerWorker::new(
@@ -627,17 +628,17 @@ impl Application {
                 self.state.claims.clone(),
                 self.state.automation_supervisor.clone(),
             )
-            .spawn_until(shutdown_rx),
+            .spawn_until(shutdown),
         );
         Ok(())
     }
 
-    pub(crate) fn shutdown_sender(&self) -> watch::Sender<bool> {
-        self.shutdown_tx.clone()
+    pub(crate) fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown.clone()
     }
 
     pub(crate) async fn finish_workers(mut self) -> Result<()> {
-        let _ = self.shutdown_tx.send(true);
+        self.shutdown.cancel();
         self.state.automation_supervisor.shutdown_all().await;
         cancel_active_sessions(self.state.runs.clone(), &self.state.sessions).await;
         let mut failures = Vec::new();
@@ -658,7 +659,7 @@ impl Application {
 
 impl Drop for Application {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(true);
+        self.shutdown.cancel();
         self.state.sessions.cancel_all();
         for worker in &self.workers {
             worker.abort();
@@ -826,11 +827,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut shutdown = app.shutdown_tx.subscribe();
+        let shutdown = app.shutdown.child_token();
         let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let completed_worker = completed.clone();
         app.workers.push(tokio::spawn(async move {
-            shutdown.changed().await.unwrap();
+            shutdown.cancelled().await;
             completed_worker.store(true, std::sync::atomic::Ordering::SeqCst);
         }));
         app.finish_workers().await.unwrap();

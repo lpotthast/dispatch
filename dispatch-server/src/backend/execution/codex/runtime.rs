@@ -1740,14 +1740,17 @@ mod tests {
             codex_log_storage::CODEX_LOG_DATABASE_THRESHOLD_BYTES + 1,
         );
         let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-        sessions.begin(ProcessSessionStart {
-            run_id: 7,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: AgentToolName::Codex.as_storage().to_owned(),
-            command: String::new(),
-            working_dir: String::new(),
-        });
+        sessions.begin(
+            ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: AgentToolName::Codex.as_storage().to_owned(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
 
         let result = service(home.path(), sessions.clone())
             .await
@@ -1779,14 +1782,17 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert_that!(&(sessions.codex_maintenance_active())).is_true();
-        let concurrent = sessions.begin(ProcessSessionStart {
-            run_id: 8,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: AgentToolName::Codex.as_storage().to_owned(),
-            command: String::new(),
-            working_dir: String::new(),
-        });
+        let concurrent = sessions.begin(
+            ProcessSessionStart {
+                run_id: 8,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: AgentToolName::Codex.as_storage().to_owned(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
         assert_that!(&(!concurrent.is_registered())).is_true();
         assert_that!(&(log.exists())).is_true();
 

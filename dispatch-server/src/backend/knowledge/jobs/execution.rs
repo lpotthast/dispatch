@@ -16,7 +16,7 @@ use dispatch_types::{
 };
 use rootcause::{Result, prelude::*};
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 pub(crate) struct PassInput {
     pub settings: dispatch_types::ProjectSettingsView,
     pub artifact_dir: PathBuf,
@@ -32,7 +32,7 @@ pub(crate) struct PassInput {
 
 #[async_trait::async_trait]
 pub(crate) trait PassAgent: Send + Sync {
-    async fn execute(&self, shutdown: watch::Receiver<bool>, input: PassInput) -> Result<()>;
+    async fn execute(&self, cancellation: CancellationToken, input: PassInput) -> Result<()>;
 }
 pub(crate) struct KnowledgePassService {
     runs: Arc<RunService>,
@@ -67,7 +67,7 @@ impl KnowledgePassService {
             files,
         }
     }
-    async fn run(&self, shutdown: watch::Receiver<bool>, input: PassInput) -> Result<()> {
+    async fn run(&self, cancellation: CancellationToken, input: PassInput) -> Result<()> {
         let settings = input.settings;
         let binary = self.tools.resolve(AgentToolName::Codex).await?;
         let readiness = self.codex.readiness_for_binary(&binary).await;
@@ -179,7 +179,7 @@ impl KnowledgePassService {
             timeout: Duration::from_secs(input.timeout_seconds),
             environment: Some(environment),
         };
-        let result = self.execution.execute(process, Some(shutdown)).await;
+        let result = self.execution.execute(process, cancellation).await;
         match result {
             Ok(output) => {
                 write_run_output_log(&log, &output.output)?;
@@ -212,10 +212,10 @@ impl KnowledgePassService {
 }
 #[async_trait::async_trait]
 impl PassAgent for KnowledgePassService {
-    async fn execute(&self, shutdown: watch::Receiver<bool>, input: PassInput) -> Result<()> {
+    async fn execute(&self, cancellation: CancellationToken, input: PassInput) -> Result<()> {
         let run_id = input.run.id;
         let marker = input.artifact_dir.join(format!("process-{run_id}.json"));
-        let result = self.run(shutdown, input).await;
+        let result = self.run(cancellation, input).await;
         let cleanup = crate::backend::execution::process_identity::cleanup(&marker).await;
         self.sessions.finish(run_id);
         cleanup?;

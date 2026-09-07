@@ -23,7 +23,7 @@ pub(crate) async fn serve(
             state.runs,
             state.sessions,
             state.automation_supervisor,
-            application.shutdown_sender(),
+            application.shutdown_token(),
         ))
         .await;
     let workers = application.finish_workers().await;
@@ -45,10 +45,10 @@ async fn shutdown_signal(
     runs: std::sync::Arc<crate::backend::runs::service::RunService>,
     sessions: ProcessSessionRegistry,
     automation_supervisor: AutomationSupervisor,
-    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    shutdown: tokio_util::sync::CancellationToken,
 ) {
     wait_for_shutdown_signal().await;
-    let _ = shutdown_tx.send(true);
+    shutdown.cancel();
     automation_supervisor.shutdown_all().await;
     crate::backend::application::cancel_active_sessions(runs, &sessions).await;
 }

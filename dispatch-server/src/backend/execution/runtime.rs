@@ -10,9 +10,7 @@ use crate::backend::{
         OutputPieceDraft, push_codex_output_piece, thread_event_output_piece,
         update_response_candidates, write_run_output_log,
     },
-    execution::sessions::{
-        ProcessSessionRegistration, ProcessSessionRegistry, ProcessSessionStart,
-    },
+    execution::sessions::ProcessSessionRegistry,
 };
 use crate::shared::view_models::{
     AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece, AgentRunTokenUsageView,
@@ -30,9 +28,9 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
-    sync::watch,
     time::timeout,
 };
+use tokio_util::sync::CancellationToken;
 
 const CODEX_STREAM_RECOVERY_MAX_ATTEMPTS: usize = 12;
 
@@ -224,37 +222,25 @@ impl AgentRuntime {
         &self,
         start: AgentProcessStart,
         sessions: Option<ProcessSessionRegistry>,
-        external_cancellation: Option<watch::Receiver<bool>>,
+        cancellation: CancellationToken,
     ) -> Result<AgentProcessOutput> {
-        let command_label = format!("{} app-server", start.codex_binary.display());
-        let session_cancellation = if let Some(registry) = &sessions {
-            Some(registry.begin(ProcessSessionStart {
-                run_id: start.run_id,
-                project_id: start.project_id,
-                project_name: start.project_name.clone(),
-                tool_name: start.tool_name.to_string(),
-                command: command_label.clone(),
-                working_dir: start.working_dir.to_string_lossy().into_owned(),
-            }))
-        } else {
-            None
-        };
-        if session_cancellation
-            .as_ref()
-            .is_some_and(ProcessSessionRegistration::cancellation_requested)
-            || external_cancellation
-                .as_ref()
-                .is_some_and(|cancel| *cancel.borrow())
-        {
+        if let Some(registry) = &sessions {
+            registry.update_command(
+                start.run_id,
+                format!("{} app-server", start.codex_binary.display()),
+                start.working_dir.to_string_lossy().into_owned(),
+            );
+        }
+        if cancellation.is_cancelled() {
             return Err(report!(AutomationCancelled).into_dynamic());
         }
         let codex_stderr_path = start.codex_stderr_path.clone();
 
-        let result = run_agent_process_inner(
-            start,
-            sessions.clone(),
-            session_cancellation,
-            external_cancellation,
+        let process_timeout = start.timeout;
+        let result = run_agent_process_turn_with_cancellation(
+            run_codex_app_server_turn(start, sessions),
+            process_timeout,
+            cancellation,
         )
         .await;
 
@@ -265,73 +251,16 @@ impl AgentRuntime {
     }
 }
 
-async fn run_agent_process_inner(
-    start: AgentProcessStart,
-    sessions: Option<ProcessSessionRegistry>,
-    session_cancellation: Option<ProcessSessionRegistration>,
-    external_cancellation: Option<watch::Receiver<bool>>,
-) -> Result<AgentProcessOutput> {
-    let process_timeout = start.timeout;
-    run_agent_process_turn_with_cancellation(
-        run_codex_app_server_turn(start, sessions),
-        process_timeout,
-        session_cancellation,
-        external_cancellation,
-    )
-    .await
-}
-
 pub(crate) async fn run_agent_process_turn_with_cancellation(
     turn: impl std::future::Future<Output = Result<AgentProcessOutput>>,
     process_timeout: Duration,
-    session_cancellation: Option<ProcessSessionRegistration>,
-    external_cancellation: Option<watch::Receiver<bool>>,
+    cancellation: CancellationToken,
 ) -> Result<AgentProcessOutput> {
-    let turn = timeout(process_timeout, turn);
-
-    if session_cancellation.is_some() || external_cancellation.is_some() {
-        tokio::select! {
-            result = turn => {
-                result.context("Codex app-server turn exceeded the automation timeout")?
-            }
-            _ = wait_for_any_cancellation(session_cancellation, external_cancellation) => {
-                Err(report!(AutomationCancelled).into_dynamic())
-            }
-        }
-    } else {
-        turn.await
-            .context("Codex app-server turn exceeded the automation timeout")?
-    }
-}
-
-async fn wait_for_any_cancellation(
-    session_cancellation: Option<ProcessSessionRegistration>,
-    external_cancellation: Option<watch::Receiver<bool>>,
-) {
-    match (session_cancellation, external_cancellation) {
-        (Some(mut session_cancellation), Some(mut external_cancellation)) => {
-            tokio::select! {
-                _ = session_cancellation.wait_for_cancellation() => {}
-                _ = wait_for_cancellation(&mut external_cancellation) => {}
-            }
-        }
-        (Some(mut session_cancellation), None) => {
-            session_cancellation.wait_for_cancellation().await;
-        }
-        (None, Some(mut external_cancellation)) => {
-            wait_for_cancellation(&mut external_cancellation).await;
-        }
-        (None, None) => {}
-    }
-}
-
-async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
-    loop {
-        if *cancellation.borrow() {
-            break;
-        }
-        if cancellation.changed().await.is_err() {
-            break;
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(report!(AutomationCancelled).into_dynamic()),
+        result = timeout(process_timeout, turn) => {
+            result.context("Codex app-server turn exceeded the automation timeout")?
         }
     }
 }
@@ -1007,16 +936,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_cancellation_still_cancels_waiting_turn() {
-        let (cancel, cancellation) = tokio::sync::watch::channel(false);
-        let task = tokio::spawn(run_agent_process_turn_with_cancellation(
-            std::future::pending::<Result<AgentProcessOutput>>(),
+    async fn cancelled_run_does_not_poll_the_agent_turn() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let polled = std::cell::Cell::new(false);
+        let err = run_agent_process_turn_with_cancellation(
+            async {
+                polled.set(true);
+                bail!("agent turn must not start")
+            },
             AGENT_PROCESS_TIMEOUT,
-            None,
-            Some(cancellation),
+            cancellation,
+        )
+        .await
+        .unwrap_err();
+
+        assert_that!(&is_automation_cancelled(&err)).is_true();
+        assert_that!(&polled.get()).is_false();
+    }
+
+    #[tokio::test]
+    async fn uncancelled_turn_keeps_its_timeout() {
+        let err = run_agent_process_turn_with_cancellation(
+            std::future::pending(),
+            Duration::ZERO,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_that!(&is_automation_cancelled(&err)).is_false();
+        assert_that!(&err.to_string()).contains("exceeded the automation timeout");
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_still_cancels_waiting_turn() {
+        let cancellation = CancellationToken::new();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(run_agent_process_turn_with_cancellation(
+            async move {
+                let _ = started.send(());
+                std::future::pending::<Result<AgentProcessOutput>>().await
+            },
+            AGENT_PROCESS_TIMEOUT,
+            cancellation.clone(),
         ));
 
-        cancel.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        cancellation.cancel();
         let err = tokio::time::timeout(Duration::from_secs(1), task)
             .await
             .unwrap()
@@ -1031,8 +1001,7 @@ mod tests {
         let err = run_agent_process_turn_with_cancellation(
             async { bail!("permanent Codex SDK failure") },
             AGENT_PROCESS_TIMEOUT,
-            None,
-            None,
+            CancellationToken::new(),
         )
         .await
         .unwrap_err();

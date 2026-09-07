@@ -12,7 +12,7 @@ use std::{
 
 use rootcause::{Result, prelude::*};
 
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     backend::{
@@ -24,9 +24,7 @@ use crate::{
         execution::output::{
             OutputPieceDraft, append_output_piece, new_output_piece, write_run_output_log,
         },
-        execution::sessions::{
-            ProcessSessionRegistration, ProcessSessionRegistry, ProcessSessionStart,
-        },
+        execution::sessions::{ProcessSessionRegistry, ProcessSessionStart},
         projects,
         runs::launch::model::AgentLaunchTargetV1,
         storage::{TransactionManager, utc_now},
@@ -79,22 +77,6 @@ impl LaunchPreparationFailure {
             result_summary: result_summary.into(),
         }
     }
-}
-
-struct RunCancellation {
-    session: Option<ProcessSessionRegistration>,
-    external: Option<watch::Receiver<bool>>,
-}
-
-fn cancellation_requested(cancellation: &RunCancellation) -> bool {
-    cancellation
-        .session
-        .as_ref()
-        .is_some_and(ProcessSessionRegistration::cancellation_requested)
-        || cancellation
-            .external
-            .as_ref()
-            .is_some_and(|cancellation| *cancellation.borrow())
 }
 
 struct StartedAutomationRun {
@@ -182,7 +164,7 @@ impl LaunchService {
         &self,
         project_name: &str,
         start: StartAutomation,
-        cancellation: Option<watch::Receiver<bool>>,
+        cancellation: Option<CancellationToken>,
     ) -> Result<AgentRunView> {
         let sessions = self.sessions.clone();
 
@@ -327,7 +309,7 @@ impl LaunchService {
     async fn complete(
         &self,
         started: StartedAutomationRun,
-        cancellation: RunCancellation,
+        cancellation: CancellationToken,
     ) -> Result<AgentRunView> {
         let codex_status = self.codex_status.clone();
 
@@ -344,7 +326,7 @@ impl LaunchService {
         let agent_id = agent_ids::dispatch_run_agent_id(run.id);
         let run_mutability = run.mutability;
 
-        if cancellation_requested(&cancellation) {
+        if cancellation.is_cancelled() {
             return self
                 .run_service
                 .clone()
@@ -408,7 +390,7 @@ impl LaunchService {
                 )
                 .await;
         }
-        if cancellation_requested(&cancellation) {
+        if cancellation.is_cancelled() {
             return self
                 .run_service
                 .clone()
@@ -481,7 +463,7 @@ impl LaunchService {
             return Ok(run);
         }
 
-        if cancellation_requested(&cancellation) {
+        if cancellation.is_cancelled() {
             return self
                 .run_service
                 .clone()
@@ -535,10 +517,7 @@ impl LaunchService {
         } = launch;
         run = prepared_run;
 
-        let output = self
-            .execution
-            .execute(process_start, cancellation.external)
-            .await;
+        let output = self.execution.execute(process_start, cancellation).await;
         match output {
             Ok(mut output) => {
                 run = self.run_service.process_id(run, output.process_id).await?;
@@ -1070,25 +1049,25 @@ where
 fn register_pending_session(
     started: &StartedAutomationRun,
     sessions: Option<&ProcessSessionRegistry>,
-    fallback_cancellation: Option<watch::Receiver<bool>>,
-) -> RunCancellation {
+    cancellation: Option<CancellationToken>,
+) -> CancellationToken {
+    let cancellation = cancellation.unwrap_or_default();
     let Some(sessions) = sessions else {
-        return RunCancellation {
-            session: None,
-            external: fallback_cancellation,
-        };
+        return cancellation;
     };
-    RunCancellation {
-        session: Some(sessions.begin(ProcessSessionStart {
-            run_id: started.run.id,
-            project_id: started.project.id,
-            project_name: started.project_name.clone(),
-            tool_name: started.tool.as_storage().to_owned(),
-            command: String::new(),
-            working_dir: started.project.path.clone().unwrap_or_default(),
-        })),
-        external: fallback_cancellation,
-    }
+    sessions
+        .begin(
+            ProcessSessionStart {
+                run_id: started.run.id,
+                project_id: started.project.id,
+                project_name: started.project_name.clone(),
+                tool_name: started.tool.as_storage().to_owned(),
+                command: String::new(),
+                working_dir: started.project.path.clone().unwrap_or_default(),
+            },
+            &cancellation,
+        )
+        .into_cancellation()
 }
 
 fn effective_agent_model(

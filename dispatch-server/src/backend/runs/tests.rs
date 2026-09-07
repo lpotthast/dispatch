@@ -333,7 +333,7 @@ async fn administrative_deletion_drains_registered_processes_and_rejects_late_re
         command: String::new(),
         working_dir: String::new(),
     };
-    let mut registration = app.state.sessions.begin(start());
+    let registration = app.state.sessions.begin(start(), &Default::default());
     let sessions = app.state.sessions.clone();
     let id = run.id;
     let process = tokio::spawn(async move {
@@ -343,7 +343,7 @@ async fn administrative_deletion_drains_registered_processes_and_rejects_late_re
     let admin = administration(&app, temp.path().join("runs"));
     assert_that!(&admin.delete(run.project_id, run.id).await.unwrap()).is_equal_to(1);
     process.await.unwrap();
-    let late = app.state.sessions.begin(start());
+    let late = app.state.sessions.begin(start(), &Default::default());
     assert_that!(&late.is_registered()).is_false();
     assert_that!(&late.cancellation_requested()).is_true();
 }

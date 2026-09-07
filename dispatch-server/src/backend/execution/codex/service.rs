@@ -395,14 +395,17 @@ pub(crate) mod tests {
             .unwrap();
         let events = UiEventBus::new();
         let sessions = ProcessSessionRegistry::new(events.clone());
-        let _active = sessions.begin(ProcessSessionStart {
-            run_id: 7,
-            project_id: 1,
-            project_name: "demo".into(),
-            tool_name: "codex".into(),
-            command: String::new(),
-            working_dir: String::new(),
-        });
+        let _active = sessions.begin(
+            ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".into(),
+                tool_name: "codex".into(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
         let codex = CodexService::new(
             tools,
             temp.path().join("managed-home"),

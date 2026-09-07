@@ -17,7 +17,7 @@ use sea_orm::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 const SOURCE: &str = "Writes are durable after sync.\nOne writer owns the transaction.\nRecovery replays only committed records.\nRoutine helper details stay in source.\n";
 fn doc(id: &str, parents: &[&str], body: &str) -> String {
     format!(
@@ -84,7 +84,7 @@ impl<'a> FakeAgent<'a> {
 impl execution::PassAgent for FakeAgent<'_> {
     async fn execute(
         &self,
-        _shutdown: watch::Receiver<bool>,
+        _cancellation: CancellationToken,
         input: execution::PassInput,
     ) -> Result<()> {
         let store = self.store;
@@ -250,14 +250,97 @@ impl execution::PassAgent for FakeAgent<'_> {
     }
 }
 async fn drive(store: &Store, project_id: i64, job_id: i64, agent: &dyn execution::PassAgent) {
-    let (_tx, rx) = watch::channel(false);
+    let shutdown = CancellationToken::new();
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        service(store).drive_with_agent(rx, project_id, job_id, agent),
+        service(store).drive_with_agent(shutdown, project_id, job_id, agent),
     )
     .await
     .unwrap()
     .unwrap();
+}
+
+struct WaitingAgent {
+    started: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl execution::PassAgent for WaitingAgent {
+    async fn execute(
+        &self,
+        cancellation: CancellationToken,
+        _input: execution::PassInput,
+    ) -> Result<()> {
+        self.started.notify_one();
+        cancellation.cancelled().await;
+        bail!("fixture execution interrupted")
+    }
+}
+
+#[tokio::test]
+async fn shutdown_retains_a_checkpoint_without_recording_user_cancellation() {
+    let (_temp, store, project) = fixture().await;
+    let jobs = service(&store);
+    let job = jobs.start("fixture", request("shutdown")).await.unwrap();
+    let shutdown = CancellationToken::new();
+    let agent = WaitingAgent {
+        started: tokio::sync::Notify::new(),
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let execution = jobs.drive_with_agent(shutdown.clone(), project, job.id, &agent);
+        let stop = async {
+            agent.started.notified().await;
+            shutdown.cancel();
+        };
+        let (result, ()) = tokio::join!(execution, stop);
+        result.unwrap();
+    })
+    .await
+    .unwrap();
+
+    let record = jobs.load(project, job.id).await.unwrap();
+    assert_that!(&record.job().status).is_equal_to(JobStatus::Queued);
+    assert_that!(&record.job().cancel_requested).is_false();
+    assert_that!(&record.job().active_run_id).is_none();
+    assert_that!(&record.job().recovery_attempts).is_equal_to(1);
+    assert_that!(&record.job().run_ids.len()).is_equal_to(1);
+    assert_that!(&record.draft().exists()).is_true();
+    assert_that!(&jobs.sessions.active_run_ids_for_project(project).is_empty()).is_true();
+}
+
+#[tokio::test]
+async fn user_cancellation_stops_the_pass_without_cancelling_the_worker() {
+    let (_temp, store, project) = fixture().await;
+    let jobs = service(&store);
+    let job = jobs.start("fixture", request("cancel-pass")).await.unwrap();
+    let shutdown = CancellationToken::new();
+    let agent = WaitingAgent {
+        started: tokio::sync::Notify::new(),
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let execution = jobs.drive_with_agent(shutdown.clone(), project, job.id, &agent);
+        let cancel = async {
+            agent.started.notified().await;
+            jobs.action("fixture", job.id, JobAction::Cancel)
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(execution, cancel);
+        result.unwrap();
+    })
+    .await
+    .unwrap();
+
+    let record = jobs.load(project, job.id).await.unwrap();
+    assert_that!(&record.job().status).is_equal_to(JobStatus::Cancelled);
+    assert_that!(&record.job().cancel_requested).is_true();
+    assert_that!(&record.job().active_run_id).is_none();
+    assert_that!(&record.job().recovery_attempts).is_equal_to(0);
+    assert_that!(&record.draft().exists()).is_true();
+    assert_that!(&shutdown.is_cancelled()).is_false();
+    assert_that!(&jobs.sessions.active_run_ids_for_project(project).is_empty()).is_true();
 }
 
 #[tokio::test]
@@ -736,13 +819,13 @@ async fn real_agent_smoke_test() {
     request.budget_seconds = 600;
     request.context="Initialize this tiny file-log fixture. Read its complete source through the scoped interface, retain durability and recovery exceptions without inventing concurrency guarantees. Use one or two documents. Derive one ordinary-plus-exception reading question and synthesize early. Keep this smoke test brief.".into();
     let job = service(&store).start("fixture", request).await.unwrap();
-    let (_tx, rx) = watch::channel(false);
+    let shutdown = CancellationToken::new();
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(660),
         crate::backend::application::Application::from_store(store.clone(), url)
             .state
             .jobs
-            .drive(rx, project, job.id),
+            .drive(shutdown, project, job.id),
     )
     .await;
     let record = service(&store).detail("fixture", job.id).await.unwrap();
@@ -1260,14 +1343,17 @@ async fn run_cancellation_form_persists_knowledge_cancellation_before_signalling
         .await
         .unwrap()
         .unwrap();
-    let registration = app.state.sessions.begin(ProcessSessionStart {
-        run_id: run.id,
-        project_id: project,
-        project_name: "fixture".into(),
-        tool_name: "codex".into(),
-        command: "fixture".into(),
-        working_dir: "fixture".into(),
-    });
+    let registration = app.state.sessions.begin(
+        ProcessSessionStart {
+            run_id: run.id,
+            project_id: project,
+            project_name: "fixture".into(),
+            tool_name: "codex".into(),
+            command: "fixture".into(),
+            working_dir: "fixture".into(),
+        },
+        &Default::default(),
+    );
     assert_that!(&app.state.run_control.cancel("other", run.id).await.is_err()).is_true();
     assert_that!(&registration.cancellation_requested()).is_false();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

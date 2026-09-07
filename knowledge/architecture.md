@@ -125,6 +125,14 @@ Runtime and filesystem adapters execute process, workspace, and file operations 
 and supervise service operations with explicit cancellation and shutdown ownership. Shared execution receives prepared
 inputs and returns execution outcomes; it does not call back into item or knowledge-job workflows.
 
+Cancellation uses Tokio cancellation tokens with explicit lifetime ownership. The application owns worker shutdown,
+the automation supervisor owns each active project's cancellation, and each registered run owns a child token. Parent
+cancellation reaches existing and subsequently created children; cancelling or completing a run leaves its parent and
+sibling runs active. Cancellation remains observable even when no task is waiting. Owning workflows register sessions
+before preparation and pass their run token into shared execution. Execution updates the existing session's process
+metadata and observes its cancellation. Session completion and supervisor removal cancel their owned tokens;
+application shutdown cancels workers and active sessions before awaiting their completion.
+
 ### Database Query Responsibilities
 
 Filtering over persisted data happens in the database wherever it preserves the domain semantics. Repositories compose

@@ -4,7 +4,7 @@ use super::{
 };
 use rootcause::Result;
 use std::sync::Arc;
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 /// Shared process execution receives prepared inputs and returns an outcome to its owning workflow.
 /// It never claims work items, changes knowledge jobs, or opens the operational database.
 pub(crate) struct AgentExecutionService {
@@ -35,7 +35,7 @@ impl AgentExecutionService {
     pub(crate) async fn execute(
         &self,
         mut start: AgentProcessStart,
-        cancellation: Option<watch::Receiver<bool>>,
+        cancellation: CancellationToken,
     ) -> Result<AgentProcessOutput> {
         if start.environment.is_none() {
             start.environment = Some(self.git.agent_environment(

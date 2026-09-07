@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     backend::{execution::bounded_output, storage::utc_now},
@@ -37,37 +37,43 @@ enum DeletionState {
 
 #[derive(Debug)]
 pub(crate) enum ProcessSessionRegistration {
-    Registered { cancellation: watch::Receiver<bool> },
+    Registered { cancellation: CancellationToken },
     RejectedByProjectDeletion,
     RejectedByRunDeletion,
     RejectedByCodexMaintenance,
 }
 
 impl ProcessSessionRegistration {
+    #[cfg(test)]
     pub(crate) fn cancellation_requested(&self) -> bool {
         match self {
-            Self::Registered { cancellation } => *cancellation.borrow(),
+            Self::Registered { cancellation } => cancellation.is_cancelled(),
             Self::RejectedByRunDeletion
             | Self::RejectedByProjectDeletion
             | Self::RejectedByCodexMaintenance => true,
         }
     }
 
-    pub(crate) async fn wait_for_cancellation(&mut self) {
-        let Self::Registered { cancellation } = self else {
-            return;
-        };
-        loop {
-            if *cancellation.borrow() {
-                return;
-            }
-            if cancellation.changed().await.is_err() {
-                return;
+    pub(crate) fn into_cancellation(self) -> CancellationToken {
+        match self {
+            Self::Registered { cancellation } => cancellation,
+            Self::RejectedByRunDeletion
+            | Self::RejectedByProjectDeletion
+            | Self::RejectedByCodexMaintenance => {
+                let cancellation = CancellationToken::new();
+                cancellation.cancel();
+                cancellation
             }
         }
     }
 
     #[cfg(test)]
+    pub(crate) async fn wait_for_cancellation(&self) {
+        if let Self::Registered { cancellation } = self {
+            cancellation.cancelled().await;
+        }
+    }
+
     pub(crate) fn is_registered(&self) -> bool {
         matches!(self, Self::Registered { .. })
     }
@@ -134,7 +140,14 @@ impl ProcessSessionRegistry {
         }
     }
 
-    pub(crate) fn begin(&self, start: ProcessSessionStart) -> ProcessSessionRegistration {
+    /// Registers a run before preparation. Its child token retains cancellation even when no
+    /// execution task is waiting, and cancelling the run never cancels its parent or siblings.
+    /// Repeated registration preserves the original run lifetime; execution updates metadata only.
+    pub(crate) fn begin(
+        &self,
+        start: ProcessSessionStart,
+        parent: &CancellationToken,
+    ) -> ProcessSessionRegistration {
         let mut state = self.lock_state();
         if state.project_lifecycle.contains_key(&start.project_id) {
             return ProcessSessionRegistration::RejectedByProjectDeletion;
@@ -152,16 +165,12 @@ impl ProcessSessionRegistry {
         let now = utc_now();
         let project_name = start.project_name.clone();
         let run_id = start.run_id;
-        if let Some(session) = state.sessions.get_mut(&run_id) {
-            session.tool_name = start.tool_name;
-            session.command = start.command;
-            session.working_dir = start.working_dir;
-            session.updated_at = now;
+        if let Some(session) = state.sessions.get(&run_id) {
             return ProcessSessionRegistration::Registered {
-                cancellation: session.cancel_tx.subscribe(),
+                cancellation: session.cancellation.clone(),
             };
         }
-        let (cancel_tx, cancellation) = watch::channel(false);
+        let cancellation = parent.child_token();
         let session = ProcessSession {
             run_id: start.run_id,
             project_id: start.project_id,
@@ -171,7 +180,7 @@ impl ProcessSessionRegistry {
             working_dir: start.working_dir,
             process_id: None,
             output: Vec::new(),
-            cancel_tx,
+            cancellation: cancellation.clone(),
             started_at: now.clone(),
             updated_at: now,
         };
@@ -180,6 +189,14 @@ impl ProcessSessionRegistry {
         self.events
             .publish_agent_run_changed(&project_name, run_id, None);
         ProcessSessionRegistration::Registered { cancellation }
+    }
+
+    pub(crate) fn update_command(&self, run_id: i64, command: String, working_dir: String) {
+        if let Some(session) = self.lock_state().sessions.get_mut(&run_id) {
+            session.command = command;
+            session.working_dir = working_dir;
+            session.updated_at = utc_now();
+        }
     }
 
     /// Runs a synchronous project-runtime registration while holding the same lifecycle boundary
@@ -217,6 +234,7 @@ impl ProcessSessionRegistry {
     pub fn finish(&self, run_id: i64) {
         let session = self.lock_state().sessions.remove(&run_id);
         if let Some(session) = session {
+            session.cancellation.cancel();
             self.events
                 .publish_agent_run_changed(&session.project_name, run_id, None);
         }
@@ -298,17 +316,17 @@ impl ProcessSessionRegistry {
     }
 
     pub fn cancel_project(&self, project_id: i64) -> usize {
-        let senders = self
+        let cancellations = self
             .lock_state()
             .sessions
             .values()
             .filter(|session| session.project_id == project_id)
-            .map(|session| session.cancel_tx.clone())
+            .map(|session| session.cancellation.clone())
             .collect::<Vec<_>>();
-        for sender in &senders {
-            let _ = sender.send(true);
+        for cancellation in &cancellations {
+            cancellation.cancel();
         }
-        senders.len()
+        cancellations.len()
     }
 
     /// Prevents newly registered sessions for this project from starting and cancels existing
@@ -330,15 +348,15 @@ impl ProcessSessionRegistry {
                 });
             }
         }
-        let senders = state
+        let cancellations = state
             .sessions
             .values()
             .filter(|session| session.project_id == project_id)
-            .map(|session| session.cancel_tx.clone())
+            .map(|session| session.cancellation.clone())
             .collect::<Vec<_>>();
         drop(state);
-        for sender in &senders {
-            let _ = sender.send(true);
+        for cancellation in &cancellations {
+            cancellation.cancel();
         }
         Ok(ProjectDeletionAdmission {
             registry: self.clone(),
@@ -361,29 +379,29 @@ impl ProcessSessionRegistry {
     }
 
     pub fn cancel_all(&self) -> usize {
-        let senders = self
+        let cancellations = self
             .lock_state()
             .sessions
             .values()
-            .map(|session| session.cancel_tx.clone())
+            .map(|session| session.cancellation.clone())
             .collect::<Vec<_>>();
-        for sender in &senders {
-            let _ = sender.send(true);
+        for cancellation in &cancellations {
+            cancellation.cancel();
         }
-        senders.len()
+        cancellations.len()
     }
 
     pub fn cancel_run(&self, project_name: &str, run_id: i64) -> bool {
-        let sender = self
+        let cancellation = self
             .lock_state()
             .sessions
             .get(&run_id)
             .filter(|session| session.project_name == project_name)
-            .map(|session| session.cancel_tx.clone());
-        let Some(sender) = sender else {
+            .map(|session| session.cancellation.clone());
+        let Some(cancellation) = cancellation else {
             return false;
         };
-        let _ = sender.send(true);
+        cancellation.cancel();
         true
     }
 }
@@ -404,7 +422,7 @@ pub struct ProcessSessionStart {
     pub working_dir: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ProcessSession {
     run_id: i64,
     project_id: i64,
@@ -414,9 +432,15 @@ struct ProcessSession {
     working_dir: String,
     process_id: Option<i64>,
     output: Vec<AgentRunOutputPiece>,
-    cancel_tx: watch::Sender<bool>,
+    cancellation: CancellationToken,
     started_at: String,
     updated_at: String,
+}
+
+impl Drop for ProcessSession {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
 }
 
 impl From<&ProcessSession> for ProcessSessionView {
@@ -455,17 +479,89 @@ mod tests {
     use super::*;
     use assertr::prelude::*;
 
+    fn start(run_id: i64) -> ProcessSessionStart {
+        ProcessSessionStart {
+            run_id,
+            project_id: 1,
+            project_name: "demo".into(),
+            tool_name: "codex".into(),
+            command: String::new(),
+            working_dir: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_survives_the_gap_between_registration_and_execution() {
+        let sessions = ProcessSessionRegistry::default();
+        let parent = CancellationToken::new();
+        drop(sessions.begin(start(7), &parent));
+
+        assert_that!(&sessions.cancel_run("demo", 7)).is_true();
+        sessions.update_command(7, "codex app-server".into(), "/tmp/demo".into());
+        let execution = sessions.begin(start(7), &parent);
+
+        assert_that!(&execution.cancellation_requested()).is_true();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            execution.wait_for_cancellation(),
+        )
+        .await
+        .unwrap();
+        let session = sessions.get_for_project(1, 7).unwrap();
+        assert_that!(&session.command).is_equal_to("codex app-server");
+        assert_that!(&session.working_dir).is_equal_to("/tmp/demo");
+        assert_that!(&parent.is_cancelled()).is_false();
+    }
+
+    #[test]
+    fn run_cancellation_and_completion_leave_siblings_and_parent_active() {
+        let sessions = ProcessSessionRegistry::default();
+        let parent = CancellationToken::new();
+        let first = sessions.begin(start(7), &parent);
+        let second = sessions.begin(start(8), &parent);
+        let third = sessions.begin(start(9), &parent);
+
+        sessions.cancel_run("demo", 7);
+        sessions.finish(8);
+
+        assert_that!(&first.cancellation_requested()).is_true();
+        assert_that!(&second.cancellation_requested()).is_true();
+        assert_that!(&third.cancellation_requested()).is_false();
+        assert_that!(&parent.is_cancelled()).is_false();
+
+        parent.cancel();
+
+        assert_that!(&third.cancellation_requested()).is_true();
+        assert_that!(&sessions.begin(start(10), &parent).cancellation_requested()).is_true();
+    }
+
+    #[test]
+    fn dropping_the_last_registry_owner_cancels_its_sessions() {
+        let sessions = ProcessSessionRegistry::default();
+        let owner = sessions.clone();
+        let registration = sessions.begin(start(7), &Default::default());
+
+        drop(sessions);
+        assert_that!(&registration.cancellation_requested()).is_false();
+
+        drop(owner);
+        assert_that!(&registration.cancellation_requested()).is_true();
+    }
+
     #[tokio::test]
     async fn session_output_is_retained_in_memory() {
         let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-        sessions.begin(ProcessSessionStart {
-            run_id: 7,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: "codex".to_owned(),
-            command: "codex app-server".to_owned(),
-            working_dir: "/tmp/demo".to_owned(),
-        });
+        sessions.begin(
+            ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: "codex app-server".to_owned(),
+                working_dir: "/tmp/demo".to_owned(),
+            },
+            &Default::default(),
+        );
 
         sessions.append_output_piece(7, test_piece(1, "line one"));
 
@@ -480,14 +576,17 @@ mod tests {
     fn active_run_ids_do_not_materialize_session_output() {
         let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
         for (run_id, project_id) in [(9, 1), (7, 1), (8, 2)] {
-            sessions.begin(ProcessSessionStart {
-                run_id,
-                project_id,
-                project_name: format!("project-{project_id}"),
-                tool_name: "codex".to_owned(),
-                command: "codex app-server".to_owned(),
-                working_dir: "/tmp/demo".to_owned(),
-            });
+            sessions.begin(
+                ProcessSessionStart {
+                    run_id,
+                    project_id,
+                    project_name: format!("project-{project_id}"),
+                    tool_name: "codex".to_owned(),
+                    command: "codex app-server".to_owned(),
+                    working_dir: "/tmp/demo".to_owned(),
+                },
+                &Default::default(),
+            );
             sessions.append_output_piece(run_id, test_piece(1, "large session output"));
         }
 
@@ -497,14 +596,17 @@ mod tests {
     #[tokio::test]
     async fn session_can_be_looked_up_and_cancelled_by_run() {
         let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-        let mut cancellation = sessions.begin(ProcessSessionStart {
-            run_id: 7,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: "codex".to_owned(),
-            command: "codex app-server".to_owned(),
-            working_dir: "/tmp/demo".to_owned(),
-        });
+        let cancellation = sessions.begin(
+            ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: "codex app-server".to_owned(),
+                working_dir: "/tmp/demo".to_owned(),
+            },
+            &Default::default(),
+        );
 
         assert_that!(&(sessions.get_for_project(1, 7).is_some())).is_true();
         assert_that!(&(sessions.get_for_project(2, 7).is_none())).is_true();
@@ -518,14 +620,17 @@ mod tests {
     #[tokio::test]
     async fn successful_project_deletion_permanently_rejects_old_project_sessions() {
         let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-        let mut existing = sessions.begin(ProcessSessionStart {
-            run_id: 7,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: "codex".to_owned(),
-            command: String::new(),
-            working_dir: "/tmp/demo".to_owned(),
-        });
+        let existing = sessions.begin(
+            ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: "/tmp/demo".to_owned(),
+            },
+            &Default::default(),
+        );
 
         let deletion = sessions.begin_project_deletion(1).unwrap();
         existing.wait_for_cancellation().await;
@@ -540,28 +645,34 @@ mod tests {
         let other_deletion = sessions.begin_project_deletion(2).unwrap();
         drop(other_deletion);
 
-        let during_deletion = sessions.begin(ProcessSessionStart {
-            run_id: 8,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: "codex".to_owned(),
-            command: String::new(),
-            working_dir: "/tmp/demo".to_owned(),
-        });
+        let during_deletion = sessions.begin(
+            ProcessSessionStart {
+                run_id: 8,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: "/tmp/demo".to_owned(),
+            },
+            &Default::default(),
+        );
         assert_that!(&(during_deletion.cancellation_requested())).is_true();
         assert_that!(&(!during_deletion.is_registered())).is_true();
         assert_that!(&(sessions.get_for_project(1, 8).is_none())).is_true();
         assert_that!(&(sessions.list_for_project(1).len())).is_equal_to(1);
 
         deletion.mark_deleted();
-        let after_deletion = sessions.begin(ProcessSessionStart {
-            run_id: 9,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: "codex".to_owned(),
-            command: String::new(),
-            working_dir: "/tmp/demo".to_owned(),
-        });
+        let after_deletion = sessions.begin(
+            ProcessSessionStart {
+                run_id: 9,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: "/tmp/demo".to_owned(),
+            },
+            &Default::default(),
+        );
         assert_that!(&(after_deletion.cancellation_requested())).is_true();
         assert_that!(&(!after_deletion.is_registered())).is_true();
         assert_that!(&(sessions.get_for_project(1, 9).is_none())).is_true();
@@ -573,14 +684,17 @@ mod tests {
         )
         .is_true();
 
-        let replacement = sessions.begin(ProcessSessionStart {
-            run_id: 10,
-            project_id: 3,
-            project_name: "demo".to_owned(),
-            tool_name: "codex".to_owned(),
-            command: String::new(),
-            working_dir: "/tmp/demo-replacement".to_owned(),
-        });
+        let replacement = sessions.begin(
+            ProcessSessionStart {
+                run_id: 10,
+                project_id: 3,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: "/tmp/demo-replacement".to_owned(),
+            },
+            &Default::default(),
+        );
         assert_that!(&(!replacement.cancellation_requested())).is_true();
         assert_that!(&(replacement.is_registered())).is_true();
     }
@@ -592,14 +706,17 @@ mod tests {
 
         drop(deletion);
 
-        let after_abort = sessions.begin(ProcessSessionStart {
-            run_id: 9,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: "codex".to_owned(),
-            command: String::new(),
-            working_dir: String::new(),
-        });
+        let after_abort = sessions.begin(
+            ProcessSessionStart {
+                run_id: 9,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: "codex".to_owned(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
         assert_that!(&(!after_abort.cancellation_requested())).is_true();
         assert_that!(&(after_abort.is_registered())).is_true();
     }
@@ -607,14 +724,17 @@ mod tests {
     #[tokio::test]
     async fn codex_maintenance_refuses_active_sessions() {
         let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-        sessions.begin(ProcessSessionStart {
-            run_id: 7,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: AgentToolName::Codex.as_storage().to_owned(),
-            command: String::new(),
-            working_dir: String::new(),
-        });
+        sessions.begin(
+            ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: AgentToolName::Codex.as_storage().to_owned(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
 
         let admission = sessions.begin_codex_maintenance();
 
@@ -633,14 +753,17 @@ mod tests {
         let maintenance = sessions.begin_codex_maintenance().unwrap();
         let concurrent_sessions = sessions.clone();
         let concurrent = std::thread::spawn(move || {
-            concurrent_sessions.begin(ProcessSessionStart {
-                run_id: 7,
-                project_id: 1,
-                project_name: "demo".to_owned(),
-                tool_name: AgentToolName::Codex.as_storage().to_owned(),
-                command: String::new(),
-                working_dir: String::new(),
-            })
+            concurrent_sessions.begin(
+                ProcessSessionStart {
+                    run_id: 7,
+                    project_id: 1,
+                    project_name: "demo".to_owned(),
+                    tool_name: AgentToolName::Codex.as_storage().to_owned(),
+                    command: String::new(),
+                    working_dir: String::new(),
+                },
+                &Default::default(),
+            )
         })
         .join()
         .unwrap();
@@ -649,14 +772,17 @@ mod tests {
 
         drop(maintenance);
 
-        let admitted = sessions.begin(ProcessSessionStart {
-            run_id: 8,
-            project_id: 1,
-            project_name: "demo".to_owned(),
-            tool_name: AgentToolName::Codex.as_storage().to_owned(),
-            command: String::new(),
-            working_dir: String::new(),
-        });
+        let admitted = sessions.begin(
+            ProcessSessionStart {
+                run_id: 8,
+                project_id: 1,
+                project_name: "demo".to_owned(),
+                tool_name: AgentToolName::Codex.as_storage().to_owned(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
         assert_that!(&(admitted.is_registered())).is_true();
         assert_that!(&(!admitted.cancellation_requested())).is_true();
     }

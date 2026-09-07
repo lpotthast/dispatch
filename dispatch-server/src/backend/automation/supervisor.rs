@@ -5,7 +5,7 @@ use std::{
 };
 
 use rootcause::{Result, prelude::*};
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::backend::execution::sessions::{DeletionAdmissionRejection, ProcessSessionRegistry};
 
@@ -21,7 +21,13 @@ pub(crate) struct AutomationSupervisor {
 #[derive(Debug)]
 struct ProjectAutomation {
     project_name: String,
-    shutdown: watch::Sender<bool>,
+    shutdown: CancellationToken,
+}
+
+impl Drop for ProjectAutomation {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+    }
 }
 
 impl AutomationSupervisor {
@@ -57,12 +63,11 @@ impl AutomationSupervisor {
                 return false;
             }
 
-            let (shutdown, _) = watch::channel(false);
             projects.insert(
                 project_id,
                 ProjectAutomation {
                     project_name: project_name.clone(),
-                    shutdown,
+                    shutdown: CancellationToken::new(),
                 },
             );
             true
@@ -99,9 +104,7 @@ impl AutomationSupervisor {
     fn cancel_project(&self, project_id: i64) {
         let automation = self.lock_projects().remove(&project_id);
         self.sessions.cancel_project(project_id);
-        if let Some(automation) = automation {
-            let _ = automation.shutdown.send(true);
-        }
+        drop(automation);
     }
     pub(crate) fn close_project(&self, project_id: i64, project_name: &str) {
         self.cancel_project(project_id);
@@ -114,9 +117,7 @@ impl AutomationSupervisor {
             .values()
             .map(|automation| automation.project_name.clone())
             .collect::<Vec<_>>();
-        for automation in projects.values() {
-            let _ = automation.shutdown.send(true);
-        }
+        drop(projects);
         self.sessions.cancel_all();
         for project_name in project_names {
             self.events.publish_automation_changed(&project_name);
@@ -137,10 +138,10 @@ impl AutomationSupervisor {
         names
     }
 
-    pub async fn project_cancellations(&self) -> HashMap<i64, watch::Receiver<bool>> {
+    pub async fn project_cancellations(&self) -> HashMap<i64, CancellationToken> {
         self.lock_projects()
             .iter()
-            .map(|(project_id, automation)| (*project_id, automation.shutdown.subscribe()))
+            .map(|(project_id, automation)| (*project_id, automation.shutdown.child_token()))
             .collect()
     }
 }
@@ -189,13 +190,32 @@ pub(crate) mod tests {
         let cancellation = cancellations
             .get(&1)
             .expect("active project should expose cancellation");
-        assert_that!(&(!*cancellation.borrow())).is_true();
+        assert_that!(&(!cancellation.is_cancelled())).is_true();
 
         supervisor.stop_project("demo").await.unwrap();
 
         assert_that!(&(!supervisor.is_project_running(1).await)).is_true();
         assert_that!(&(supervisor.active_project_names().await)).is_equal_to(Vec::<String>::new());
-        assert_that!(&(*cancellation.borrow())).is_true();
+        assert_that!(&(cancellation.is_cancelled())).is_true();
+    }
+
+    #[tokio::test]
+    async fn removing_supervisor_cancels_snapshots_and_restart_has_a_fresh_lifetime() {
+        let (_temp, store) = test_store().await;
+        let supervisor = service(&store, ProcessSessionRegistry::default());
+        supervisor.start_project("demo".into()).await.unwrap();
+        let first = supervisor.project_cancellations().await.remove(&1).unwrap();
+
+        supervisor.close_project(1, "demo");
+        supervisor.start_project("demo".into()).await.unwrap();
+        let second = supervisor.project_cancellations().await.remove(&1).unwrap();
+
+        assert_that!(&first.is_cancelled()).is_true();
+        assert_that!(&second.is_cancelled()).is_false();
+
+        drop(supervisor);
+
+        assert_that!(&second.is_cancelled()).is_true();
     }
 
     #[tokio::test]
@@ -300,17 +320,17 @@ pub(crate) mod tests {
             .start_project("demo".into())
             .await
             .unwrap();
-        let session =
-            app.state
-                .sessions
-                .begin(crate::backend::execution::sessions::ProcessSessionStart {
-                    run_id: run.id,
-                    project_id,
-                    project_name: "demo".into(),
-                    tool_name: "codex".into(),
-                    command: String::new(),
-                    working_dir: String::new(),
-                });
+        let session = app.state.sessions.begin(
+            crate::backend::execution::sessions::ProcessSessionStart {
+                run_id: run.id,
+                project_id,
+                project_name: "demo".into(),
+                tool_name: "codex".into(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
         let mut events = app.state.events.subscribe();
         app.state
             .automation_supervisor

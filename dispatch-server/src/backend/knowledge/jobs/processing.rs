@@ -16,7 +16,7 @@ use dispatch_types::{
 };
 use rootcause::Result;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 impl JobService {
     pub(super) async fn prepare(&self, project_id: i64, id: i64) -> Result<()> {
         let _lock = self.coordination.lock().await;
@@ -107,7 +107,7 @@ impl JobService {
     }
     pub(crate) async fn drive(
         &self,
-        shutdown: watch::Receiver<bool>,
+        shutdown: CancellationToken,
         project_id: i64,
         id: i64,
     ) -> Result<()> {
@@ -116,14 +116,14 @@ impl JobService {
     }
     pub(crate) async fn drive_with_agent(
         &self,
-        mut shutdown: watch::Receiver<bool>,
+        shutdown: CancellationToken,
         project_id: i64,
         id: i64,
         agent: &dyn PassAgent,
     ) -> Result<()> {
         self.prepare(project_id, id).await?;
         loop {
-            if *shutdown.borrow() {
+            if shutdown.is_cancelled() {
                 return Ok(());
             }
             let record = self.load(project_id, id).await?;
@@ -146,18 +146,21 @@ impl JobService {
             let Some((record, mut run, project, settings)) =
                 self.begin_pass(project_id, id, timeout).await?
             else {
-                tokio::select! {_=tokio::time::sleep(Duration::from_secs(2))=>{},_=shutdown.changed()=>{}}
+                tokio::select! {_=tokio::time::sleep(Duration::from_secs(2))=>{},_=shutdown.cancelled()=>{}}
                 continue;
             };
-            let registration = self.sessions.begin(ProcessSessionStart {
-                run_id: run.id,
-                project_id,
-                project_name: project.name.clone(),
-                tool_name: "codex".into(),
-                command: "Knowledge discovery pass".into(),
-                working_dir: record.draft().to_string_lossy().into_owned(),
-            });
-            if registration.cancellation_requested() {
+            let registration = self.sessions.begin(
+                ProcessSessionStart {
+                    run_id: run.id,
+                    project_id,
+                    project_name: project.name.clone(),
+                    tool_name: "codex".into(),
+                    command: "Knowledge discovery pass".into(),
+                    working_dir: record.draft().to_string_lossy().into_owned(),
+                },
+                &shutdown,
+            );
+            if !registration.is_registered() {
                 self.finish_interrupted(project_id, run.id, "Project admission closed")
                     .await?;
                 return Ok(());
@@ -178,7 +181,7 @@ impl JobService {
                 settings,
                 artifact_dir: record.artifact_dir.into(),
             };
-            let execution = agent.execute(shutdown.clone(), input);
+            let execution = agent.execute(registration.into_cancellation(), input);
             tokio::pin!(execution);
             let result = loop {
                 tokio::select! {
@@ -212,7 +215,7 @@ impl JobService {
                 self.persist(&mut record).await?;
                 return Ok(());
             }
-            if *shutdown.borrow() {
+            if shutdown.is_cancelled() {
                 record.job_mut().status = JobStatus::Queued;
                 record.job_mut().recovery_attempts += 1;
                 record.job_mut().progress =

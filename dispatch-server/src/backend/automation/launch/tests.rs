@@ -34,14 +34,17 @@ async fn awaited_automation_execution_uses_a_fresh_task_boundary() {
 #[tokio::test]
 async fn awaited_automation_execution_finishes_session_after_caller_is_aborted() {
     let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-    sessions.begin(ProcessSessionStart {
-        run_id: 7,
-        project_id: 1,
-        project_name: "demo".to_owned(),
-        tool_name: "codex".to_owned(),
-        command: "codex app-server".to_owned(),
-        working_dir: "/tmp/demo".to_owned(),
-    });
+    sessions.begin(
+        ProcessSessionStart {
+            run_id: 7,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: "/tmp/demo".to_owned(),
+        },
+        &Default::default(),
+    );
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
     let sessions_for_caller = sessions.clone();
@@ -74,14 +77,17 @@ async fn awaited_automation_execution_finishes_session_after_caller_is_aborted()
 #[tokio::test]
 async fn awaited_automation_execution_finishes_session_after_execution_panics() {
     let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-    sessions.begin(ProcessSessionStart {
-        run_id: 8,
-        project_id: 1,
-        project_name: "demo".to_owned(),
-        tool_name: "codex".to_owned(),
-        command: "codex app-server".to_owned(),
-        working_dir: "/tmp/demo".to_owned(),
-    });
+    sessions.begin(
+        ProcessSessionStart {
+            run_id: 8,
+            project_id: 1,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: "/tmp/demo".to_owned(),
+        },
+        &Default::default(),
+    );
     let sessions_for_execution = sessions.clone();
 
     let result: Result<()> =
@@ -171,7 +177,7 @@ async fn delayed_old_project_session_cannot_claim_same_name_replacement_work() {
     .unwrap();
 
     let cancellation = register_pending_session(&started, Some(&sessions), None);
-    assert_that!(&(cancellation_requested(&cancellation))).is_true();
+    assert_that!(&(cancellation.is_cancelled())).is_true();
     assert_that!(
         &(sessions
             .get_for_project(old_project.id, old_run_id)
@@ -190,14 +196,17 @@ async fn delayed_old_project_session_cannot_claim_same_name_replacement_work() {
     assert_that!(&(result.is_err())).is_true();
     assert_that!(&(unchanged_item.claimed_by)).is_equal_to(None);
 
-    let replacement_session = sessions.begin(ProcessSessionStart {
-        run_id: old_run_id + 1,
-        project_id: replacement.id,
-        project_name: replacement.name,
-        tool_name: "codex".to_owned(),
-        command: String::new(),
-        working_dir: temp.path().to_string_lossy().into_owned(),
-    });
+    let replacement_session = sessions.begin(
+        ProcessSessionStart {
+            run_id: old_run_id + 1,
+            project_id: replacement.id,
+            project_name: replacement.name,
+            tool_name: "codex".to_owned(),
+            command: String::new(),
+            working_dir: temp.path().to_string_lossy().into_owned(),
+        },
+        &Default::default(),
+    );
     assert_that!(&(!replacement_session.cancellation_requested())).is_true();
     assert_that!(&(replacement_session.is_registered())).is_true();
 }
@@ -475,14 +484,17 @@ async fn run_log_uses_active_session_output_when_available() {
         .await
         .unwrap();
     let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-    let _cancel = sessions.begin(ProcessSessionStart {
-        run_id: run.id,
-        project_id: run.project_id,
-        project_name: "demo".to_owned(),
-        tool_name: "codex".to_owned(),
-        command: "codex app-server".to_owned(),
-        working_dir: temp.path().to_string_lossy().into_owned(),
-    });
+    let _cancel = sessions.begin(
+        ProcessSessionStart {
+            run_id: run.id,
+            project_id: run.project_id,
+            project_name: "demo".to_owned(),
+            tool_name: "codex".to_owned(),
+            command: "codex app-server".to_owned(),
+            working_dir: temp.path().to_string_lossy().into_owned(),
+        },
+        &Default::default(),
+    );
     sessions.append_output_piece(
         run.id,
         new_output_piece(

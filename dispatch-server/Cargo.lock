@@ -1416,6 +1416,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-process-tools",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "typetag",

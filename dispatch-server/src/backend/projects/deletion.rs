@@ -446,15 +446,17 @@ mod tests {
             .start_project("demo".to_owned())
             .await
             .unwrap();
-        let mut cancellation =
-            sessions.begin(crate::backend::execution::sessions::ProcessSessionStart {
+        let cancellation = sessions.begin(
+            crate::backend::execution::sessions::ProcessSessionStart {
                 run_id: 99,
                 project_id: old.id,
                 project_name: old.name.clone(),
                 tool_name: "codex".to_owned(),
                 command: String::new(),
                 working_dir: old_workspace.to_string_lossy().into_owned(),
-            });
+            },
+            &Default::default(),
+        );
         let deletion = ProjectDeletionService {
             runs: crate::backend::runs::tests::service(
                 &store,
@@ -493,15 +495,17 @@ mod tests {
         );
         assert_that!(&(duplicate_error.to_string())).contains(expected_error.as_str());
 
-        let during_deletion =
-            sessions.begin(crate::backend::execution::sessions::ProcessSessionStart {
+        let during_deletion = sessions.begin(
+            crate::backend::execution::sessions::ProcessSessionStart {
                 run_id: 100,
                 project_id: old.id,
                 project_name: old.name.clone(),
                 tool_name: "codex".to_owned(),
                 command: String::new(),
                 working_dir: old_workspace.to_string_lossy().into_owned(),
-            });
+            },
+            &Default::default(),
+        );
         assert_that!(&(during_deletion.cancellation_requested())).is_true();
         assert_that!(&(!during_deletion.is_registered())).is_true();
         assert_that!(&(sessions.get_for_project(old.id, 100).is_none())).is_true();
@@ -522,24 +526,28 @@ mod tests {
         .create(project_input("demo", &new_workspace, None))
         .await
         .unwrap();
-        let delayed_old_session =
-            sessions.begin(crate::backend::execution::sessions::ProcessSessionStart {
+        let delayed_old_session = sessions.begin(
+            crate::backend::execution::sessions::ProcessSessionStart {
                 run_id: 101,
                 project_id: old.id,
                 project_name: old.name.clone(),
                 tool_name: "codex".to_owned(),
                 command: String::new(),
                 working_dir: old_workspace.to_string_lossy().into_owned(),
-            });
-        let replacement_session =
-            sessions.begin(crate::backend::execution::sessions::ProcessSessionStart {
+            },
+            &Default::default(),
+        );
+        let replacement_session = sessions.begin(
+            crate::backend::execution::sessions::ProcessSessionStart {
                 run_id: 102,
                 project_id: recreated.id,
                 project_name: recreated.name.clone(),
                 tool_name: "codex".to_owned(),
                 command: String::new(),
                 working_dir: new_workspace.to_string_lossy().into_owned(),
-            });
+            },
+            &Default::default(),
+        );
         let loaded = crate::backend::projects::repository::ProjectRepository::new(store.db())
             .by_name("demo")
             .await
@@ -568,15 +576,17 @@ mod tests {
         .await
         .unwrap();
         let sessions = ProcessSessionRegistry::new(crate::backend::events::UiEventBus::new());
-        let mut cancellation =
-            sessions.begin(crate::backend::execution::sessions::ProcessSessionStart {
+        let cancellation = sessions.begin(
+            crate::backend::execution::sessions::ProcessSessionStart {
                 run_id: 99,
                 project_id: project.id,
                 project_name: project.name.clone(),
                 tool_name: "codex".to_owned(),
                 command: String::new(),
                 working_dir: workspace.to_string_lossy().into_owned(),
-            });
+            },
+            &Default::default(),
+        );
         let deletion = ProjectDeletionService {
             runs: crate::backend::runs::tests::service(
                 &store,

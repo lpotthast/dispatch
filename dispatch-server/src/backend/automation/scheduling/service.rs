@@ -25,7 +25,8 @@ use dispatch_types::{
 use rootcause::Result;
 use std::{collections::HashMap, sync::Arc};
 use time::OffsetDateTime;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 pub(crate) struct SchedulerService {
     transactions: Arc<TransactionManager>,
     projects: Arc<ProjectRepository>,
@@ -67,7 +68,7 @@ impl SchedulerService {
     pub(crate) async fn run_due(
         &self,
         active_project_ids: Option<&[i64]>,
-        cancellations: Option<&HashMap<i64, watch::Receiver<bool>>>,
+        cancellations: Option<&HashMap<i64, CancellationToken>>,
     ) -> Result<Vec<TriggerRunOutcome>> {
         let _permit = self.coordination.lock().await;
         let cancellation_for = |id| cancellations.and_then(|map| map.get(&id)).cloned();
@@ -180,7 +181,7 @@ impl SchedulerService {
     pub(crate) async fn run_next(
         &self,
         project: &str,
-        cancellation: Option<watch::Receiver<bool>>,
+        cancellation: Option<CancellationToken>,
     ) -> Result<Option<TriggerRunOutcome>> {
         let tx = self.transactions.begin().await?;
         let settings = self.projects.settings_in(&tx, project).await?;
@@ -255,7 +256,7 @@ impl SchedulerService {
         &self,
         project: &str,
         candidates: Vec<WorkItemAutomationCandidate>,
-        cancellation: Option<watch::Receiver<bool>>,
+        cancellation: Option<CancellationToken>,
     ) -> Result<Option<TriggerRunOutcome>> {
         let max = candidates
             .iter()
@@ -312,7 +313,7 @@ impl SchedulerService {
         project: &str,
         rule: AutomationTriggerView,
         item_id: Option<i64>,
-        cancellation: Option<watch::Receiver<bool>>,
+        cancellation: Option<CancellationToken>,
     ) -> Option<TriggerRunOutcome> {
         if rule.effect == AutomationEffect::ProduceWork {
             let result = self.produce(project, &rule).await;
@@ -380,7 +381,7 @@ impl SchedulerService {
         project: &str,
         rule: AutomationTriggerView,
         item_id: Option<i64>,
-        cancellation: Option<watch::Receiver<bool>>,
+        cancellation: Option<CancellationToken>,
     ) -> TriggerRunOutcome {
         let result: Result<_> = async {
             let target = if let Some(id) = item_id {
