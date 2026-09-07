@@ -1,3 +1,4 @@
+use crate::{CodexAppServerStatusView, ProjectView};
 use serde::{Deserialize, Serialize};
 
 pub const REPOSITORY_DURATION_METRIC: &str = "dispatch_repository_operation_duration_seconds";
@@ -49,4 +50,13 @@ pub enum MetricValueView {
 pub struct MetricBucketView {
     pub upper_bound: Option<f64>,
     pub count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct MetricsPageData {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub selected_project: Option<String>,
+    pub codex_status: CodexAppServerStatusView,
+    pub metrics: BackendMetricsSnapshot,
 }

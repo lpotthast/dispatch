@@ -1,0 +1,10 @@
+pub(crate) mod components;
+pub(crate) mod creation;
+pub(crate) mod crud;
+pub(crate) mod detail;
+pub(crate) mod form;
+pub(crate) mod label_keys;
+pub(crate) mod service;
+pub(crate) mod states;
+pub(crate) mod store;
+pub(crate) mod types;

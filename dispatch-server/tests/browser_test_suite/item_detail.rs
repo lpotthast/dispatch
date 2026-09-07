@@ -69,6 +69,14 @@ impl BrowserTest<DispatchTestApp> for ItemDetailTest {
         assert_board_active_run_context(driver, app, item_url.as_str()).await?;
         find(driver, By::Css("section.item-labels")).await?;
         assert_state_label_dropdown_and_move(driver).await?;
+        let comment_draft = find(driver, By::Css("section.comments textarea[name='body']")).await?;
+        replace_element_value(
+            &comment_draft,
+            "Keep this unsaved comment during a label refresh",
+            "comment draft",
+        )
+        .await?;
+        let editor = find(driver, By::Css(".crudkit-item-detail")).await?;
         send_keys(
             driver,
             By::Css(".label-add-controls input[name='key']"),
@@ -83,6 +91,14 @@ impl BrowserTest<DispatchTestApp> for ItemDetailTest {
         .await?;
         submit_label_add_form(driver).await?;
         find(driver, By::Css(".label-row[data-label-key='severity']")).await?;
+        assert_that!(element_value(&comment_draft, "comment draft after label refresh").await?)
+            .is_equal_to("Keep this unsaved comment during a label refresh");
+        assert_that!(editor.element_id()).is_equal_to(
+            find(driver, By::Css(".crudkit-item-detail"))
+                .await?
+                .element_id(),
+        );
+        replace_element_value(&comment_draft, "", "comment draft cleanup").await?;
         assert_label_add_preserved_item_page(driver).await?;
         assert_item_label_update_delete_flow(driver).await?;
 

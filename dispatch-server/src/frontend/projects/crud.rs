@@ -1,0 +1,476 @@
+use crate::frontend::crudkit::*;
+use crate::frontend::projects::form::Project as CrudProject;
+use crate::frontend::projects::form::*;
+
+#[component]
+pub(crate) fn ProjectsPanel(api_base_url: String) -> impl IntoView + 'static {
+    view! {
+        <section class="project-management panel">
+            <div class="panel-heading">
+                <h2>"Projects"</h2>
+            </div>
+            <div class="crudkit-projects" data-crudkit-leptos="projects">
+                <ProjectsCrudkitInstance api_base_url/>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn ProjectsCrudkitInstance(api_base_url: String) -> impl IntoView + 'static {
+    let (context, set_context) = signal(None::<CrudInstanceContext>);
+    reload_crudkit_on_live_event(context, |event| {
+        matches!(
+            event,
+            UiEvent::ProjectListChanged { .. }
+                | UiEvent::ProjectChanged { .. }
+                | UiEvent::ProjectDeleted { .. }
+        )
+    });
+    let config = projects_crudkit_config(api_base_url);
+
+    view! {
+        <CrudInstance
+            name="projects"
+            config
+            on_context_created=Callback::new(move |context| set_context.set(Some(context)))
+        />
+    }
+}
+
+fn projects_crudkit_config(api_base_url: String) -> CrudInstanceConfig {
+    CrudInstanceConfig {
+        api_base_url,
+        initial_view: CrudView::table(),
+        list_columns: vec![
+            Header::showing(
+                ReadProjectField::Id,
+                HeaderOptions {
+                    display_name: "#".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::Name,
+                HeaderOptions {
+                    display_name: "Project key".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::DisplayName,
+                HeaderOptions {
+                    display_name: "Display name".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::Path,
+                HeaderOptions {
+                    display_name: "Path".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::KnowledgeDirectory,
+                HeaderOptions {
+                    display_name: "Knowledge".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::PathExists,
+                HeaderOptions {
+                    display_name: "Path status".into(),
+                    min_width: true,
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::WorkspaceMode,
+                HeaderOptions {
+                    display_name: "Workspace".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::DefaultAgentModel,
+                HeaderOptions {
+                    display_name: "Model".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::DefaultAgentReasoningEffort,
+                HeaderOptions {
+                    display_name: "Reasoning".into(),
+                    ..Default::default()
+                },
+            ),
+            Header::showing(
+                ReadProjectField::UpdatedAt,
+                HeaderOptions {
+                    display_name: "Updated".into(),
+                    ..Default::default()
+                },
+            ),
+        ],
+        create_elements: CreateElements::Custom(vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::create_field(
+                    CreateProjectField::Name,
+                    FieldOptions {
+                        label: Some(Label::new("Project key")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateProjectField::DisplayName,
+                    FieldOptions {
+                        label: Some(Label::new("Display name")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateProjectField::Path,
+                    FieldOptions {
+                        label: Some(Label::new("Path")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateProjectField::DefaultAgentModel,
+                    FieldOptions {
+                        label: Some(Label::new("Default model")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::create_field(
+                    CreateProjectField::DefaultAgentReasoningEffort,
+                    FieldOptions {
+                        label: Some(Label::new("Default reasoning")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))]),
+        elements: vec![Elem::Enclosing(Enclosing::None(Group {
+            layout: Layout::default(),
+            children: vec![
+                Elem::field(
+                    CrudProject::Id,
+                    FieldOptions {
+                        disabled: true,
+                        label: Some(Label::new("ID")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::DisplayName,
+                    FieldOptions {
+                        label: Some(Label::new("Display name")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::Path,
+                    FieldOptions {
+                        label: Some(Label::new("Path")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::KnowledgeDirectory,
+                    FieldOptions {
+                        label: Some(Label::new("Knowledge directory")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::WorkspaceMode,
+                    FieldOptions {
+                        label: Some(Label::new("Workspace")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::MaxCodeEditAgents,
+                    FieldOptions {
+                        label: Some(Label::new("Max agents")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::MaxReadOnlyAgents,
+                    FieldOptions {
+                        label: Some(Label::new("Read-only agents")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::CreatePr,
+                    FieldOptions {
+                        label: Some(Label::new("Create PR")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::AutoCommit,
+                    FieldOptions {
+                        label: Some(Label::new("Auto-Commit")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::CommitStandard,
+                    FieldOptions {
+                        label: Some(Label::new("Commit standard")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::RevertStrategy,
+                    FieldOptions {
+                        label: Some(Label::new("Failure revert")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::StaleClaimMinutes,
+                    FieldOptions {
+                        label: Some(Label::new("Stale claim minutes")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::WorktreeCleanupPolicy,
+                    FieldOptions {
+                        label: Some(Label::new("Worktree cleanup")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::DefaultAgentTool,
+                    FieldOptions {
+                        label: Some(Label::new("Default tool")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::DefaultAgentModel,
+                    FieldOptions {
+                        label: Some(Label::new("Default model")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::DefaultAgentReasoningEffort,
+                    FieldOptions {
+                        label: Some(Label::new("Default reasoning")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::AgentSandboxMode,
+                    FieldOptions {
+                        label: Some(Label::new("Sandbox mode")),
+                        ..Default::default()
+                    },
+                ),
+                Elem::field(
+                    ProjectField::AgentExtraWritableRoots,
+                    FieldOptions {
+                        label: Some(Label::new("Extra writable roots")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        }))],
+        order_by: indexmap! {
+            ReadProject::Name.into() => Order::Asc,
+        },
+        items_per_page: ItemsPerPage::default(),
+        page_nr: PageNr::first(),
+        base_condition: None,
+        resource_name: CrudProjectResource::resource_name().to_owned(),
+        reqwest_executor: Arc::new(NewClientPerRequestExecutor),
+        model_handler: ModelHandler::new::<CreateProject, ReadProject, CrudProject>(),
+        actions: vec![],
+        entity_actions: vec![],
+        builtin_view_controls: CrudBuiltinViewControls::default(),
+        view_registry: CrudViewRegistry::default(),
+        read_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                ReadProjectField::PathExists,
+                project_path_status_renderer::<DynReadField>(),
+            )
+            .register(
+                ReadProjectField::DefaultAgentModel,
+                agent_model_field_renderer::<DynReadField>(
+                    Some("Codex default"),
+                    Some("default_agent_reasoning_effort"),
+                ),
+            )
+            .build(),
+        create_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                CreateProjectField::Path,
+                project_path_field_renderer::<DynCreateField>(),
+            )
+            .register(
+                CreateProjectField::DefaultAgentModel,
+                agent_model_field_renderer::<DynCreateField>(
+                    None,
+                    Some("default_agent_reasoning_effort"),
+                ),
+            )
+            .register(
+                CreateProjectField::DefaultAgentReasoningEffort,
+                agent_reasoning_field_renderer::<DynCreateField>(None, Some("default_agent_model")),
+            )
+            .build(),
+        update_field_renderer: FieldRendererRegistry::builder()
+            .register(
+                ProjectField::Path,
+                project_path_field_renderer::<DynUpdateField>(),
+            )
+            .register(
+                ProjectField::WorkspaceMode,
+                select_field_renderer::<DynUpdateField>(
+                    &[
+                        ("current_branch", "current_branch"),
+                        ("git_worktree", "git_worktree"),
+                        ("git_branch", "git_branch"),
+                    ],
+                    false,
+                ),
+            )
+            .register(
+                ProjectField::WorktreeCleanupPolicy,
+                select_field_renderer::<DynUpdateField>(
+                    &[("manual", "manual"), ("after_success", "after_success")],
+                    false,
+                ),
+            )
+            .register(
+                ProjectField::RevertStrategy,
+                select_field_renderer::<DynUpdateField>(
+                    &[("manual", "manual"), ("git_reset", "git_reset")],
+                    false,
+                ),
+            )
+            .register(
+                ProjectField::DefaultAgentTool,
+                select_field_renderer::<DynUpdateField>(&[("codex", "codex")], false),
+            )
+            .register(
+                ProjectField::DefaultAgentModel,
+                agent_model_field_renderer::<DynUpdateField>(
+                    Some("Codex default"),
+                    Some("default_agent_reasoning_effort"),
+                ),
+            )
+            .register(
+                ProjectField::DefaultAgentReasoningEffort,
+                agent_reasoning_field_renderer::<DynUpdateField>(
+                    Some("Codex default"),
+                    Some("default_agent_model"),
+                ),
+            )
+            .register(
+                ProjectField::AgentSandboxMode,
+                select_field_renderer::<DynUpdateField>(
+                    &[
+                        ("workspace_write", "workspace_write"),
+                        ("danger_full_access", "danger_full_access"),
+                    ],
+                    false,
+                ),
+            )
+            .register(
+                ProjectField::AgentExtraWritableRoots,
+                multiline_text_field_renderer::<DynUpdateField>(
+                    "One absolute path per line; ~ is expanded on save.",
+                ),
+            )
+            .build(),
+    }
+}
+
+pub(crate) fn project_path_field_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+    FieldRenderer::new(
+        move |_signals, _field: F, field_mode, field_options, value, value_changed| {
+            let current =
+                Signal::derive(move || value.value.get().as_string().cloned().unwrap_or_default());
+
+            #[cfg(feature = "ssr")]
+            let pick_folder = Action::new(|_: &()| async {});
+            #[cfg(not(feature = "ssr"))]
+            let service = crate::frontend::projects::service::project_service();
+            #[cfg(not(feature = "ssr"))]
+            let pick_folder = Action::new_local(move |_: &()| {
+                let service = service.clone();
+                async move {
+                    if let Ok(Some(path)) = service.pick_folder().await {
+                        value_changed.run(Ok(Value::String(path)));
+                    }
+                }
+            });
+            match field_mode {
+                FieldMode::Display => view! { {move || current.get()} }.into_any(),
+                FieldMode::Readable | FieldMode::Editable => {
+                    let disabled = field_mode != FieldMode::Editable || field_options.disabled;
+                    view! {
+                        {render_label(field_options.label.clone())}
+                        <div class="project-path-field">
+                            <div class="project-path-input-row">
+                                <input
+                                    type="text"
+                                    class="crud-input-field project-path-text"
+                                    prop:value=move || current.get()
+                                    disabled=disabled
+                                    placeholder="~/dev/project"
+                                    on:input=move |event| {
+                                        value_changed.run(Ok(Value::String(event_target_value(&event))));
+                                    }
+                                />
+                                <button
+                                    type="button"
+                                    class="project-path-picker"
+                                    disabled=disabled
+                                    on:click=move |_| {
+                                        if !pick_folder.pending().get_untracked() { pick_folder.dispatch(()); }
+                                    }
+                                >
+                                    "Choose folder"
+                                </button>
+                            </div>
+                        </div>
+                    }
+                    .into_any()
+                }
+            }
+        },
+    )
+}
+
+pub(crate) fn project_path_status_renderer<F: TypeErasedField>() -> FieldRenderer<F> {
+    FieldRenderer::new(
+        move |_signals, _field: F, _field_mode, _field_options, value, _value_changed| {
+            let exists = Signal::derive(move || value.value.get().as_bool().unwrap_or(false));
+            view! {
+                <span class=move || {
+                    if exists.get() {
+                        "path-status path-status-ok"
+                    } else {
+                        "path-status path-status-missing"
+                    }
+                }>
+                    {move || if exists.get() { "Exists" } else { "Missing" }}
+                </span>
+            }
+        },
+    )
+}

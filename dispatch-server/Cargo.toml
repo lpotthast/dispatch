@@ -125,6 +125,7 @@ crudkit-core = { path = "../crudkit/crudkit-core", default-features = false, opt
 crudkit-leptos = { path = "../crudkit/crudkit-leptos", default-features = false }
 crudkit-rs = { path = "../crudkit/crudkit-rs", default-features = false, optional = true }
 crudkit-sea-orm = { path = "../crudkit/crudkit-sea-orm", default-features = false, optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-core = { version = "0.3", default-features = false, optional = true }
 git2 = { version = "0.20", default-features = false, optional = true }
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"], optional = true }

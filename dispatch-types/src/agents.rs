@@ -1,3 +1,4 @@
+use crate::ProjectView;
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
@@ -365,4 +366,12 @@ impl FromStr for AgentReasoningEffort {
             _ => Err(ParseEnumError("unknown agent reasoning effort")),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CodexStatusPage {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub selected_project: Option<String>,
+    pub codex_status: CodexAppServerStatusView,
 }

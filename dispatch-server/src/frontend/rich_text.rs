@@ -124,3 +124,14 @@ pub(crate) fn normalize_tiptap_storage_value(value: String) -> String {
         value
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assertr::prelude::*;
+    #[test]
+    fn rich_text_editor_html_preserves_plain_text_line_breaks() {
+        assert_that!(&(rich_text_editor_html("First line\nSecond line\n\nThird")))
+            .is_equal_to("<p>First line<br>Second line</p><p>Third</p>");
+    }
+}

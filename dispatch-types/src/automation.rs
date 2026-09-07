@@ -1,3 +1,4 @@
+use crate::{CodexAppServerStatusView, ProjectView};
 use std::{fmt, str::FromStr};
 
 use crudkit_core::condition::Condition;
@@ -115,7 +116,7 @@ impl FromStr for AutomationEffect {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct AutomationTriggerView {
     pub id: i64,
     pub project_id: i64,
@@ -672,7 +673,7 @@ pub struct AutomationBundleApplyView {
     pub applied_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct InstalledAutomationBundleView {
     pub apply_id: i64,
     pub bundle_key: String,
@@ -706,7 +707,7 @@ pub struct RestoreRevisionRequest {
     pub revision_id: i64,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct RevisionAnalyticsView {
     pub revision_id: i64,
     pub run_count: u64,
@@ -743,4 +744,30 @@ pub struct ProcessSessionView {
     pub output: Vec<AgentRunOutputPiece>,
     pub started_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TriggersPage {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub selected_project: Option<String>,
+    pub selected_project_view: Option<ProjectView>,
+    pub settings: Option<ProjectSettingsView>,
+    pub personalities: Vec<PersonalityView>,
+    pub api_base_url: String,
+    pub codex_status: CodexAppServerStatusView,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct AutomationPersonalityInspectorView {
+    pub personality: PersonalityView,
+    pub revisions: Vec<PersonalityRevisionView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct AutomationRuleInspectorView {
+    pub trigger: AutomationTriggerView,
+    pub revisions: Vec<AutomationRevisionView>,
+    pub evaluations: Vec<AutomationEvaluationView>,
+    pub current_revision_analytics: Option<RevisionAnalyticsView>,
 }

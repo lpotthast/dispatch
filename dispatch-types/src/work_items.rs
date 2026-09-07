@@ -1,3 +1,8 @@
+use crate::{
+    AddCommentRequest, CreateWorkItemLabelRequest, CreateWorkItemRelationshipRequest,
+    UpdateWorkItemLabelRequest, UpdateWorkItemRelationshipRequest,
+};
+use crate::{AgentRunView, CodexAppServerStatusView, ProjectView};
 use std::{fmt, str::FromStr};
 
 use crudkit_core::condition::{
@@ -435,4 +440,68 @@ pub struct CommentView {
     pub author_name: Option<String>,
     pub body: String,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ItemPage {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub project: String,
+    pub item: WorkItemView,
+    pub comments: Vec<CommentView>,
+    pub relationships: Vec<WorkItemRelationshipListEntry>,
+    pub label_suggestions: Vec<ProjectLabelView>,
+    pub work_item_states: Vec<WorkItemStateView>,
+    pub automation_runs: Vec<AgentRunView>,
+    pub api_base_url: String,
+    pub codex_status: CodexAppServerStatusView,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum ItemMutation {
+    AddComment {
+        project: String,
+        item_id: i64,
+        request: AddCommentRequest,
+    },
+    AddLabel {
+        project: String,
+        item_id: i64,
+        request: CreateWorkItemLabelRequest,
+        expect_version: i64,
+    },
+    UpdateLabel {
+        project: String,
+        item_id: i64,
+        label_id: i64,
+        request: UpdateWorkItemLabelRequest,
+    },
+    DeleteLabel {
+        project: String,
+        item_id: i64,
+        label_id: i64,
+        expect_version: i64,
+    },
+    Move {
+        project: String,
+        item_id: i64,
+        state: String,
+        expect_version: i64,
+    },
+    AddRelationship {
+        project: String,
+        item_id: i64,
+        request: CreateWorkItemRelationshipRequest,
+    },
+    UpdateRelationship {
+        project: String,
+        item_id: i64,
+        relationship_id: i64,
+        request: UpdateWorkItemRelationshipRequest,
+    },
+    DeleteRelationship {
+        project: String,
+        item_id: i64,
+        relationship_id: i64,
+    },
 }

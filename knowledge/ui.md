@@ -297,11 +297,16 @@ Typed server-function responses flow into reactive signals that update only the 
 returned data. Refreshes keep already rendered content mounted until replacement data is available. Frontend services
 surface request failures through brief Leptonic error toasts; a failure does not replace or unmount the route.
 
-Idempotent read requests exposed by frontend services are cached by their focused service. Persistent browser caches use
-`leptos_use` local-storage signals, are keyed by the request input, and retain typed DTOs. Route rendering reads a
+Idempotent read requests exposed by frontend services are cached by their focused domain store. Persistent browser
+caches use `leptos_use` local-storage signals, are keyed by the request input, and retain typed DTOs. Route rendering reads a
 cached value synchronously and then revalidates it in the background; a successful response updates the cache and only
 the dependent reactive DOM. Mutation requests are not cached. Serialized response strings and application JSON blobs are
-not retained as the in-memory cache representation.
+not retained as the in-memory cache representation. Leptos `LocalResource` owns browser data reads, including request
+scheduling and disposal. The server renders the
+application shell; data panels resolve in the browser and revalidate their locally cached domain data.
+Query state distinguishes pending requests and errors from an empty successful result. Mutation controls use Leptos
+`Action` pending and result state and invoke typed domain services. Cached data seeds rendered state while resources
+revalidate it.
 
 Shared Codex readiness and selected-project Knowledge status subscriptions belong to the root layout. Route changes
 reuse their typed context caches and do not restart status requests or reset the Codex badge. A badge read only returns

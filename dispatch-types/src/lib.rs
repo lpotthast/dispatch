@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 pub mod knowledge;
 
 mod agents;
+mod api_docs;
 mod automation;
+mod board;
 mod metrics;
 mod projects;
 mod requests;
@@ -21,7 +23,9 @@ mod runs;
 mod work_items;
 
 pub use agents::*;
+pub use api_docs::*;
 pub use automation::*;
+pub use board::*;
 pub use metrics::*;
 pub use projects::*;
 pub use requests::*;

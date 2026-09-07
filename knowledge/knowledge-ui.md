@@ -157,7 +157,7 @@ autonomous reorganization action.
 For a user-supplied path, explain the matching control and rule without reading the excluded target body. The
 [ignore contract](knowledge-documents.md#ignore-rules) owns participation and cache invalidation semantics.
 
-The Knowledge service caches typed document, graph, diagnostic, job, proposal, and settings data per project and working
+The Knowledge store caches typed document, graph, diagnostic, job, proposal, and settings data per project and working
 copy. It checks current content/index generation before treating cached data as current. Local metadata errors
 invalidate affected projections, not the whole workspace. Excluded content is removed from active caches. Historical
 artifacts load only when requested; refresh follows the document workspace's state-preservation rules above.

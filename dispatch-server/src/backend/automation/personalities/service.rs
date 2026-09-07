@@ -8,7 +8,7 @@ use crate::backend::{
     projects::{ProjectReference, repository::ProjectRepository},
     storage::{Transaction, TransactionManager, utc_now},
 };
-use crate::shared::page_data::AutomationPersonalityInspectorView;
+use dispatch_types::AutomationPersonalityInspectorView;
 use dispatch_types::{
     AutomationPersonalityInput, PersonalityRevisionView, PersonalityView, RevisionChangeOperation,
 };

@@ -1,5 +1,5 @@
 use crate::backend::automation::supervisor::AutomationSupervisor;
-use crate::shared::page_data::*;
+use dispatch_types::*;
 use rootcause::Result;
 use std::{collections::BTreeMap, sync::Arc};
 pub(crate) struct BoardQueryService {

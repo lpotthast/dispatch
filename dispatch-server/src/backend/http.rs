@@ -36,6 +36,21 @@ pub(crate) fn router(
         move || frontend::shell(leptos_options.clone())
     };
     let request_state = state.clone();
+    let render_pool = tokio_util::task::LocalPoolHandle::new(
+        std::thread::available_parallelism().map_or(1, usize::from),
+    );
+    let ui = Router::<LeptosOptions>::new()
+        .leptos_routes_with_context(
+            &leptos_options,
+            routes,
+            move || leptos::prelude::provide_context(request_state.clone()),
+            leptos_shell,
+        )
+        .fallback(leptos_axum::file_and_error_handler(frontend::shell))
+        .layer(axum::middleware::from_fn_with_state(
+            render_pool,
+            frontend::app::ssr::render_on_worker,
+        ));
     Router::<LeptosOptions>::new()
         .merge(super::execution::workspaces::transport::routes())
         .merge(projects::transport::http::routes())
@@ -46,13 +61,7 @@ pub(crate) fn router(
         .merge(super::execution::codex::transport::routes())
         .merge(api::router::<LeptosOptions>())
         .merge(crud_router.with_state(()))
-        .leptos_routes_with_context(
-            &leptos_options,
-            routes,
-            move || leptos::prelude::provide_context(request_state.clone()),
-            leptos_shell,
-        )
-        .fallback(leptos_axum::file_and_error_handler(frontend::shell))
+        .merge(ui)
         .layer(Extension(state))
         .layer(Extension(contexts.project))
         .layer(Extension(contexts.work_item))

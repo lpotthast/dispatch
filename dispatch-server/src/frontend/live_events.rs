@@ -1,20 +1,13 @@
 #[cfg(not(feature = "ssr"))]
-use crate::frontend::services::{
-    advance_project_lifecycle_epoch, api_docs_service, automation_service, board_service,
-    codex_service, item_service, run_service,
-};
-#[cfg(not(feature = "ssr"))]
-use crate::frontend::services::{project_cache, project_service};
+use crate::frontend::projects::service::project_service;
+
 use crate::shared::view_models::UiEvent;
 #[cfg(not(feature = "ssr"))]
 use codee::string::FromToStringCodec;
 use crudkit_leptos::crud_instance::CrudInstanceContext;
 use leptos::prelude::*;
 #[cfg(not(feature = "ssr"))]
-use leptos_router::{
-    NavigateOptions,
-    hooks::{use_navigate, use_params_map, use_query_map},
-};
+use leptos_router::{NavigateOptions, hooks::use_navigate};
 #[cfg(not(feature = "ssr"))]
 use leptos_use::{
     ReconnectLimit, UseWebSocketOptions, UseWebSocketReturn, use_websocket_with_options,
@@ -47,16 +40,37 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
     #[cfg(not(feature = "ssr"))]
     {
         let navigate = use_navigate();
-        let query = use_query_map();
-        let params = use_params_map();
+        let selected_project = crate::frontend::components::selected_project_signal();
         let project_service = project_service();
-        let project_cache = project_cache();
-        let board_service = board_service();
-        let automation_service = automation_service();
-        let item_service = item_service();
-        let run_service = run_service();
-        let codex_service = codex_service();
-        let api_docs_service = api_docs_service();
+        let project_store = crate::frontend::projects::store::project_store();
+        let board_store = crate::frontend::board::store::board_store();
+        let automation_store = crate::frontend::automation::store::automation_store();
+        let item_store = crate::frontend::items::store::item_store();
+        let run_store = crate::frontend::runs::store::run_store();
+        let codex_store = crate::frontend::codex::store::codex_store();
+        let api_docs_store = crate::frontend::api_docs::store::api_docs_store();
+        let metrics_store = crate::frontend::metrics::store::metrics_store();
+        let knowledge_store = crate::frontend::knowledge::store::knowledge_store();
+        let resolve_deletion = Action::new(move |(project_id, project): &(i64, String)| {
+            let project_id = *project_id;
+            let project = project.clone();
+            let service = project_service.clone();
+            let navigate = navigate.clone();
+            async move {
+                if let Ok(current_project_id) = service.current_project_id(project.clone()).await
+                    && selected_project.get_untracked().as_deref() == Some(project.as_str())
+                    && resolved_project_was_deleted(project_id, current_project_id)
+                {
+                    navigate(
+                        "/projects",
+                        NavigateOptions {
+                            replace: true,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        });
         let UseWebSocketReturn {
             message,
             ready_state,
@@ -84,49 +98,22 @@ pub(crate) fn LiveEventsProvider() -> impl IntoView {
             else {
                 return;
             };
-            advance_project_lifecycle_epoch();
-            project_service.clear_cache();
-            board_service.clear_cache();
-            automation_service.clear_cache();
-            item_service.clear_cache();
-            run_service.clear_cache();
-            codex_service.clear_cache();
-            api_docs_service.clear_cache();
-            let selected = query
-                .read()
-                .get("project")
-                .or_else(|| params.read().get("project"));
-            project_cache.remove_deleted(project_id);
+            crate::frontend::app::context::advance_project_lifecycle_epoch();
+            crate::frontend::projects::store::project_store().clear_cache();
+            board_store.clear_cache();
+            automation_store.clear_cache();
+            item_store.clear_cache();
+            run_store.clear_cache();
+            codex_store.clear_cache();
+            api_docs_store.clear_cache();
+            metrics_store.clear_cache();
+            knowledge_store.clear_cache();
+            let selected = selected_project.get_untracked();
+            project_store.remove_deleted(project_id);
             match project_deletion_selection_action(&project, selected.as_deref()) {
                 ProjectDeletionSelectionAction::Ignore => {}
                 ProjectDeletionSelectionAction::Resolve => {
-                    let project_service = project_service.clone();
-                    let navigate = navigate.clone();
-                    let query = query;
-                    let params = params;
-                    leptos::task::spawn_local(async move {
-                        let Ok(current_project_id) =
-                            project_service.current_project_id(project.clone()).await
-                        else {
-                            return;
-                        };
-                        let selected = query
-                            .read()
-                            .get("project")
-                            .or_else(|| params.read().get("project"));
-                        if selected.as_deref() == Some(project.as_str())
-                            && resolved_project_was_deleted(project_id, current_project_id)
-                        {
-                            navigate(
-                                "/projects",
-                                NavigateOptions {
-                                    replace: true,
-                                    scroll: true,
-                                    ..NavigateOptions::default()
-                                },
-                            );
-                        }
-                    });
+                    resolve_deletion.dispatch((project_id, project));
                 }
             }
         });
@@ -192,16 +179,14 @@ pub(crate) fn reload_crudkit_on_live_event(
     context: ReadSignal<Option<CrudInstanceContext>>,
     should_reload: impl Fn(&UiEvent) -> bool + 'static,
 ) {
-    if let Some(live) = use_context::<LiveEventContext>() {
-        Effect::new(move |_| {
-            if let Some(event) = live.latest_event.get()
-                && should_reload(&event)
-                && let Some(context) = context.get()
-            {
+    refetch_on_live_event(
+        Callback::new(move |()| {
+            if let Some(context) = context.get_untracked() {
                 context.reload();
             }
-        });
-    }
+        }),
+        should_reload,
+    );
 }
 
 pub(crate) fn event_scopes_named_project(event: &UiEvent, project: Option<&str>) -> bool {

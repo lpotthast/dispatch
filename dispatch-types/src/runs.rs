@@ -1,3 +1,4 @@
+use crate::{CodexAppServerStatusView, ProjectView};
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
@@ -477,4 +478,28 @@ impl fmt::Display for AgentRunOutputKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_storage())
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RunSummaryView {
+    pub run: AgentRunView,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RunsSection {
+    pub automation_running: bool,
+    pub running_runs: i64,
+    pub running_mutating_runs: i64,
+    pub running_read_only_runs: i64,
+    pub runs: Vec<RunSummaryView>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RunLogPage {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub project: String,
+    pub run_log: RunLogView,
+    pub codex_status: CodexAppServerStatusView,
 }

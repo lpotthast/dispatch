@@ -3,7 +3,7 @@ use crate::backend::{
     automation::rules::repository::RuleRepository, projects::repository::ProjectRepository,
     storage::TransactionManager,
 };
-use crate::shared::page_data::AutomationRuleInspectorView;
+use dispatch_types::AutomationRuleInspectorView;
 use dispatch_types::{AutomationEvaluationView, RevisionAnalyticsView};
 use rootcause::Result;
 use std::sync::Arc;

@@ -11,6 +11,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::post,
 };
+use dispatch_types::PickFolderResponse;
 #[derive(serde::Deserialize)]
 struct OpenWorkspaceForm {
     target: String,
@@ -43,11 +44,6 @@ async fn open_run_workspace(
     Form(form): Form<OpenWorkspaceForm>,
 ) -> Response {
     controller.open_run_workspace((project, run_id), form).await
-}
-
-#[derive(serde::Serialize)]
-struct PickFolderResponse {
-    path: Option<String>,
 }
 
 #[derive(serde::Serialize)]

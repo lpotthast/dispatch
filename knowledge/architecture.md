@@ -42,21 +42,37 @@ The legacy server CLI may accept `--database` because it is part of the trusted 
 `dispatch-operator` binary never opens SQLite; it uses `/operator/api/...` endpoints and is not placed on launched-agent
 `PATH`.
 
-The hydrated frontend is organized by route under `dispatch-server/src/frontend/pages/`, with one module per operator
-page. The root application module only mounts the application shell and root providers. Shared UI behavior lives in
-focused modules under `frontend/components/`.
+The frontend is organized by domain and use case under `dispatch-server/src/frontend/`. Projects, items, board,
+automation, runs, knowledge, Codex, and metrics each own their pages, service, store, and internal types. Domain-specific
+CrudKit forms live with their domain. The application root composes providers and mounts the shared shell. Only shared
+transport, query, and rendering infrastructure sits outside these domains. Route declarations and generated link builders
+share `frontend/routes.rs`; typed Leptos parameters decode project and entity identifiers at the route boundary. The
+layout, workspace dock, and live subscriptions resolve the selected project from the same canonical URL.
 
-Backend interaction is owned by focused service objects under `frontend/services/`. Production services wrap server
-functions and other transport details, are provided once from the root layout through Leptos context, and expose typed
-domain-oriented methods to pages and shared components. Their request callbacks are replaceable so consumers can be
-tested with in-process mocks. Page response types belong to the application's shared types so backend queries have no
-rendering dependency. Route modules own resources and rendering, but they do not define or invoke server functions or
-browser request clients directly. [UI Design](ui.md) owns layout, controls,
-navigation, and refresh behavior, with [Knowledge UI](knowledge-ui.md) owning the knowledge workspace.
+Backend interaction follows `HttpService` → domain service → domain store → reactive view. The shared `HttpService`
+executes typed requests and owns transport error presentation. Each domain's `service` module receives it through
+construction, exposes domain-oriented methods, and contains no browser cache. Leptos server functions retain the
+single-binary transport boundary; their request callbacks are replaceable for in-process tests. Request and response
+DTOs, including Leptos page-query results, are serde-serializable communication contracts defined in `dispatch-types`.
+Frontend internal data and presentation models belong to the owning domain's `types` or `form` module, independently
+of service and store implementations. Domain types define the projection from transport results; stores publish that
+typed state to views.
+Route components own resources and rendering, but do not define or invoke server functions or browser request clients
+directly. [UI Design](ui.md) owns layout, controls, navigation, and refresh behavior, with
+[Knowledge UI](knowledge-ui.md) owning the knowledge workspace.
 
-Cross-route browser caches are focused services provided through Leptos context and contain typed backend DTOs, not
-rendered views, complete page response objects, or serialized payloads. Persistence through browser local storage is a
-service boundary: values are decoded immediately into the typed reactive cache before consumers access them.
+Each domain's store receives its service through construction and owns typed reactive data, request-keyed caches,
+freshness, and invalidation. The root layout provides the shared HTTP service, domain services, and stores once through
+Leptos context. Cache entries contain domain data, not rendered views, complete page response objects, or serialized
+payloads. Browser local storage is a store boundary: values are decoded immediately into typed reactive state. Request
+ordering is enforced before publishing a result to shared state, including across route changes and project deletion.
+Leptos resources own reactive read execution; actions own user-triggered asynchronous operations. Stateful editors retain
+their reactive owner while the selected immutable identity remains unchanged and receive saved data through signals or
+memos. A refresh does not recreate their drafts or navigation guards.
+
+Leptos rendering and response-stream disposal remain on the same render worker because Leptonic event contexts have
+thread-local ownership. The Axum integration forwards headers and bounded body chunks from that worker, including
+cleanup when the browser disconnects. This rendering boundary is part of the server process.
 
 [Backend Metrics](metrics.md) owns in-process performance instrumentation and aggregation, including repository and SQL
 timings and the board-loading and item-search query boundaries.
@@ -66,7 +82,8 @@ timings and the board-loading and item-search query boundaries.
 This crate defines shared transport types for the API client and server. Examples include project views, work item
 views, comments, agent runs, automation rules, workflow request payloads, and shared enum values.
 
-Types in this crate describe the wire contract. Server-only persistence details stay in `dispatch-server`.
+Types in this crate describe the serde-serializable wire contract. Internal frontend models, reactive state, services,
+and server-only persistence details stay in their owning domains in `dispatch-server`.
 
 ### `dispatch-api-client`
 

@@ -1,3 +1,4 @@
+use crate::CodexAppServerStatusView;
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
@@ -299,4 +300,42 @@ pub struct ProjectSettingsView {
     pub agent_git_command_policy: AgentGitCommandPolicy,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ProjectPage {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub selected_project: Option<String>,
+    pub selected_project_view: Option<ProjectView>,
+    pub system_prompt_events: Vec<ProjectSystemPromptEventView>,
+    pub api_base_url: String,
+    pub codex_status: CodexAppServerStatusView,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct WorkspaceBarData {
+    pub project: Option<ProjectView>,
+    pub workspace_editors: Vec<WorkspaceEditorView>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ProjectsPage {
+    pub projects: Vec<ProjectView>,
+    pub active_project_names: Vec<String>,
+    pub codex_status: CodexAppServerStatusView,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CommitPolicyUpdate {
+    pub max_read_only_agents: i64,
+    pub auto_commit: bool,
+    pub commit_standard: String,
+    pub revert_strategy: RevertStrategy,
+    pub agent_git_command_policy: AgentGitCommandPolicy,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PickFolderResponse {
+    pub path: Option<String>,
 }

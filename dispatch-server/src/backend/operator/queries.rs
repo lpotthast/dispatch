@@ -2,9 +2,9 @@ use crate::backend::{
     automation::supervisor::AutomationSupervisor, comments,
     execution::sessions::ProcessSessionRegistry, relationships,
 };
-use crate::shared::{page_data::*, view_models::AgentRunView};
 use rootcause::Result;
 use std::{collections::HashSet, sync::Arc};
+use {crate::shared::view_models::AgentRunView, dispatch_types::*};
 pub(crate) struct OperatorQueryService {
     codex: Arc<crate::backend::execution::codex::service::CodexService>,
     run_queries: Arc<crate::backend::runs::queries::service::RunQueryService>,
