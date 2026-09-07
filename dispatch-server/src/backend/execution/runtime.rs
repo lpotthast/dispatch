@@ -4,6 +4,7 @@ use super::{
     process_identity,
 };
 use crate::backend::{
+    execution::bounded_output::BoundedOutput,
     execution::codex::runtime as codex_app_server,
     execution::git as automation_runtime,
     execution::output::{
@@ -13,7 +14,7 @@ use crate::backend::{
     execution::sessions::ProcessSessionRegistry,
 };
 use crate::shared::view_models::{
-    AgentReasoningEffort, AgentRunOutputKind, AgentRunOutputPiece, AgentRunTokenUsageView,
+    AgentReasoningEffort, AgentRunOutputKind, AgentRunTokenUsageView,
 };
 use codex_app_server_sdk::{
     ApprovalMode, ClientError, StreamedTurn, Thread, ThreadEvent, ThreadOptions, TurnOptions,
@@ -64,7 +65,7 @@ struct CodexStreamRecoveryContext<'a> {
     sessions: &'a Option<ProcessSessionRegistry>,
     env: &'a HashMap<String, String>,
     thread_options: &'a ThreadOptions,
-    output: &'a mut Vec<AgentRunOutputPiece>,
+    output: &'a mut BoundedOutput,
 }
 
 #[derive(Debug)]
@@ -272,7 +273,7 @@ async fn run_codex_app_server_turn(
     let developer_instructions = start.prompt.developer_instructions.clone();
     let user_prompt = start.prompt.user_prompt.clone();
     let working_dir = start.working_dir.to_string_lossy().into_owned();
-    let mut output = Vec::new();
+    let mut output = BoundedOutput::for_run();
 
     push_codex_output_piece(
         &sessions,
@@ -290,8 +291,7 @@ async fn run_codex_app_server_turn(
                 "codex_binary": start.codex_binary.to_string_lossy(),
             }),
         },
-    )
-    .await;
+    );
 
     let env = start
         .environment
@@ -385,7 +385,7 @@ async fn run_codex_app_server_turn(
             }
         };
         if let Some(piece) = thread_event_output_piece(&event) {
-            push_codex_output_piece(&sessions, start.run_id, &mut output, piece).await;
+            push_codex_output_piece(&sessions, start.run_id, &mut output, piece);
             if let Some(logs) = &start.incremental_log_dir {
                 use std::io::Write;
                 if let Some(piece) = output.last() {
@@ -398,7 +398,7 @@ async fn run_codex_app_server_turn(
                 }
                 write_run_output_log(
                     &logs.join(format!("run-{}.output.json", start.run_id)),
-                    &output,
+                    output.iter(),
                 )?;
             }
         }
@@ -550,8 +550,7 @@ async fn recover_codex_streamed_turn(
             context.start.run_id,
             context.output,
             codex_stream_recovery_piece(thread_id, attempt, reason, &err, backoff),
-        )
-        .await;
+        );
         tokio::time::sleep(backoff).await;
 
         match start_codex_streamed_turn(
@@ -579,8 +578,7 @@ async fn recover_codex_streamed_turn(
                             "recoverable": true,
                         }),
                     },
-                )
-                .await;
+                );
                 return Ok(resumed);
             }
             Err(start_err) if recoverable_codex_stream_start_error(&start_err) => {
@@ -611,8 +609,7 @@ async fn recover_codex_streamed_turn(
                             "error": start_err.to_string(),
                         }),
                     },
-                )
-                .await;
+                );
             }
             Err(start_err) => {
                 return Err(report!(start_err)

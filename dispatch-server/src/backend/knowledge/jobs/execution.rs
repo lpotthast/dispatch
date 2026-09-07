@@ -182,7 +182,7 @@ impl KnowledgePassService {
         let result = self.execution.execute(process, cancellation).await;
         match result {
             Ok(output) => {
-                write_run_output_log(&log, &output.output)?;
+                write_run_output_log(&log, output.output.iter())?;
                 if let Some(usage) = output.token_usage {
                     run = self.runs.token_usage(run, usage).await?;
                 }

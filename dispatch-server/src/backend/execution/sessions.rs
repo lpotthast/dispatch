@@ -6,14 +6,12 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    backend::{execution::bounded_output, storage::utc_now},
+    backend::{execution::bounded_output::BoundedOutput, storage::utc_now},
     shared::view_models::{AgentRunOutputPiece, AgentToolName, ProcessSessionView},
 };
 
 #[cfg(test)]
 use crate::shared::view_models::AgentRunOutputKind;
-
-const MAX_SESSION_OUTPUT_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct ProcessSessionRegistry {
@@ -179,7 +177,7 @@ impl ProcessSessionRegistry {
             command: start.command,
             working_dir: start.working_dir,
             process_id: None,
-            output: Vec::new(),
+            output: BoundedOutput::for_session(),
             cancellation: cancellation.clone(),
             started_at: now.clone(),
             updated_at: now,
@@ -218,7 +216,7 @@ impl ProcessSessionRegistry {
     pub fn append_output_piece(&self, run_id: i64, piece: AgentRunOutputPiece) {
         let mut state = self.lock_state();
         let project_name = if let Some(session) = state.sessions.get_mut(&run_id) {
-            bounded_output::push_with_limit(&mut session.output, piece, MAX_SESSION_OUTPUT_BYTES);
+            session.output.push(piece);
             session.updated_at = utc_now();
             Some(session.project_name.clone())
         } else {
@@ -431,7 +429,7 @@ struct ProcessSession {
     command: String,
     working_dir: String,
     process_id: Option<i64>,
-    output: Vec<AgentRunOutputPiece>,
+    output: BoundedOutput,
     cancellation: CancellationToken,
     started_at: String,
     updated_at: String,
@@ -453,7 +451,7 @@ impl From<&ProcessSession> for ProcessSessionView {
             command: session.command.clone(),
             working_dir: session.working_dir.clone(),
             process_id: session.process_id,
-            output: session.output.clone(),
+            output: session.output.iter().cloned().collect(),
             started_at: session.started_at.clone(),
             updated_at: session.updated_at.clone(),
         }

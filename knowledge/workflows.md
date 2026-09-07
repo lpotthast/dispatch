@@ -395,6 +395,11 @@ Automation output is captured by the server and exposed through run-log endpoint
 run-log views should use the in-memory session output so operators can inspect intermediate output before the persisted
 log file is written. Agents and tools should request logs through the API instead of reading log paths directly.
 
+Run output retains the newest pieces within a 1 MiB payload budget; live session output uses a separate 256 KiB budget.
+Both discard only the oldest necessary pieces and always preserve the newest piece, even when it alone exceeds the
+budget. Payload size counts UTF-8 text fields and compact JSON metadata, rather than the complete serialized log or
+allocator overhead. Retention preserves piece sequence numbers so live and persisted output identify the same events.
+
 ## Pull Requests
 
 When project settings request pull request creation, successful mutating automation can run the configured GitHub CLI

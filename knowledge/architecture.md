@@ -142,6 +142,11 @@ Runtime and filesystem adapters execute process, workspace, and file operations 
 and supervise service operations with explicit cancellation and shutdown ownership. Shared execution receives prepared
 inputs and returns execution outcomes; it does not call back into item or knowledge-job workflows.
 
+Shared execution owns bounded output buffers for both run results and live sessions. The buffer encapsulates retention
+and exposes immutable pieces, caching each piece's payload size and removing old pieces through a queue. Appending
+output measures only the new piece; it does not rescan retained history. Transport snapshots and log persistence borrow
+or project those pieces at their boundaries. [Run Logs](workflows.md#run-logs) owns retention and ordering behavior.
+
 Cancellation uses Tokio cancellation tokens with explicit lifetime ownership. The application owns worker shutdown,
 the automation supervisor owns each active project's cancellation, and each registered run owns a child token. Parent
 cancellation reaches existing and subsequently created children; cancelling or completing a run leaves its parent and

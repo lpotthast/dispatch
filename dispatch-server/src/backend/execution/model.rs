@@ -1,15 +1,16 @@
 use crate::backend::{
-    automation::launch::prompt::AutomationPrompt, execution::git::GitRuntimeFiles,
+    automation::launch::prompt::AutomationPrompt, execution::bounded_output::BoundedOutput,
+    execution::git::GitRuntimeFiles,
 };
 use dispatch_types::{
-    AgentReasoningEffort, AgentRunOutputPiece, AgentRunTokenUsageView, AgentSandboxMode,
-    AgentToolName, AutomationRunMutability,
+    AgentReasoningEffort, AgentRunTokenUsageView, AgentSandboxMode, AgentToolName,
+    AutomationRunMutability,
 };
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 #[derive(Debug)]
 pub(crate) struct AgentProcessOutput {
     pub(crate) process_id: Option<i64>,
-    pub(crate) output: Vec<AgentRunOutputPiece>,
+    pub(crate) output: BoundedOutput,
     pub(crate) final_response: String,
     pub(crate) token_usage: Option<AgentRunTokenUsageView>,
 }

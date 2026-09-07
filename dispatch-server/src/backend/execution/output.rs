@@ -5,14 +5,13 @@ use rootcause::{Result, prelude::*};
 
 use crate::{
     backend::{
-        execution::bounded_output, execution::sessions::ProcessSessionRegistry, storage::utc_now,
+        execution::bounded_output::BoundedOutput, execution::sessions::ProcessSessionRegistry,
+        storage::utc_now,
     },
     shared::view_models::{
         AgentRunOutputKind, AgentRunOutputLog, AgentRunOutputPiece, AgentRunTokenUsageView,
     },
 };
-
-const MAX_AGENT_OUTPUT_BYTES: usize = 1024 * 1024;
 
 pub(crate) struct OutputPieceDraft {
     pub(crate) kind: AgentRunOutputKind,
@@ -50,10 +49,19 @@ pub(crate) async fn read_run_token_usage(path: Option<&str>) -> Option<AgentRunT
     token_usage_from_output_pieces(&log.pieces)
 }
 
-pub(crate) fn write_run_output_log(path: &Path, pieces: &[AgentRunOutputPiece]) -> Result<()> {
-    let log = AgentRunOutputLog {
+pub(crate) fn write_run_output_log<'a>(
+    path: &Path,
+    pieces: impl IntoIterator<Item = &'a AgentRunOutputPiece>,
+) -> Result<()> {
+    // Borrow payloads from either a live buffer or a decoded log without cloning their contents.
+    #[derive(serde::Serialize)]
+    struct OutputLog<'a> {
+        schema_version: u32,
+        pieces: Vec<&'a AgentRunOutputPiece>,
+    }
+    let log = OutputLog {
         schema_version: 1,
-        pieces: pieces.to_vec(),
+        pieces: pieces.into_iter().collect(),
     };
     let body = serde_json::to_string_pretty(&log).context("failed to encode automation output")?;
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -63,22 +71,22 @@ pub(crate) fn write_run_output_log(path: &Path, pieces: &[AgentRunOutputPiece]) 
         .context_with(|| format!("failed to replace {}", path.display()))?)
 }
 
-pub(crate) async fn push_codex_output_piece(
+pub(crate) fn push_codex_output_piece(
     sessions: &Option<ProcessSessionRegistry>,
     run_id: i64,
-    output: &mut Vec<AgentRunOutputPiece>,
+    output: &mut BoundedOutput,
     draft: OutputPieceDraft,
 ) {
     let piece = append_output_piece(output, draft);
     if let Some(registry) = sessions {
-        registry.append_output_piece(run_id, piece);
+        registry.append_output_piece(run_id, piece.clone());
     }
 }
 
 pub(crate) fn append_output_piece(
-    output: &mut Vec<AgentRunOutputPiece>,
+    output: &mut BoundedOutput,
     draft: OutputPieceDraft,
-) -> AgentRunOutputPiece {
+) -> &AgentRunOutputPiece {
     let piece = new_output_piece(
         output.last().map(|piece| piece.sequence + 1).unwrap_or(1),
         draft.kind,
@@ -87,8 +95,8 @@ pub(crate) fn append_output_piece(
         draft.body,
         draft.metadata,
     );
-    bounded_output::push_with_limit(output, piece.clone(), MAX_AGENT_OUTPUT_BYTES);
-    piece
+    output.push(piece);
+    output.last().expect("newest output piece is retained")
 }
 
 pub(crate) fn new_output_piece(
@@ -548,14 +556,15 @@ mod tests {
 
     #[test]
     fn append_output_piece_continues_the_retained_sequence() {
-        let mut pieces = vec![new_output_piece(
+        let mut pieces = BoundedOutput::for_run();
+        pieces.push(new_output_piece(
             41,
             AgentRunOutputKind::System,
             None,
             "existing",
             "",
             serde_json::json!({}),
-        )];
+        ));
 
         let appended = append_output_piece(
             &mut pieces,
@@ -570,6 +579,71 @@ mod tests {
 
         assert_that!(&(appended.sequence)).is_equal_to(42);
         assert_that!(&(pieces.last().map(|piece| piece.sequence))).is_equal_to(Some(42));
+    }
+
+    #[tokio::test]
+    async fn live_and_persisted_output_keep_their_limits_and_share_sequence_numbers() {
+        use crate::backend::execution::sessions::ProcessSessionStart;
+
+        let sessions = ProcessSessionRegistry::default();
+        sessions.begin(
+            ProcessSessionStart {
+                run_id: 7,
+                project_id: 1,
+                project_name: "demo".into(),
+                tool_name: "codex".into(),
+                command: String::new(),
+                working_dir: String::new(),
+            },
+            &Default::default(),
+        );
+        let sessions = Some(sessions);
+        let mut output = BoundedOutput::for_run();
+        for _ in 0..12 {
+            push_codex_output_piece(
+                &sessions,
+                7,
+                &mut output,
+                OutputPieceDraft {
+                    kind: AgentRunOutputKind::ModelMessage,
+                    item_id: None,
+                    title: "message".into(),
+                    body: "x".repeat(100 * 1024),
+                    metadata: serde_json::json!({}),
+                },
+            );
+        }
+
+        let active = sessions.as_ref().unwrap().get_for_project(1, 7).unwrap();
+        assert_that!(
+            active
+                .output
+                .iter()
+                .map(|piece| piece.sequence)
+                .collect::<Vec<_>>()
+        )
+        .is_equal_to(vec![11, 12]);
+        assert_that!(
+            output
+                .iter()
+                .map(|piece| piece.sequence)
+                .collect::<Vec<_>>()
+        )
+        .is_equal_to((3..=12).collect::<Vec<_>>());
+        assert_that!(output.last()).is_equal_to(active.output.last());
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("output.json");
+        // Replace a previous log using the same format consumed by existing readers.
+        write_run_output_log(&path, &active.output).unwrap();
+        write_run_output_log(&path, output.iter()).unwrap();
+        let encoded = fs::read_to_string(&path).unwrap();
+        let decoded: AgentRunOutputLog = serde_json::from_str(&encoded).unwrap();
+        assert_that!(decoded.schema_version).is_equal_to(1);
+        assert_that!(&decoded.pieces).is_equal_to(output.iter().cloned().collect::<Vec<_>>());
+        assert_that!(read_run_output(Some(path.to_str().unwrap())).await.unwrap())
+            .is_equal_to(decoded.pieces);
+        assert_that!(fs::read_dir(temp.path()).unwrap().count()).is_equal_to(1);
     }
 
     #[tokio::test]

@@ -524,7 +524,7 @@ impl LaunchService {
                 if let Some(token_usage) = output.token_usage {
                     run = self.run_service.token_usage(run, token_usage).await?;
                 }
-                write_run_output_log(&log_path, &output.output).context_with(|| {
+                write_run_output_log(&log_path, output.output.iter()).context_with(|| {
                     format!("failed to write automation log {}", log_path.display())
                 })?;
                 let exit_code = Some(0);
@@ -605,7 +605,7 @@ impl LaunchService {
                                 .unwrap_or_else(|_| serde_json::json!([])),
                         },
                     );
-                    write_run_output_log(&log_path, &output.output).context_with(|| {
+                    write_run_output_log(&log_path, output.output.iter()).context_with(|| {
                         format!(
                             "failed to append semantic failure to {}",
                             log_path.display()
