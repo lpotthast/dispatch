@@ -29,6 +29,11 @@ blocked-label exclusion is implicit. `item claim` never defaults to `DISPATCH_CL
 Claimable items must also be unfinished. Finished items are closed even if an operator later changes their `state` label
 to a value that matches a queue claim or automation selector.
 
+Queue claim selection applies project scope, unclaimed and unfinished status, selector matching, and workflow-blocker
+exclusion in SQL. Candidates are ordered oldest updated time first, with ascending item ID breaking ties. Each selection
+attempt reads one matching candidate and its source-state labels in the mutation transaction, then checks the observed version before
+writing. A candidate that fails the version check is skipped and selection continues after its observed order key.
+
 If no eligible item exists, the API reports that condition without creating implicit work.
 
 ## Progress
@@ -246,6 +251,15 @@ skipped while scanning continues.
 Project mutating/read-only limits apply first, followed by per-rule caps and project-scoped concurrency-group mutexes.
 Routing explanation reports selector clauses, due/admission state, fairness, exclusive suppression, blockers, current
 winner, and bounded match examples for unsaved rules.
+
+The scheduler loads only matching claimable item IDs for each due, admission-eligible rule, using the claim repository's
+selector and eligibility predicates in the same transaction as project and rule resolution. Fairness and exclusive
+routing operate on those IDs. Launch revalidates the selected item before claiming it.
+
+An unsaved-rule preview counts project-scoped, selector-matching, unblocked items in SQL and shows at most ten examples,
+ordered newest updated time and descending ID first. It describes selector membership, so claimed and finished items
+can appear; claim eligibility is a separate requirement. Examples load compact item summaries and labels, and clause
+diagnostics describe the first example. No examples produce empty clause diagnostics.
 
 ### Semantic postconditions
 

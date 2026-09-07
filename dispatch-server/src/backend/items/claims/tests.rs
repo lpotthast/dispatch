@@ -78,6 +78,156 @@ async fn seed_claim_source_label(store: &Store, project_name: &str, item_id: i64
 }
 
 #[tokio::test]
+async fn candidate_queries_share_scope_eligibility_order_and_version_safety() {
+    use crate::backend::storage::TransactionManager;
+    let (_temp, store) = test_store().await;
+    let mut items = Vec::new();
+    for (project, state, key, claimed, finished) in [
+        ("demo", "open", None, false, false),
+        (
+            "demo",
+            "open",
+            Some(AUTOMATION_BLOCKED_LABEL_KEY),
+            false,
+            false,
+        ),
+        (
+            "demo",
+            "open",
+            Some(FEEDBACK_REQUESTED_LABEL_KEY),
+            false,
+            false,
+        ),
+        ("demo", "open", None, true, false),
+        ("demo", "open", None, false, true),
+        ("demo", "idea", None, false, false),
+        ("demo", "review", Some("routed"), false, false),
+        ("other", "open", None, false, false),
+        ("demo", "open", None, false, false),
+    ] {
+        let item = crate::backend::items::creation::tests::service(
+            &store,
+            crate::backend::events::UiEventBus::new(),
+        )
+        .create(
+            crate::backend::projects::ProjectReference::Name(project),
+            CreateWorkItem {
+                title: format!("Candidate {}", items.len()),
+                description: "Candidate query fixture".to_owned(),
+                state: state.to_owned(),
+                agent_model_override: None,
+                agent_reasoning_effort_override: None,
+                initial_labels: key
+                    .into_iter()
+                    .map(|key| dispatch_types::CreateWorkItemLabelRequest {
+                        key: key.to_owned(),
+                        value: None,
+                    })
+                    .collect(),
+            },
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        WorkItemActiveModel {
+            id: Set(item.id),
+            updated_at: Set("2026-09-07T12:00:00Z".to_owned()),
+            claimed_by: Set(claimed.then(|| "another-agent".to_owned())),
+            finished_at: Set(finished.then(|| "2026-09-07T12:00:00Z".to_owned())),
+            // Candidate projections do not decode unrelated execution settings.
+            agent_reasoning_effort_override: Set((state == "review").then(|| "invalid".to_owned())),
+            ..Default::default()
+        }
+        .update(store.db().as_ref())
+        .await
+        .unwrap();
+        items.push(item);
+    }
+    let condition = Condition::Any(vec![
+        ConditionElement::Condition(Box::new(open_state_selector())),
+        ConditionElement::Clause(ConditionClause {
+            column_name: "routed".to_owned(),
+            operator: Operator::Equal,
+            value: ConditionClauseValue::Bool(true),
+        }),
+    ]);
+    let transaction = TransactionManager::new(&store).begin().await.unwrap();
+    let claims = service(&store, crate::backend::events::UiEventBus::new());
+    let ids = claims
+        .matching_item_ids_in(&transaction, items[0].project_id, &condition)
+        .await
+        .unwrap();
+    assert_that!(&ids).is_equal_to(vec![items[0].id, items[6].id, items[8].id]);
+
+    let selector = ClaimSelector::automation_condition(&condition).unwrap();
+    let repository = super::repository::ClaimRepository;
+    let first = repository
+        .next_in(&transaction, items[0].project_id, &selector, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_that!(&first.item_id).is_equal_to(items[0].id);
+    assert_that!(&first.source_state).is_equal_to("open");
+    assert_that!(
+        &repository
+            .claim_in(
+                &transaction,
+                items[0].project_id,
+                &first,
+                "agent-query",
+                Some(first.observed_version + 1),
+            )
+            .await
+            .unwrap()
+    )
+    .is_false();
+    let second = repository
+        .next_in(&transaction, items[0].project_id, &selector, Some(&first))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_that!(&second.item_id).is_equal_to(items[6].id);
+    assert_that!(&second.source_state).is_equal_to("review");
+    assert_that!(
+        &repository
+            .claim_in(
+                &transaction,
+                items[0].project_id,
+                &second,
+                "agent-query",
+                Some(second.observed_version),
+            )
+            .await
+            .unwrap()
+    )
+    .is_true();
+    let last = repository
+        .next_in(&transaction, items[0].project_id, &selector, Some(&second))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_that!(&last.item_id).is_equal_to(items[8].id);
+    assert_that!(
+        &repository
+            .next_in(&transaction, items[0].project_id, &selector, Some(&last))
+            .await
+            .unwrap()
+            .is_none()
+    )
+    .is_true();
+
+    let state_selector = ClaimSelector::state(" open ").unwrap();
+    assert_that!(
+        &repository
+            .matching_ids_in(&transaction, items[0].project_id, &state_selector)
+            .await
+            .unwrap()
+    )
+    .is_equal_to(vec![items[0].id, items[8].id]);
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
 async fn claiming_item_records_agent_identity() {
     let (_temp, store) = test_store().await;
     let item = crate::backend::items::creation::tests::service(
@@ -755,7 +905,7 @@ async fn idea_item_is_skipped_until_moved_open() {
 }
 
 #[tokio::test]
-async fn claiming_scans_past_non_matching_candidate_batch() {
+async fn claiming_skips_older_nonmatching_items() {
     let (_temp, store) = test_store().await;
     for title in ["Draft one", "Draft two"] {
         crate::backend::items::creation::tests::service(
@@ -785,7 +935,7 @@ async fn claiming_scans_past_non_matching_candidate_batch() {
         crate::backend::projects::ProjectReference::Name("demo"),
         CreateWorkItem {
             title: "Open after drafts".to_owned(),
-            description: "The scanner should continue until it finds this item".to_owned(),
+            description: "The claim should select this matching item".to_owned(),
             state: "open".to_owned(),
             agent_model_override: None,
             agent_reasoning_effort_override: None,

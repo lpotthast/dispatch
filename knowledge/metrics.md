@@ -79,3 +79,15 @@ detail-only fields stay on the item-detail path. Labels, claim sources, work gro
 bounded batch queries rather than per item. The page cache stores the board shell and item section separately, and the
 server-rendered item section seeds the client cache so hydration neither duplicates the payload in memory nor
 immediately repeats its request. Repository and SQL metrics are the source of evidence when this path is changed again.
+
+## Item search
+
+Item search applies project scope, state, label conditions, and other requested filters in SQL before its stable
+updated-time/id pagination. Label predicates use project-scoped label indexes and preserve the shared
+[label-condition semantics](data-model.md#work-items), including absent labels and negation. SQL construction belongs to
+the label repository; the validated condition and its in-memory evaluator have no persistence dependency.
+
+A search selects at most the requested page size plus one lookahead item. Only returned items receive label, comment,
+claim-source, origin, and group enrichment. The lookahead determines whether a next cursor exists; it does not cross the
+item-view decoding boundary. This bounds application-side loading and enrichment by page size even when few items
+match a selector. Search and enrichment use the caller's transaction, including with a single pooled connection.

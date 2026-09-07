@@ -10,7 +10,6 @@ use crate::backend::{
         scheduling::policy::{fairness_score, trigger_due},
     },
     events::UiEventBus,
-    items::labels::conditions::ValidatedLabelCondition,
     items::{claims::service::ClaimService, repository::ItemRepository},
     projects::repository::ProjectRepository,
     runs::{
@@ -189,8 +188,6 @@ impl SchedulerService {
             .repository
             .list_in(&tx, RuleSelection::WorkItems(settings.project_id), None)
             .await?;
-        let mut items = self.items.list_in(&tx, settings.project_id, None).await?;
-        items.reverse();
         let mut candidates = Vec::new();
         let mut checked = Vec::new();
         for rule in rules {
@@ -214,16 +211,9 @@ impl SchedulerService {
             }
             let ids = match rule.work_item_selector.as_ref() {
                 Some(selector) => {
-                    let selector = ValidatedLabelCondition::new(selector)?;
-                    items
-                        .iter()
-                        .filter(|item| {
-                            item.claimed_by.is_none()
-                                && item.finished_at.is_none()
-                                && selector.matches_automation_selector(&item.labels)
-                        })
-                        .map(|item| item.id)
-                        .collect::<Vec<_>>()
+                    self.claims
+                        .matching_item_ids_in(&tx, settings.project_id, selector)
+                        .await?
                 }
                 None => Vec::new(),
             };

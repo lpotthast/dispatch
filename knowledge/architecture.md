@@ -59,7 +59,7 @@ rendered views, complete page response objects, or serialized payloads. Persiste
 service boundary: values are decoded immediately into the typed reactive cache before consumers access them.
 
 [Backend Metrics](metrics.md) owns in-process performance instrumentation and aggregation, including repository and SQL
-timings and the board-loading query boundary.
+timings and the board-loading and item-search query boundaries.
 
 ### `dispatch-types`
 
@@ -124,6 +124,19 @@ when the meaning is identical. ORM records do not cross into services or present
 Runtime and filesystem adapters execute process, workspace, and file operations requested by services. Workers schedule
 and supervise service operations with explicit cancellation and shutdown ownership. Shared execution receives prepared
 inputs and returns execution outcomes; it does not call back into item or knowledge-job workflows.
+
+### Database Query Responsibilities
+
+Filtering over persisted data happens in the database wherever it preserves the domain semantics. Repositories compose
+reusable, typed predicates and apply scope, filtering, ordering, aggregation, and limits before transferring records or
+enriching responses. Consumers request the smallest projection their operation needs, such as matching IDs, counts, or
+bounded summaries. Query composition and storage encoding stay inside repositories; services supply validated intent
+and retain transaction and workflow ownership.
+
+Label predicates are shared by item listing, search, claims, scheduling, and routing previews. Their SQL and in-memory
+evaluators consume the same validated label-condition representation. In-memory evaluation serves browser interaction,
+retained snapshots, and clause diagnostics over already-loaded data; filesystem and runtime policy stays with its owning
+adapter or service. Equivalence coverage preserves predicate meaning across execution locations.
 
 ### Transactions and Coordination
 

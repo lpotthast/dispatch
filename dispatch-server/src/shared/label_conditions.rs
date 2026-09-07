@@ -22,25 +22,27 @@ pub(crate) struct ValidatedLabelCondition {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum LabelCondition {
-    All(Vec<LabelConditionElement>),
-    Any(Vec<LabelConditionElement>),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum LabelConditionElement {
+pub(crate) enum LabelCondition {
+    All(Vec<LabelCondition>),
+    Any(Vec<LabelCondition>),
     Clause(LabelClause),
-    Condition(Box<LabelCondition>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum LabelClause {
-    PresenceEquals { key: String, present: bool },
-    ValueEquals { key: String, expected: String },
-    ValueNotEquals { key: String, expected: String },
-    ValueIsNull { key: String },
-    ValueIsNotNull { key: String },
-    ValueIn { key: String, expected: Vec<String> },
+pub(crate) struct LabelClause {
+    pub(crate) key: String,
+    pub(crate) predicate: LabelPredicate,
+    pub(crate) negated: bool,
+}
+
+/// Tests on an existing label. Negation belongs to the complete existence check,
+/// so an absent label satisfies a negated predicate in every evaluator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum LabelPredicate {
+    Present,
+    ValueEquals(String),
+    ValueIsNull,
+    ValueIn(Vec<String>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +66,11 @@ impl ValidatedLabelCondition {
     pub(crate) fn matches(&self, labels: &[WorkItemLabelView]) -> bool {
         self.condition.matches(labels)
     }
+
+    #[cfg(feature = "ssr")]
+    pub(crate) fn condition(&self) -> &LabelCondition {
+        &self.condition
+    }
 }
 
 impl LabelCondition {
@@ -78,66 +85,40 @@ impl LabelCondition {
         match self {
             Self::All(elements) => elements.iter().all(|element| element.matches(labels)),
             Self::Any(elements) => elements.iter().any(|element| element.matches(labels)),
+            Self::Clause(clause) => clause.matches(labels),
         }
     }
 }
 
 fn parse_condition_elements(
     elements: &[ConditionElement],
-) -> Result<Vec<LabelConditionElement>, LabelConditionError> {
-    elements.iter().map(LabelConditionElement::parse).collect()
-}
-
-impl LabelConditionElement {
-    fn parse(element: &ConditionElement) -> Result<Self, LabelConditionError> {
-        match element {
-            ConditionElement::Clause(clause) => Ok(Self::Clause(LabelClause::parse(clause)?)),
-            ConditionElement::Condition(condition) => {
-                Ok(Self::Condition(Box::new(LabelCondition::parse(condition)?)))
+) -> Result<Vec<LabelCondition>, LabelConditionError> {
+    elements
+        .iter()
+        .map(|element| match element {
+            ConditionElement::Clause(clause) => {
+                Ok(LabelCondition::Clause(LabelClause::parse(clause)?))
             }
-        }
-    }
-
-    fn matches(&self, labels: &[WorkItemLabelView]) -> bool {
-        match self {
-            Self::Clause(clause) => clause.matches(labels),
-            Self::Condition(condition) => condition.matches(labels),
-        }
-    }
+            ConditionElement::Condition(condition) => LabelCondition::parse(condition),
+        })
+        .collect()
 }
 
 impl LabelClause {
     fn parse(clause: &ConditionClause) -> Result<Self, LabelConditionError> {
         let key = normalize_key(&clause.column_name)?;
-        match clause.operator {
+        let mut negated = clause.operator == Operator::NotEqual;
+        let predicate = match clause.operator {
             Operator::Equal | Operator::NotEqual => match &clause.value {
-                ConditionClauseValue::Bool(expected) => Ok(Self::PresenceEquals {
-                    key,
-                    present: if clause.operator == Operator::Equal {
-                        *expected
-                    } else {
-                        !*expected
-                    },
-                }),
+                ConditionClauseValue::Bool(expected) => {
+                    negated ^= !*expected;
+                    Ok(LabelPredicate::Present)
+                }
                 ConditionClauseValue::String(expected) => {
-                    if clause.operator == Operator::Equal {
-                        Ok(Self::ValueEquals {
-                            key,
-                            expected: expected.clone(),
-                        })
-                    } else {
-                        Ok(Self::ValueNotEquals {
-                            key,
-                            expected: expected.clone(),
-                        })
-                    }
+                    Ok(LabelPredicate::ValueEquals(expected.clone()))
                 }
                 ConditionClauseValue::Json(serde_json::Value::Null) => {
-                    if clause.operator == Operator::Equal {
-                        Ok(Self::ValueIsNull { key })
-                    } else {
-                        Ok(Self::ValueIsNotNull { key })
-                    }
+                    Ok(LabelPredicate::ValueIsNull)
                 }
                 other => Err(LabelConditionError(format!(
                     "label condition '{}' with operator '{}' requires a string, bool, or null value; got {other:?}",
@@ -145,41 +126,38 @@ impl LabelClause {
                     operator_name(clause.operator),
                 ))),
             },
-            Operator::IsIn => parse_string_list(clause, key),
+            Operator::IsIn => parse_string_list(clause).map(LabelPredicate::ValueIn),
             operator => Err(LabelConditionError(format!(
                 "label condition '{}' uses unsupported operator '{}'",
                 clause.column_name,
                 operator_name(operator),
             ))),
-        }
+        }?;
+        Ok(Self {
+            key,
+            predicate,
+            negated,
+        })
     }
 
     fn matches(&self, labels: &[WorkItemLabelView]) -> bool {
-        match self {
-            Self::PresenceEquals { key, present } => find_label(labels, key).is_some() == *present,
-            Self::ValueEquals { key, expected } => {
-                label_value(labels, key) == Some(expected.as_str())
-            }
-            Self::ValueNotEquals { key, expected } => {
-                label_value(labels, key) != Some(expected.as_str())
-            }
-            Self::ValueIsNull { key } => find_label(labels, key)
-                .map(|label| label.value.is_none())
-                .unwrap_or(false),
-            Self::ValueIsNotNull { key } => find_label(labels, key)
-                .map(|label| label.value.is_some())
-                .unwrap_or(true),
-            Self::ValueIn { key, expected } => label_value(labels, key)
-                .map(|value| expected.iter().any(|expected| expected == value))
-                .unwrap_or(false),
-        }
+        let matches = labels
+            .iter()
+            .find(|label| label.key == self.key)
+            .is_some_and(|label| match &self.predicate {
+                LabelPredicate::Present => true,
+                LabelPredicate::ValueEquals(expected) => label.value.as_ref() == Some(expected),
+                LabelPredicate::ValueIsNull => label.value.is_none(),
+                LabelPredicate::ValueIn(expected) => label
+                    .value
+                    .as_ref()
+                    .is_some_and(|value| expected.contains(value)),
+            });
+        matches != self.negated
     }
 }
 
-fn parse_string_list(
-    clause: &ConditionClause,
-    key: String,
-) -> Result<LabelClause, LabelConditionError> {
+fn parse_string_list(clause: &ConditionClause) -> Result<Vec<String>, LabelConditionError> {
     let ConditionClauseValue::Json(serde_json::Value::Array(values)) = &clause.value else {
         return Err(is_in_value_error(clause));
     };
@@ -190,7 +168,7 @@ fn parse_string_list(
         };
         expected.push(value.to_owned());
     }
-    Ok(LabelClause::ValueIn { key, expected })
+    Ok(expected)
 }
 
 fn is_in_value_error(clause: &ConditionClause) -> LabelConditionError {
@@ -211,14 +189,6 @@ fn normalize_key(value: &str) -> Result<String, LabelConditionError> {
         ));
     }
     Ok(value.to_owned())
-}
-
-fn find_label<'a>(labels: &'a [WorkItemLabelView], key: &str) -> Option<&'a WorkItemLabelView> {
-    labels.iter().find(|label| label.key == key)
-}
-
-fn label_value<'a>(labels: &'a [WorkItemLabelView], key: &str) -> Option<&'a str> {
-    find_label(labels, key).and_then(|label| label.value.as_deref())
 }
 
 fn operator_name(operator: Operator) -> &'static str {
@@ -254,6 +224,93 @@ mod tests {
             created_at: "2026-06-18T00:00:00Z".to_owned(),
             updated_at: "2026-06-18T00:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn clauses_preserve_presence_null_and_negation_truth_tables() {
+        let cases = [
+            (
+                Operator::Equal,
+                ConditionClauseValue::Bool(true),
+                [false, true, true, true],
+            ),
+            (
+                Operator::Equal,
+                ConditionClauseValue::Bool(false),
+                [true, false, false, false],
+            ),
+            (
+                Operator::NotEqual,
+                ConditionClauseValue::Bool(true),
+                [true, false, false, false],
+            ),
+            (
+                Operator::NotEqual,
+                ConditionClauseValue::Bool(false),
+                [false, true, true, true],
+            ),
+            (
+                Operator::Equal,
+                ConditionClauseValue::String("high".to_owned()),
+                [false, false, true, false],
+            ),
+            (
+                Operator::NotEqual,
+                ConditionClauseValue::String("high".to_owned()),
+                [true, true, false, true],
+            ),
+            (
+                Operator::Equal,
+                ConditionClauseValue::Json(json!(null)),
+                [false, true, false, false],
+            ),
+            (
+                Operator::NotEqual,
+                ConditionClauseValue::Json(json!(null)),
+                [true, false, true, true],
+            ),
+            (
+                Operator::IsIn,
+                ConditionClauseValue::Json(json!(["high", "low"])),
+                [false, false, true, true],
+            ),
+            (
+                Operator::IsIn,
+                ConditionClauseValue::Json(json!([])),
+                [false, false, false, false],
+            ),
+        ];
+        let labels = [
+            vec![],
+            vec![label("priority", None)],
+            vec![label("priority", Some("high"))],
+            vec![label("priority", Some("low"))],
+        ];
+        for (operator, value, expected) in cases {
+            let condition =
+                ValidatedLabelCondition::new(&Condition::All(vec![ConditionElement::Clause(
+                    ConditionClause {
+                        column_name: " priority ".to_owned(),
+                        operator,
+                        value,
+                    },
+                )]))
+                .unwrap();
+            assert_that!(&labels.each_ref().map(|labels| condition.matches(labels)))
+                .is_equal_to(expected);
+        }
+        assert_that!(
+            &ValidatedLabelCondition::new(&Condition::All(vec![]))
+                .unwrap()
+                .matches(&[])
+        )
+        .is_true();
+        assert_that!(
+            &ValidatedLabelCondition::new(&Condition::Any(vec![]))
+                .unwrap()
+                .matches(&[])
+        )
+        .is_false();
     }
 
     #[test]

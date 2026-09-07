@@ -92,6 +92,7 @@ impl Application {
                 project_repository.clone(),
                 Arc::new(crate::backend::automation::rules::repository::RuleRepository),
                 Arc::new(crate::backend::items::repository::ItemRepository),
+                Arc::new(crate::backend::automation::routing::repository::RoutingRepository),
                 run_admission.clone(),
             ),
         );

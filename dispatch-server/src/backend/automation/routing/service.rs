@@ -1,4 +1,5 @@
 use super::policy::clause_results;
+use super::repository::RoutingRepository;
 use crate::backend::automation::scheduling::policy::{fairness_score, trigger_due};
 use crate::backend::{
     automation::rules::repository::RuleRepository, items::labels::conditions as label_conditions,
@@ -7,7 +8,6 @@ use crate::backend::{
 };
 use dispatch_types::{
     AutomationEffect, RoutingExplainRequest, RoutingExplanationView, RoutingRuleExplanationView,
-    WorkItemSummaryView,
 };
 use rootcause::{Result, prelude::*};
 use std::sync::Arc;
@@ -17,6 +17,7 @@ pub(crate) struct RoutingService {
     projects: Arc<ProjectRepository>,
     rules: Arc<RuleRepository>,
     items: Arc<ItemRepository>,
+    repository: Arc<RoutingRepository>,
     admission: Arc<RunAdmissionService>,
 }
 impl RoutingService {
@@ -25,6 +26,7 @@ impl RoutingService {
         projects: Arc<ProjectRepository>,
         rules: Arc<RuleRepository>,
         items: Arc<ItemRepository>,
+        repository: Arc<RoutingRepository>,
         admission: Arc<RunAdmissionService>,
     ) -> Self {
         Self {
@@ -32,6 +34,7 @@ impl RoutingService {
             projects,
             rules,
             items,
+            repository,
             admission,
         }
     }
@@ -55,33 +58,22 @@ impl RoutingService {
                 .as_ref()
                 .ok_or_else(|| report!("unsaved work-consuming rule requires a selector"))?;
             let condition = label_conditions::ValidatedLabelCondition::new(selector)?;
-            let items = self.items.list_in(&transaction, project_id, None).await?;
-            let matching = items
-                .iter()
-                .filter(|item| condition.matches_automation_selector(&item.labels))
-                .collect::<Vec<_>>();
-            let examples = matching
-                .iter()
-                .take(10)
-                .map(|item| WorkItemSummaryView {
-                    id: item.id,
-                    title: item.title.clone(),
-                    state: item.state.clone(),
-                    updated_at: item.updated_at.clone(),
-                })
-                .collect();
-            let clause_results = matching
-                .first()
-                .map(|item| clause_results(selector, &item.labels))
-                .transpose()?
-                .unwrap_or_default();
+            let preview = self
+                .repository
+                .preview_in(&transaction, project_id, &condition)
+                .await?;
+            let clause_results = if preview.example_items.is_empty() {
+                Vec::new()
+            } else {
+                clause_results(selector, &preview.first_example_labels)?
+            };
             transaction.commit().await?;
             return Ok(RoutingExplanationView {
                 item_id: None,
                 rules: vec![RoutingRuleExplanationView {
                     trigger_id: None,
                     trigger_name: rule.name,
-                    selector_matches: !matching.is_empty(),
+                    selector_matches: preview.matching_item_count != 0,
                     clause_results,
                     due: true,
                     admission_allowed: true,
@@ -93,8 +85,8 @@ impl RoutingService {
                     would_win: false,
                 }],
                 winner_trigger_id: None,
-                matching_item_count: Some(matching.len() as u64),
-                example_items: examples,
+                matching_item_count: Some(preview.matching_item_count),
+                example_items: preview.example_items,
             });
         }
 

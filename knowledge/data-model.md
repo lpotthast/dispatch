@@ -100,6 +100,13 @@ Work item labels are project-scoped item metadata. A label has a key and an opti
 Dispatch's built-in workflow hook for claim, finish, release, and default automation transitions; it is managed through
 item create, item state update, and workflow transitions rather than generic label add, update, or delete operations.
 
+Each item has at most one label for a given key. Label conditions share one validated representation across search,
+automation, and board filtering. Nested `All` and `Any` groups combine clauses; an empty `All` matches and an empty
+`Any` does not. Boolean equality tests key presence, string equality compares the exact value, null equality requires a
+present label without a value, and string-list membership requires a matching value. Inequality negates the complete
+equality test, so an absent label satisfies string and null inequality. Keys are trimmed before validation; values remain
+case-sensitive and literal. Unsupported operators or value types fail validation before matching.
+
 Dispatch keeps a project-scoped catalog of known label keys. A key is discovered when it is used by a work item and is
 forgotten when its final usage disappears, unless the key is persistent or built in. Operators may create an unused key,
 which makes it persistent, and may mark a discovered key persistent so its configuration survives zero usage. The

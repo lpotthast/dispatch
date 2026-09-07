@@ -54,10 +54,13 @@ pub(crate) fn normalize_state_value(value: impl Into<String>) -> Result<String> 
     Ok(value)
 }
 
+pub(crate) const AUTOMATION_BLOCKING_LABEL_KEYS: &[&str] =
+    &[AUTOMATION_BLOCKED_LABEL_KEY, FEEDBACK_REQUESTED_LABEL_KEY];
+
 pub(crate) fn is_automation_blocked(labels: &[WorkItemLabelView]) -> bool {
-    labels.iter().any(|label| {
-        label.key == AUTOMATION_BLOCKED_LABEL_KEY || label.key == FEEDBACK_REQUESTED_LABEL_KEY
-    })
+    labels
+        .iter()
+        .any(|label| AUTOMATION_BLOCKING_LABEL_KEYS.contains(&label.key.as_str()))
 }
 
 pub(crate) fn ensure_generic_label_can_be_changed(key: &str) -> Result<()> {

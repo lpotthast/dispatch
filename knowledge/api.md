@@ -122,7 +122,8 @@ POST /api/projects/{project}/work-groups/{group_key}/items
 
 Item search returns `WorkItemPage { items, next_cursor }`, defaults to 50 rows, caps pages at 200, and uses a stable
 updated-time/id cursor. Filters cover states, label conditions/selectors, title/description text, finished state,
-creating run, producing trigger, relationship kind, and update time. Existing item-list behavior is unchanged.
+creating run, producing trigger, relationship kind, and update time. Filters combine before pagination; labels and
+selectors share the [label-condition semantics](data-model.md#work-items). Existing item-list behavior is unchanged.
 
 Agent-context requests send `X-Dispatch-Agent-Id` and `X-Dispatch-Agent-Run-Id`. The server validates that the run
 belongs to the addressed project and derives the same agent id, then cross-checks legacy body agent identifiers.

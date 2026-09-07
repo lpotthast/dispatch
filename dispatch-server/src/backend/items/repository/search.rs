@@ -15,18 +15,14 @@ use crate::{
             work_item_relationship::{self, WorkItemRelationship},
         },
         items::labels::conditions::ValidatedLabelCondition,
+        items::labels::repository::conditions::{items_in_states, matching_items},
         items::labels::workflow as workflow_labels,
     },
-    shared::view_models::{WorkItemPage, WorkItemSearchRequest, WorkItemView},
+    shared::view_models::{WorkItemPage, WorkItemSearchRequest},
 };
 
 const DEFAULT_SEARCH_LIMIT: u64 = 50;
 const MAX_SEARCH_LIMIT: u64 = 200;
-
-#[cfg(not(test))]
-const SEARCH_SCAN_BATCH_SIZE: u64 = 256;
-#[cfg(test)]
-const SEARCH_SCAN_BATCH_SIZE: u64 = 2;
 
 impl super::ItemRepository {
     pub(crate) async fn search_in(
@@ -41,6 +37,18 @@ impl super::ItemRepository {
             .order_by_desc(work_item::Column::UpdatedAt)
             .order_by_desc(work_item::Column::Id);
 
+        if !plan.states.is_empty() {
+            query = query.filter(items_in_states(
+                project_id,
+                plan.states.iter().map(String::as_str),
+            ));
+        }
+        for condition in plan.labels.iter().chain(plan.selector.iter()) {
+            query = query.filter(matching_items(project_id, condition));
+        }
+        if let Some(cursor) = &plan.cursor {
+            query = query.filter(cursor.after_condition());
+        }
         if let Some(finished) = plan.finished {
             query = if finished {
                 query.filter(work_item::Column::FinishedAt.is_not_null())
@@ -97,51 +105,24 @@ impl super::ItemRepository {
             );
         }
 
-        let batch_size = plan.scan_batch_size();
-        let mut scan_cursor = plan.cursor.clone();
-        let mut views = Vec::with_capacity(plan.limit + 1);
-        while views.len() <= plan.limit {
-            let mut batch_query = query.clone().limit(batch_size);
-            if let Some(cursor) = &scan_cursor {
-                batch_query = batch_query.filter(cursor.after_condition());
-            }
-            let models = batch_query
-                .all(transaction.connection())
-                .await
-                .context("failed to search work items")?;
-            let batch_is_full = models.len() == batch_size as usize;
-            let Some(last_model) = models.last() else {
-                break;
-            };
-            let next_scan_cursor = SearchCursor::from(last_model);
-            let mut batch = crate::backend::items::repository::views::models_to_views(
-                transaction.connection(),
-                project_id,
-                models,
-            )
-            .await?;
-            batch.retain(|item| plan.matches(item));
-            views.extend(batch);
-            scan_cursor = Some(next_scan_cursor);
-            if !batch_is_full {
-                break;
-            }
-        }
-
-        let has_more = views.len() > plan.limit;
-        views.truncate(plan.limit);
+        let mut models = query
+            .limit((plan.limit + 1) as u64)
+            .all(transaction.connection())
+            .await
+            .context("failed to search work items")?;
+        let has_more = models.len() > plan.limit;
+        models.truncate(plan.limit);
         let next_cursor = if has_more {
-            views
+            models
                 .last()
                 .map(SearchCursor::from)
                 .map(|cursor| cursor.encode())
         } else {
             None
         };
-        Ok(WorkItemPage {
-            items: views,
-            next_cursor,
-        })
+        let items =
+            super::views::models_to_views(transaction.connection(), project_id, models).await?;
+        Ok(WorkItemPage { items, next_cursor })
     }
 }
 fn related_item_ids_subquery(
@@ -227,30 +208,6 @@ impl WorkItemSearchPlan {
             cursor,
         })
     }
-
-    fn matches(&self, item: &WorkItemView) -> bool {
-        (self.states.is_empty()
-            || item
-                .state
-                .as_ref()
-                .is_some_and(|state| self.states.contains(state)))
-            && self
-                .labels
-                .as_ref()
-                .is_none_or(|condition| condition.matches(&item.labels))
-            && self
-                .selector
-                .as_ref()
-                .is_none_or(|condition| condition.matches(&item.labels))
-    }
-
-    fn scan_batch_size(&self) -> u64 {
-        if self.states.is_empty() && self.labels.is_none() && self.selector.is_none() {
-            (self.limit + 1) as u64
-        } else {
-            SEARCH_SCAN_BATCH_SIZE
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -300,15 +257,6 @@ impl From<&work_item::Model> for SearchCursor {
     }
 }
 
-impl From<&WorkItemView> for SearchCursor {
-    fn from(item: &WorkItemView) -> Self {
-        Self {
-            updated_at: item.updated_at.clone(),
-            item_id: item.id,
-        }
-    }
-}
-
 fn text_search_pattern(text: &str) -> String {
     let escaped = text
         .replace('\\', "\\\\")
@@ -332,11 +280,11 @@ mod tests {
         items::CreateWorkItem, projects::CreateProject, storage::utc_now,
     };
     use crate::backend::{projects::repository::ProjectRepository, storage::Store};
-    use crate::shared::view_models::CreateWorkItemLabelRequest;
+    use crate::shared::view_models::{CreateWorkItemLabelRequest, STATE_LABEL_KEY, WorkItemView};
 
     async fn test_store() -> (TempDir, Store) {
         let temp = TempDir::new().unwrap();
-        let store = Store::open(temp.path().join("dispatch.sqlite3"))
+        let store = Store::open_with_max_connections(temp.path().join("dispatch.sqlite3"), 1)
             .await
             .unwrap();
         crate::backend::projects::tests::service(&store, crate::backend::events::UiEventBus::new())
@@ -395,8 +343,250 @@ mod tests {
         .id
     }
 
+    fn label_condition(operator: Operator, value: ConditionClauseValue) -> Condition {
+        Condition::All(vec![ConditionElement::Clause(ConditionClause {
+            column_name: " priority ".to_owned(),
+            operator,
+            value,
+        })])
+    }
+
     #[tokio::test]
-    async fn pages_stably_across_filtered_batches() {
+    async fn sql_label_filters_match_in_memory_semantics_across_scoped_pages() {
+        let (temp, store) = test_store().await;
+        crate::backend::projects::tests::service(&store, crate::backend::events::UiEventBus::new())
+            .create(CreateProject {
+                name: "other".to_owned(),
+                display_name: None,
+                path: temp.path().to_path_buf(),
+                default_agent_model: None,
+                default_agent_reasoning_effort: None,
+                system_prompt: None,
+                memory: None,
+            })
+            .await
+            .unwrap();
+
+        let mut fixtures = Vec::new();
+        for project in ["demo", "other"] {
+            for (index, value) in [
+                None,
+                Some(None),
+                Some(Some("high")),
+                Some(Some("low")),
+                Some(Some("HIGH")),
+                Some(Some("%_\\'日本語")),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let item = crate::backend::items::creation::tests::service(
+                    &store,
+                    crate::backend::events::UiEventBus::new(),
+                )
+                .create(
+                    crate::backend::projects::ProjectReference::Name(project),
+                    CreateWorkItem {
+                        title: format!("Candidate {index}"),
+                        description: "Label search fixture".to_owned(),
+                        state: if index % 2 == 0 { "open" } else { "done" }.to_owned(),
+                        agent_model_override: None,
+                        agent_reasoning_effort_override: None,
+                        initial_labels: value
+                            .into_iter()
+                            .map(|value| CreateWorkItemLabelRequest {
+                                key: "priority".to_owned(),
+                                value: value.map(ToOwned::to_owned),
+                            })
+                            .collect(),
+                    },
+                    Default::default(),
+                )
+                .await
+                .unwrap();
+                if project == "demo" {
+                    fixtures.push(item);
+                }
+            }
+        }
+        // Equal timestamps force every page to use the ID tie-breaker.
+        WorkItem::update_many()
+            .col_expr(
+                work_item::Column::UpdatedAt,
+                Expr::value("2026-09-07T12:00:00Z"),
+            )
+            .exec(store.db().as_ref())
+            .await
+            .unwrap();
+        fixtures.sort_by_key(|item| std::cmp::Reverse(item.id));
+
+        let mut conditions = vec![Condition::All(vec![]), Condition::Any(vec![])];
+        for operator in [Operator::Equal, Operator::NotEqual] {
+            for value in [
+                ConditionClauseValue::Bool(true),
+                ConditionClauseValue::Bool(false),
+                ConditionClauseValue::Json(serde_json::Value::Null),
+                ConditionClauseValue::String("high".to_owned()),
+                ConditionClauseValue::String("%_\\'日本語".to_owned()),
+            ] {
+                conditions.push(label_condition(operator, value));
+            }
+        }
+        for values in [serde_json::json!([]), serde_json::json!(["high", "low"])] {
+            conditions.push(label_condition(
+                Operator::IsIn,
+                ConditionClauseValue::Json(values),
+            ));
+        }
+        conditions.push(Condition::All(vec![ConditionElement::Clause(
+            ConditionClause {
+                column_name: STATE_LABEL_KEY.to_owned(),
+                operator: Operator::Equal,
+                value: ConditionClauseValue::String("open".to_owned()),
+            },
+        )]));
+        let leaves = conditions.clone();
+        for left in &leaves {
+            for right in &leaves {
+                let elements = vec![
+                    ConditionElement::Condition(Box::new(left.clone())),
+                    ConditionElement::Condition(Box::new(right.clone())),
+                ];
+                conditions.push(Condition::All(elements.clone()));
+                conditions.push(Condition::Any(elements));
+            }
+        }
+
+        let service = crate::backend::items::tests::service(
+            &store,
+            crate::backend::events::UiEventBus::new(),
+        );
+        for condition in conditions {
+            let validated = ValidatedLabelCondition::new(&condition).unwrap();
+            let expected = fixtures
+                .iter()
+                .filter(|item| validated.matches(&item.labels))
+                .map(|item| item.id)
+                .collect::<Vec<_>>();
+            let mut actual = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = service
+                    .search(
+                        "demo",
+                        WorkItemSearchRequest {
+                            labels: Some(condition.clone()),
+                            limit: Some(2),
+                            cursor,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                actual.extend(page.items.iter().map(|item| item.id));
+                assert_that!(&(actual.len() <= expected.len())).is_true();
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+                assert_that!(&page.items.len()).is_equal_to(2);
+            }
+            assert_that!(&actual).is_equal_to(expected);
+        }
+
+        let page = service
+            .search(
+                "demo",
+                WorkItemSearchRequest {
+                    states: vec![" open ".to_owned()],
+                    labels: Some(label_condition(
+                        Operator::NotEqual,
+                        ConditionClauseValue::Json(serde_json::Value::Null),
+                    )),
+                    selector: Some(label_condition(
+                        Operator::IsIn,
+                        ConditionClauseValue::Json(serde_json::json!(["high", "low"])),
+                    )),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_that!(
+            &page
+                .items
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>()
+        )
+        .is_equal_to(vec!["Candidate 2"]);
+    }
+
+    #[tokio::test]
+    async fn search_enriches_only_the_returned_page() {
+        let (_temp, store) = test_store().await;
+        let lookahead = create_test_item(&store, "matching lookahead").await;
+        let visible = create_test_item(&store, "matching visible").await;
+        let excluded = create_test_item(&store, "excluded").await;
+        crate::backend::items::labels::tests::service(
+            &store,
+            crate::backend::events::UiEventBus::new(),
+        )
+        .add(
+            "demo",
+            excluded.id,
+            CreateWorkItemLabelRequest {
+                key: "priority".to_owned(),
+                value: None,
+            },
+            None,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        WorkItem::update_many()
+            .col_expr(
+                work_item::Column::AgentReasoningEffortOverride,
+                Expr::value("invalid"),
+            )
+            .filter(work_item::Column::Id.is_in([lookahead.id, excluded.id]))
+            .exec(store.db().as_ref())
+            .await
+            .unwrap();
+        let service = crate::backend::items::tests::service(
+            &store,
+            crate::backend::events::UiEventBus::new(),
+        );
+        let request = WorkItemSearchRequest {
+            labels: Some(label_condition(
+                Operator::Equal,
+                ConditionClauseValue::Bool(false),
+            )),
+            limit: Some(1),
+            ..Default::default()
+        };
+        let page = service.search("demo", request.clone()).await.unwrap();
+        assert_that!(&page.items.iter().map(|item| item.id).collect::<Vec<_>>())
+            .is_equal_to(vec![visible.id]);
+        assert_that!(&page.next_cursor).is_some();
+        // Returned records still cross the validated persistence boundary.
+        assert_that!(
+            &service
+                .search(
+                    "demo",
+                    WorkItemSearchRequest {
+                        cursor: page.next_cursor,
+                        ..request
+                    }
+                )
+                .await
+                .is_err()
+        )
+        .is_true();
+    }
+
+    #[tokio::test]
+    async fn pages_stably_across_filtered_items() {
         let event_bus = crate::backend::events::UiEventBus::new();
 
         let (_temp, store) = test_store().await;

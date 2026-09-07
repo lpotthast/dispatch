@@ -17,6 +17,14 @@ use sea_orm::{
 };
 pub(crate) struct ClaimRepository;
 impl ClaimRepository {
+    pub(super) async fn matching_ids_in(
+        &self,
+        transaction: &Transaction,
+        project_id: i64,
+        selector: &ClaimSelector,
+    ) -> Result<Vec<i64>> {
+        candidates::matching_ids_in(transaction, project_id, selector).await
+    }
     pub(super) async fn next_in(
         &self,
         transaction: &Transaction,

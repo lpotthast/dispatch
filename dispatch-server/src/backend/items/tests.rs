@@ -475,6 +475,29 @@ async fn list_items_hydrates_labels_state_and_comment_counts() {
     let first = items.iter().find(|item| item.id == first.id).unwrap();
     let second = items.iter().find(|item| item.id == second.id).unwrap();
 
+    let service = service(&store, event_bus);
+    assert_that!(
+        &service
+            .list("demo", Some(" ready ".to_owned()))
+            .await
+            .unwrap()
+    )
+    .is_equal_to(vec![second.clone()]);
+    assert_that!(
+        &service
+            .list("demo", Some("unmatched".to_owned()))
+            .await
+            .unwrap()
+    )
+    .is_empty();
+    assert_that!(
+        &service
+            .list("other", Some("ready".to_owned()))
+            .await
+            .unwrap()
+    )
+    .is_empty();
+
     assert_that!(&(first.state.as_deref())).is_equal_to(Some("open"));
     assert_that!(&(first.comment_count)).is_equal_to(2);
     assert_that!(

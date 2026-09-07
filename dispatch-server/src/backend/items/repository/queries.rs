@@ -1,7 +1,7 @@
 use super::ItemRepository;
 use crate::backend::{
     entities::work_item::{self, WorkItem},
-    items::labels::repository::records as work_item_labels,
+    items::labels::repository::conditions::items_in_states,
     items::labels::workflow as workflow_labels,
     storage::Transaction,
 };
@@ -19,29 +19,14 @@ impl ItemRepository {
         state: Option<String>,
     ) -> Result<Vec<WorkItemView>> {
         crate::backend::metrics::time_repository("work_items.list", async {
-            let item_ids = match state {
-                Some(state) => {
-                    let state = workflow_labels::normalize_state_value(state)?;
-                    let ids = work_item_labels::item_ids_with_state(
-                        transaction.connection(),
-                        project_id,
-                        &state,
-                    )
-                    .await?;
-                    if ids.is_empty() {
-                        return Ok(Vec::new());
-                    }
-                    Some(ids)
-                }
-                None => None,
-            };
             let mut query = WorkItem::find()
                 .filter(work_item::Column::ProjectId.eq(project_id))
                 .order_by_desc(work_item::Column::UpdatedAt)
                 .order_by_desc(work_item::Column::Id);
 
-            if let Some(item_ids) = item_ids {
-                query = query.filter(work_item::Column::Id.is_in(item_ids));
+            if let Some(state) = state {
+                let state = workflow_labels::normalize_state_value(state)?;
+                query = query.filter(items_in_states(project_id, [state.as_str()]));
             }
 
             let items = query

@@ -104,6 +104,17 @@ impl ClaimService {
         )
         .await
     }
+    pub(crate) async fn matching_item_ids_in(
+        &self,
+        transaction: &Transaction,
+        project_id: i64,
+        condition: &Condition,
+    ) -> Result<Vec<i64>> {
+        let selector = ClaimSelector::automation_condition(condition)?;
+        self.repository
+            .matching_ids_in(transaction, project_id, &selector)
+            .await
+    }
     pub(crate) async fn has_claimable_item_matching_condition(
         &self,
         project_name: &str,

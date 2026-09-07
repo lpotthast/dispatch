@@ -17,26 +17,8 @@ use crate::{
         items::labels::policy as item_labels,
         storage::utc_now,
     },
-    shared::view_models::{ProjectLabelView, STATE_LABEL_KEY, WorkItemLabelView},
+    shared::view_models::{ProjectLabelView, WorkItemLabelView},
 };
-
-pub(crate) async fn item_ids_with_state<C>(
-    conn: &C,
-    project_id: i64,
-    state: &str,
-) -> Result<Vec<i64>>
-where
-    C: sea_orm::ConnectionTrait,
-{
-    let labels = WorkItemLabel::find()
-        .filter(work_item_label::Column::ProjectId.eq(project_id))
-        .filter(work_item_label::Column::Key.eq(STATE_LABEL_KEY))
-        .filter(work_item_label::Column::Value.eq(state))
-        .all(conn)
-        .await
-        .context_with(|| format!("failed to list items with state label '{state}'"))?;
-    Ok(labels.into_iter().map(|label| label.work_item_id).collect())
-}
 
 pub(crate) async fn insert_in_tx<C>(
     conn: &C,
@@ -339,6 +321,7 @@ pub(crate) fn to_view(label: WorkItemLabelModel) -> WorkItemLabelView {
 
 #[cfg(test)]
 mod tests {
+    use crate::shared::view_models::STATE_LABEL_KEY;
     use assertr::prelude::*;
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
     use tempfile::TempDir;
